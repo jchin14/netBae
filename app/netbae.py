@@ -41,7 +41,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 DEFAULT_CONFIG = {
     "web": {"host": "0.0.0.0", "port": 80},
@@ -107,7 +107,7 @@ DEFAULT_CONFIG = {
         "timeout_seconds": 300,
     },
     "system": {"interval_seconds": 30, "offset_seconds": 0, "disk_path": "/"},
-    # extra internet connections tested through a different source IP or interface (e.g. a 5G backup)
+    # extra internet connections tested through a different source IP or interface (e.g. a secondary 5G/4G WAN)
     "connections": [],
 }
 
@@ -218,7 +218,7 @@ def resolve_game_server(provider, pref="auto", bind=None):
 # --------------------------------------------------------------------------- connections
 
 def normalize_connection(c):
-    """An extra internet connection (e.g. 5G backup) measured through its own source IP or interface."""
+    """A secondary internet connection (e.g. a 5G/4G WAN) measured through its own source IP or interface."""
     if not isinstance(c, dict) or not c.get("name") or not c.get("bind"):
         raise SystemExit("[[connections]] entries need a name and a bind (source IP or interface name)")
     name, bind = str(c["name"]), str(c["bind"])

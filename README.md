@@ -23,7 +23,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 - **Charts that show jitter:** the average as a solid line with a shaded P5–P95 (or min–max) band. The y-axis fits the averages, and you can zoom and drag.
 - **Speedtests** with the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages
 - **Worldwide view:** latency to 18 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them
-- **Backup connection monitoring:** test a 5G/4G failover link alongside your main connection, at the same time
+- **Secondary connection monitoring:** test a second internet connection (e.g. a 5G/4G failover link) alongside your main one, at the same time
 - **DNS over IPv4 and IPv6:** response times for each resolver and domain
 - **History kept forever,** at the right resolution: every ping for 7 days, 1-minute summaries for 90 days, hourly summaries for ever
 - **Works from any device** on your network, including when the internet is down
@@ -110,7 +110,7 @@ Everything lives in one commented [config file](config.toml). The highlights:
 | `[speedtest] interval_minutes` / `offset_minutes` | `60` / `0` | e.g. `offset_minutes = 6` → runs at :06 every hour |
 | `[speedtest] regions` | none | cities to speedtest, e.g. `["Sydney", "Singapore", "London"]`, once a day by default |
 | `[storage]` | `7` / `90` / `0` days | raw samples / 1-minute summaries / hourly summaries (`0` = forever) |
-| `[[connections]]` | none | extra internet connections to test, see [below](#monitoring-a-backup-connection-5g4g) |
+| `[[connections]]` | none | extra internet connections to test, see [below](#monitoring-a-secondary-connection) |
 
 All schedules follow the wall clock (local time), so `interval_minutes = 30` with `offset_minutes = 6` runs at :06 and :36 whenever the service started.
 
@@ -134,9 +134,9 @@ netBae looks up the Ookla servers in each city, measures them and uses the faste
 
 Each speedtest can use 0.5–1 GB on a fast connection, so region speedtests are off by default and run daily once enabled. Tests never overlap.
 
-### Monitoring a backup connection (5G/4G)
+### Monitoring a secondary connection
 
-If your router fails over to a second connection (say NBN to 5G), you can test both at the same time. netBae sends the backup connection's tests from a **second IP address** on the monitoring machine, and your router sends traffic from that IP out of the backup WAN.
+If you have a second internet connection (for example a 5G/4G link your router fails over to), you can test it at the same time as your main one. netBae sends the secondary connection's tests from a **second IP address** on the monitoring machine, and your router sends traffic from that IP out of the secondary WAN.
 
 **1. Give the machine a second IP address** on your LAN, outside your router's DHCP range:
 
@@ -147,18 +147,18 @@ sudo nmcli con mod "Wired connection 1" +ipv4.addresses 192.168.1.51/24 && sudo 
 
 (netplan: add it under `addresses:`; ifupdown: `up ip addr add 192.168.1.51/24 dev eth0`.)
 
-**2. Route that IP out of the backup WAN on your router.** A normal *static route* matches the destination, but this needs a **source-based (policy) route**: *source 192.168.1.51 → WAN2*. Routers call it Policy Routing (TP-Link Omada, DrayTek), Policy-Based Routes / Traffic Routes (UniFi), a firewall rule with a gateway (pfSense/OPNsense) or a routing mark (MikroTik). If you can, turn off failover for that rule, so the backup tests fail when the backup is down instead of quietly using your main connection.
+**2. Route that IP out of the secondary WAN on your router.** A normal *static route* matches the destination, but this needs a **source-based (policy) route**: *source 192.168.1.51 → WAN2*. Routers call it Policy Routing (TP-Link Omada, DrayTek), Policy-Based Routes / Traffic Routes (UniFi), a firewall rule with a gateway (pfSense/OPNsense) or a routing mark (MikroTik). If you can, turn off failover for that rule, so the secondary tests fail when the secondary connection is down instead of quietly using your main connection.
 
-**Alternative:** plug a second network adapter (USB Ethernet or Wi-Fi) into the 5G modem and use its interface name instead of an IP.
+**Alternative:** plug a second network adapter (USB Ethernet or Wi-Fi) into the secondary modem and use its interface name instead of an IP.
 
 **3. Add the connection** with `netbae config`:
 
 ```toml
 [[connections]]
-name = "5G"
+name = "Secondary"
 bind = "192.168.1.51"          # or an interface, e.g. "eth1"
 targets = ["1.1.1.1", "8.8.8.8", "google.com", "valve:auto"]
-speedtest_interval_minutes = 1440   # daily: mobile data isn't free (0 = only when you press Run)
+speedtest_interval_minutes = 1440   # daily, to save data on mobile plans (0 = only when you press Run)
 ```
 
 The connection gets its own group of ping tiles and its own row in the speedtest table, with its ISP and data used, so you can compare it with your main line.

@@ -108,15 +108,15 @@ offset_seconds = 0
 disk_path = "/"        # filesystem shown in storage usage
 
 # --------------------------------------------------------------------------------------------
-# Extra internet connections (e.g. a 5G backup next to NBN). netBae sends this connection's
+# Secondary internet connections (e.g. a 5G/4G link next to your main one). netBae sends their
 # tests from a different source IP or network interface, and your router sends that traffic
-# out of the other WAN. See "Testing a backup connection" in the README.
+# out of the other WAN. See "Monitoring a secondary connection" in the README.
 #
 # [[connections]]
-# name = "5G"
-# bind = "192.168.1.51"         # a second IP on this machine (router policy-routes it to 5G),
-#                               # or an interface plugged into the 5G modem, e.g. "eth1" / "wlan0"
+# name = "Secondary"
+# bind = "192.168.1.51"         # a second IP on this machine (router policy-routes it to the secondary WAN),
+#                               # or an interface plugged into the secondary modem, e.g. "eth1" / "wlan0"
 # targets = ["1.1.1.1", "8.8.8.8", "google.com", "valve:auto"]
 # speedtest = true
-# speedtest_interval_minutes = 1440   # once a day: mobile data isn't free. 0 = manual only
+# speedtest_interval_minutes = 1440   # once a day (mobile data isn't free). 0 = manual only
 # speedtest_offset_minutes = 45
