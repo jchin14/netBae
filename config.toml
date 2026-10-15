@@ -14,8 +14,10 @@ port = 80             # dashboard at http://<this-machine>/ ; change if somethin
 
 [storage]
 database = "/var/lib/netbae/netbae.db"
-retention_days = 30    # 1-minute summaries (min/p5/avg/p95/max) are kept this long
-raw_retention_days = 7 # full-resolution samples are kept this long
+# Data is kept at three resolutions. 0 = keep forever.
+raw_retention_days = 7       # full-resolution samples (every ping)
+minute_retention_days = 90   # 1-minute summaries (count, avg, min, max, p5, p95)
+retention_days = 0           # hourly summaries, speedtests and system history
 
 [ping]
 interval_seconds = 5
@@ -34,8 +36,14 @@ targets = [
   { name = "YouTube",        host = "youtube.com",      group = "Google" },
   { name = "Netflix",        host = "www.netflix.com",  group = "Streaming" },   # netflix.com itself blocks ping
   { name = "Twitch",         host = "twitch.tv",        group = "Streaming" },
-  { name = "Steam",          host = "steampowered.com", group = "Gaming" },
-  { name = "Discord",        host = "discord.com",      group = "Gaming" },
+  # Game/voice servers, found automatically (nearest to you, refreshed daily):
+  #   valve:auto   = nearest Steam Datagram Relay (Steam, CS2, Dota 2), or a site code like valve:syd, valve:lax
+  #   epic:auto    = nearest Fortnite ping beacon, or epic:oce / naw / nac / nae / eu / asia / me / br
+  #   discord:auto = nearest Discord voice server, or discord:sydney / singapore / ...
+  # Riot (Valorant, LoL) and Activision (Warzone) block ping and connection tests, so they can't be measured.
+  { name = "Steam & CS2",    host = "valve:auto",       group = "Gaming" },
+  { name = "Fortnite",       host = "epic:auto",        group = "Gaming" },
+  { name = "Discord voice",  host = "discord:auto",     group = "Gaming" },
   { name = "Facebook",       host = "facebook.com",     group = "Social" },
   { name = "Reddit",         host = "reddit.com",       group = "Social" },
   { name = "Microsoft",      host = "microsoft.com",    group = "Cloud & tech" },
@@ -60,12 +68,16 @@ enabled = true
 interval_seconds = 30
 offset_seconds = 0
 timeout_seconds = 2
-# Every server is asked for every domain on each run.
+# Every server is asked for every domain on each run. IPv6 servers are only queried when
+# this machine has IPv6 internet (checked every 10 minutes).
 servers = [
   { name = "Router",     host = "gateway" },
   { name = "Cloudflare", host = "1.1.1.1" },
-  { name = "Google DNS", host = "8.8.8.8" },
+  { name = "Google",     host = "8.8.8.8" },
   { name = "Quad9",      host = "9.9.9.9" },
+  { name = "Cloudflare", host = "2606:4700:4700::1111" },
+  { name = "Google",     host = "2001:4860:4860::8888" },
+  { name = "Quad9",      host = "2620:fe::fe" },
 ]
 domains = ["google.com", "microsoft.com", "facebook.com", "reddit.com", "netflix.com"]
 
@@ -87,10 +99,24 @@ servers = []
 regions = []           # e.g. ["Sydney", "Singapore", "Los Angeles", "London"]
 regions_interval_minutes = 1440   # once a day
 regions_offset_minutes = 30       # e.g. 00:30 - with 1440, the offset is the time of day
-binary = "auto"       # auto = official Ookla CLI in /usr/bin or /usr/local/bin
+binary = "auto"       # auto = official Ookla CLI in /usr/bin, /usr/local/bin or /opt/homebrew/bin
 timeout_seconds = 300
 
 [system]
 interval_seconds = 30
 offset_seconds = 0
 disk_path = "/"        # filesystem shown in storage usage
+
+# --------------------------------------------------------------------------------------------
+# Extra internet connections (e.g. a 5G backup next to NBN). netBae sends this connection's
+# tests from a different source IP or network interface, and your router sends that traffic
+# out of the other WAN. See "Testing a backup connection" in the README.
+#
+# [[connections]]
+# name = "5G"
+# bind = "192.168.1.51"         # a second IP on this machine (router policy-routes it to 5G),
+#                               # or an interface plugged into the 5G modem, e.g. "eth1" / "wlan0"
+# targets = ["1.1.1.1", "8.8.8.8", "google.com", "valve:auto"]
+# speedtest = true
+# speedtest_interval_minutes = 1440   # once a day: mobile data isn't free. 0 = manual only
+# speedtest_offset_minutes = 45

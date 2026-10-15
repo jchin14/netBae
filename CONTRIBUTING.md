@@ -17,7 +17,8 @@ netBae is plain Python 3 (standard library only) plus a static HTML/JS dashboard
 
 - Keep it dependency-free: standard-library Python only, and no npm/build tooling for the frontend.
 - Check the dashboard at desktop and phone widths.
-- If you change the installer, it must keep working on Debian/Ubuntu/Raspberry Pi OS, and ideally on Fedora/Arch too.
+- If you change the installer, it must keep working on Debian/Ubuntu/Raspberry Pi OS and macOS, and ideally on Fedora/Arch too.
+- System stats read `/proc` and `/sys` on Linux and `sysctl`/`vm_stat`/Mach calls on macOS; keep both paths working.
 - Run `bash -n install.sh` and `python3 -m py_compile app/netbae.py` before submitting.
 
 ## Licence

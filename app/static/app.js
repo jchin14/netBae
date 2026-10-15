@@ -8,7 +8,7 @@ const PALETTE = ['#3b82f6', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4
   '#f97316', '#14b8a6', '#a855f7', '#eab308', '#0ea5e9', '#f43f5e', '#64748b', '#22c55e'];
 const RANGES = [
   ['15m', 900], ['1h', 3600], ['6h', 21600], ['24h', 86400],
-  ['7d', 604800], ['30d', 2592000], ['custom', null],
+  ['7d', 604800], ['30d', 2592000], ['90d', 7776000], ['1y', 31536000], ['custom', null],
 ];
 const REFRESH_MS = 15000;
 
@@ -39,6 +39,9 @@ function fmtDuration(s) {
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
   return d ? `${d}d ${h}h ${m}m` : h ? `${h}h ${m}m` : `${m}m ${Math.floor(s % 60)}s`;
 }
+// "AU" -> 🇦🇺 (regional-indicator emoji; Windows shows the letters instead)
+const flag = (cc) => (cc && /^[A-Z]{2}$/.test(cc)
+  ? `<span class="flag">${String.fromCodePoint(...[...cc].map((c) => 0x1f1a5 + c.charCodeAt(0)))}</span>` : '');
 const fmtTime = (ts) => new Date(ts * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 function fmtAgo(ts) {
   const s = Date.now() / 1000 - ts;
@@ -147,7 +150,7 @@ function chipFilter(el, key, items, onChange, defaultOff = []) {
       const chip = document.createElement('span');
       chip.className = 'chip';
       chip.dataset.id = it.id;
-      chip.innerHTML = `<i style="background:${it.color}"></i>${esc(it.label)}`;
+      chip.innerHTML = `<i style="background:${it.color}"></i>${flag(it.flag)}${esc(it.label)}`;
       chip.title = it.title || it.label;
       chip.addEventListener('click', (e) => {
         if (e.altKey || e.metaKey || e.ctrlKey || e.detail === 2) {
@@ -272,7 +275,8 @@ function memberTile(p, color) {
   const how = p.method === 'region' ? 'TCP to the fastest Ookla server' : p.method.toUpperCase();
   return `
     <div class="tile member" title="${esc(p.host || 'looking up server…')} · ${how}">
-      <div class="name"><span class="dot ${tileStatus(p)}"></span><span>${esc(p.name)}</span><i class="swatch" style="background:${color}"></i></div>
+      <div class="name"><span class="dot ${tileStatus(p)}"></span><span>${flag(p.flag)}${esc(p.name)}</span><i class="swatch" style="background:${color}"></i></div>
+      ${p.where ? `<div class="where">${esc(p.where)}</div>` : ''}
       <div class="value">${p.last == null ? (p.last_ts ? '<span style="color:var(--bad)">timeout</span>' : '—') : fmtMs(p.last) + '<small>ms</small>'}</div>
       <div class="host">avg ${fmtMs(p.avg5m)} · loss ${fmtPct(p.loss5m)}</div>
     </div>`;
@@ -318,9 +322,16 @@ async function refreshSummary() {
       </div>`;
     $('#speed-summary').innerHTML = col('Download', 'download_mbps', 'Mbps', fmtMbps)
       + col('Upload', 'upload_mbps', 'Mbps', fmtMbps) + col('Ping', 'ping_ms', 'ms', fmtMs);
+    const a7 = avg['7d'] || {};
+    $('#speed-details').innerHTML = [
+      ['ISP', esc(ok.isp || '—')],
+      ['Jitter', `${fmtMs(ok.jitter_ms)} ms`, `7d avg ${fmtMs(a7.jitter_ms)}`],
+      ['Packet loss', ok.packet_loss == null ? '—' : fmtPct(ok.packet_loss), `7d avg ${a7.packet_loss == null ? '—' : fmtPct(a7.packet_loss)}`],
+      ['Data used', fmtBytes(ok.data_bytes), `24h ${fmtBytes(avg['24h']?.data_bytes)} · 7d ${fmtBytes(a7.data_bytes)}`],
+    ].map(([l, v, sub]) => `<div><div class="label">${l}</div><div class="val">${v}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`).join('');
   }
   const tests = st.averages?.['7d']?.tests;
-  let meta = ok ? `Latest: ${esc(ok.isp || '')} → ${esc(ok.server_name || '')}${ok.server_location ? ', ' + esc(ok.server_location) : ''} · ${fmtAgo(ok.ts)}${tests ? ` · ${tests} tests in 7d` : ''}` : '';
+  let meta = ok ? `Latest: ${esc(ok.server_name || '')}${ok.server_location ? ', ' + esc(ok.server_location) : ''} · ${fmtAgo(ok.ts)}${tests ? ` · ${tests} tests in 7d` : ''}` : '';
   if (st.latest && st.latest.error) meta += `<div class="error-text">Last run failed (${fmtAgo(st.latest.ts)}): ${esc(st.latest.error)}</div>`;
   const hm = (ts) => new Date(ts * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
   if (CONFIG.speedtest.enabled && CONFIG.speedtest.next_run) meta += `<div>Next scheduled run: ${hm(CONFIG.speedtest.next_run)}${CONFIG.speedtest.next_regions_run ? ` · regions: ${hm(CONFIG.speedtest.next_regions_run)}` : ''}</div>`;
@@ -328,23 +339,28 @@ async function refreshSummary() {
   $('#speed-meta').innerHTML = meta;
 
   const regions = st.regions || [];
-  $('#region-table').hidden = !regions.length;
-  if (regions.length) {
-    const avgCells = (a) => `<td>${fmtMbps(a?.download_mbps)}</td><td>${fmtMbps(a?.upload_mbps)}</td><td>${fmtMs(a?.ping_ms)}</td>`;
-    const row = (name, x, avg, cls = '') => `<tr class="${cls}"><td>${name}</td>${
-      !x || x.ts == null ? '<td colspan="3" class="muted" style="text-align:left">not tested yet</td>'
-      : x.error ? `<td colspan="3" class="error-text" style="text-align:left" title="${esc(x.error)}">failed</td>`
-      : `<td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td>`}
-      ${avgCells(avg)}<td>${x?.ts ? fmtAgo(x.ts) : ''}</td></tr>`;
+  const conns = st.connections || [];
+  $('#region-table').hidden = !regions.length && !conns.length;
+  if (regions.length || conns.length) {
+    const latestCells = (x) => (!x || x.ts == null ? '<td colspan="6" class="muted" style="text-align:left">not tested yet</td>'
+      : x.error ? `<td colspan="6" class="error-text" style="text-align:left" title="${esc(x.error)}">failed: ${esc(x.error.slice(0, 60))}</td>`
+      : `<td style="text-align:left">${esc(x.isp || '')}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td>
+         <td>${fmtMs(x.ping_ms)}</td><td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '—' : fmtPct(x.packet_loss)}</td>`);
+    const avgCells = (a) => `<td>${fmtMbps(a?.download_mbps)}</td><td>${fmtMbps(a?.upload_mbps)}</td><td>${fmtMs(a?.ping_ms)}</td><td>${fmtBytes(a?.data_bytes)}</td>`;
+    const row = (name, x, a, cls = '', action = '') => `<tr class="${cls}"><td>${name}</td>${latestCells(x)}${avgCells(a)}
+      <td>${x?.ts ? fmtAgo(x.ts) : ''}</td><td>${action}</td></tr>`;
     $('#region-table').innerHTML = `
       <thead>
-        <tr><th></th><th colspan="3" class="span">Latest</th><th colspan="3" class="span">7-day average</th><th></th></tr>
-        <tr><th>Server</th><th>Down</th><th>Up</th><th>Ping</th><th>Down</th><th>Up</th><th>Ping</th><th>Tested</th></tr>
+        <tr><th></th><th colspan="6" class="span">Latest</th><th colspan="4" class="span">Last 7 days</th><th></th><th></th></tr>
+        <tr><th>Test</th><th style="text-align:left">ISP</th><th>Down</th><th>Up</th><th>Ping</th><th>Jitter</th><th>Loss</th>
+            <th>Avg down</th><th>Avg up</th><th>Avg ping</th><th>Data</th><th>Tested</th><th></th></tr>
       </thead>
       <tbody>
         ${row('<b>Closest server</b>', ok, st.averages?.['7d'], 'strong')}
-        ${regions.map((x) => row(esc(x.name), x, x.avg7d)).join('')}
-        <tr class="strong total"><td><b>All regions</b></td><td colspan="3" class="muted" style="text-align:left">${st.regions_avg?.['7d']?.tests ?? 0} tests in 7 days</td>${avgCells(st.regions_avg?.['7d'])}<td></td></tr>
+        ${conns.map((x) => row(`<b>${esc(x.name)}</b>`, x.ts != null && x.error && x.last_ok ? x.last_ok : x, x.avg7d, 'strong',
+          CONFIG.speedtest.enabled ? `<button class="link run-conn" data-conn="${esc(x.name)}">Run</button>` : '')).join('')}
+        ${regions.map((x) => row(`${flag(x.flag)}${esc(x.name)}`, x, x.avg7d)).join('')}
+        ${regions.length ? `<tr class="strong total"><td><b>All regions</b></td><td colspan="6" class="muted" style="text-align:left">${st.regions_avg?.['7d']?.tests ?? 0} tests in 7 days</td>${avgCells(st.regions_avg?.['7d'])}<td></td><td></td></tr>` : ''}
       </tbody>`;
   }
 
@@ -378,7 +394,8 @@ async function refreshSystem() {
   ];
   if (s.temp != null) items.push(['Temperature', `${s.temp.toFixed(1)} °C`, bar(s.temp)]);
   if (s.mem && s.mem.swap_total) items.push(['Swap', fmtBytes(s.mem.swap_used), `of ${fmtBytes(s.mem.swap_total)}`]);
-  items.push(['Database', fmtBytes(s.db_size), `${CONFIG.retention_days}-day retention`]);
+  const keep = +CONFIG.retention_days ? `kept ${CONFIG.retention_days} days` : 'history kept forever';
+  items.push(['Database', fmtBytes(s.db_size), keep]);
   $('#sys-body').innerHTML = items.map(([l, v, sub]) =>
     `<div class="sys-item"><div class="label">${l}</div><div class="val">${v}</div><div class="sub">${sub}</div></div>`).join('');
 }
@@ -391,32 +408,65 @@ function niceCeil(v) {
   return [1, 2, 2.5, 5, 10].map((m) => m * p).find((x) => x >= v);
 }
 
-// Y-axis that fits the average lines (spikes and band edges get clipped) plus zoom buttons.
+// Y-axis that fits the average lines (spikes and band edges get clipped), with zoom buttons and
+// vertical panning (drag the chart with the mouse, or use the arrow buttons).
 function yZoom(root, key, chart) {
   let scale = store.get(`yscale:${key}`, 1); // 0 = show everything
+  let offset = 0;                             // axis minimum when panned
   let auto;
   const bar = document.createElement('div');
   bar.className = 'zoom';
-  bar.innerHTML = `<button data-z="in" title="Zoom in">+</button><button data-z="out" title="Zoom out">−</button>
+  bar.innerHTML = `<button data-z="up" title="Pan up">▲</button><button data-z="down" title="Pan down">▼</button>
+    <button data-z="in" title="Zoom in">+</button><button data-z="out" title="Zoom out">−</button>
     <button data-z="fit" title="Fit to the averages">Fit</button><button data-z="all" title="Show everything">All</button>`;
-  $('.chart-wrap', root).appendChild(bar);
+  const wrap = $('.chart-wrap', root);
+  wrap.appendChild(bar);
   chart.options.layout = { padding: { top: 30 } }; // room for the buttons
+  const span = () => (auto || 0) * scale;
   const apply = () => {
-    chart.options.scales.y.max = scale && auto ? +(auto * scale).toPrecision(3) : undefined;
+    const zoomed = scale && auto;
+    chart.options.scales.y.min = zoomed ? +offset.toPrecision(4) : undefined;
+    chart.options.scales.y.max = zoomed ? +(offset + span()).toPrecision(4) : undefined;
     bar.querySelectorAll('button').forEach((b) => b.classList.toggle('on',
-      (b.dataset.z === 'fit' && scale === 1) || (b.dataset.z === 'all' && scale === 0)));
+      (b.dataset.z === 'fit' && scale === 1 && !offset) || (b.dataset.z === 'all' && scale === 0)));
+    bar.querySelectorAll('[data-z="up"],[data-z="down"]').forEach((b) => { b.disabled = !zoomed; });
+    wrap.classList.toggle('pannable', !!zoomed);
+  };
+  const zoomTo = (newScale) => { // anchored at 0 until panned, then keep the middle of the view in place
+    const mid = offset + span() / 2;
+    scale = newScale;
+    offset = offset ? Math.max(0, mid - span() / 2) : 0;
   };
   bar.addEventListener('click', (e) => {
-    const z = e.target.dataset.z;
+    const z = e.target.closest('button')?.dataset.z;
     if (!z) return;
-    if (z === 'in') scale = (scale || 4) / 2;
-    if (z === 'out') scale = scale ? Math.min(64, scale * 2) : 0;
-    if (z === 'fit') scale = 1;
-    if (z === 'all') scale = 0;
+    if (z === 'up') offset += span() * 0.25;
+    if (z === 'down') offset = Math.max(0, offset - span() * 0.25);
+    if (z === 'in') { if (scale) zoomTo(scale / 2); else { scale = 0.5; offset = 0; } }
+    if (z === 'out') { if (scale && scale < 64) zoomTo(scale * 2); }
+    if (z === 'fit') { scale = 1; offset = 0; }
+    if (z === 'all') { scale = 0; offset = 0; }
     store.set(`yscale:${key}`, scale);
     apply();
     chart.update();
   });
+  // mouse drag pans vertically (touch keeps normal page scrolling; use the arrow buttons there)
+  let drag = null;
+  chart.canvas.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'mouse' || e.button !== 0 || !scale || !auto) return;
+    drag = { y: e.clientY, offset };
+    chart.canvas.setPointerCapture(e.pointerId);
+  });
+  chart.canvas.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const h = chart.chartArea.bottom - chart.chartArea.top;
+    offset = Math.max(0, drag.offset + ((e.clientY - drag.y) / h) * span());
+    apply();
+    chart.update('none');
+  });
+  const end = () => { drag = null; };
+  chart.canvas.addEventListener('pointerup', end);
+  chart.canvas.addEventListener('pointercancel', end);
   return {
     // values: the numbers the axis should fit (average lines); floor: minimum axis max
     fit(values, floor = 1) {
@@ -505,6 +555,9 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
 }
 
 // ------------------------------------------------------------------ speedtest panel
+const flagChar = (cc) => (cc && /^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map((c) => 0x1f1a5 + c.charCodeAt(0))) + ' ' : '');
+const testName = (label) => (label === 'Auto' ? 'Closest server' : flag(CONFIG.speedtest.flags?.[label]) + esc(label));
+
 function speedPanel() {
   const root = $('#panel-speed');
   const viewSel = $('.server', root);
@@ -524,7 +577,7 @@ function speedPanel() {
     const labels = [...new Set(['Auto', ...CONFIG.speedtest.regions, ...d.results.map((x) => x.label)])]
       .filter((l) => l === 'Auto' || d.results.some((x) => x.label === l) || CONFIG.speedtest.regions.includes(l));
     const cur = viewSel.value || store.get('speed:view', 'Auto');
-    viewSel.innerHTML = labels.map((l) => `<option value="${esc(l)}">${l === 'Auto' ? 'Closest server' : esc(l)}</option>`).join('')
+    viewSel.innerHTML = labels.map((l) => `<option value="${esc(l)}">${l === 'Auto' ? 'Closest server' : (flagChar(CONFIG.speedtest.flags?.[l]) + esc(l))}</option>`).join('')
       + (labels.length > 1 ? `<option value="${COMPARE}">Compare all</option>` : '');
     viewSel.hidden = labels.length < 2;
     viewSel.value = [...labels, COMPARE].includes(cur) ? cur : 'Auto';
@@ -559,14 +612,15 @@ function speedPanel() {
     const avg = (k) => (ok.length ? ok.reduce((a, x) => a + (x[k] || 0), 0) / ok.length : null);
     const recent = rows.slice(-15).reverse();
     $('.stats', root).innerHTML = `
-      <thead><tr><th>Time</th><th>Test</th><th>Down Mbps</th><th>Up Mbps</th><th>Ping ms</th><th>Jitter ms</th><th>Loss</th><th>Server</th><th></th></tr></thead>
+      <thead><tr><th>Time</th><th>Test</th><th>Down Mbps</th><th>Up Mbps</th><th>Ping ms</th><th>Jitter ms</th><th>Loss</th><th>Data</th><th>ISP</th><th>Server</th><th></th></tr></thead>
       <tbody>
         <tr><td><b>Average (${ok.length} tests)</b></td><td></td><td><b>${fmtMbps(avg('download_mbps'))}</b></td><td><b>${fmtMbps(avg('upload_mbps'))}</b></td>
-          <td><b>${fmtMs(avg('ping_ms'))}</b></td><td><b>${fmtMs(avg('jitter_ms'))}</b></td><td></td><td></td><td></td></tr>
+          <td><b>${fmtMs(avg('ping_ms'))}</b></td><td><b>${fmtMs(avg('jitter_ms'))}</b></td><td></td><td><b>${fmtBytes(ok.reduce((a, x) => a + (x.data_bytes || 0), 0))}</b></td><td></td><td></td><td></td></tr>
         ${recent.map((x) => x.error
-          ? `<tr><td>${fmtTime(x.ts)}</td><td>${esc(x.label)}</td><td colspan="7" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
-          : `<tr><td>${fmtTime(x.ts)}</td><td>${esc(x.label)}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td>
-             <td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '—' : fmtPct(x.packet_loss)}</td>
+          ? `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}</td><td colspan="9" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
+          : `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td>
+             <td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '—' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td>
+             <td style="text-align:left">${esc(x.isp || '')}</td>
              <td style="text-align:left">${esc(x.server_name)}${x.server_location ? ', ' + esc(x.server_location) : ''}</td>
              <td>${x.result_url ? `<a href="${esc(x.result_url)}" target="_blank" rel="noopener">result ↗</a>` : ''}</td></tr>`).join('')}
       </tbody>`;
@@ -631,6 +685,9 @@ async function main() {
   }
   themeChartDefaults();
   CONFIG = await api('config');
+  // ?expand=Gaming,DNS opens those ping groups (handy for bookmarks and wall displays)
+  const expand = new URLSearchParams(location.search).get('expand');
+  if (expand) store.set('tiles:open', expand.split(','));
 
   PING_COLORS = groupColors(CONFIG.ping.targets);
   const pingItems = CONFIG.ping.targets.map((t) => ({
@@ -656,7 +713,13 @@ async function main() {
     const domainSel = $('.domain', dnsRoot);
     domainSel.innerHTML += CONFIG.dns.domains.map((d) => `<option>${esc(d)}</option>`).join('');
     domainSel.value = store.get('dns:domain', '');
-    const dnsItems = CONFIG.dns.servers.map((s, i) => ({ id: s.id, label: s.name, color: PALETTE[i % PALETTE.length], title: s.host }));
+    const dnsColors = groupColors(CONFIG.dns.servers.map((s) => ({ id: s.id, group: s.name })));
+    const dnsItems = CONFIG.dns.servers.map((s) => ({
+      id: s.id, label: s.family === 6 ? `${s.name} v6` : s.name, color: dnsColors[s.id], title: s.host, group: s.group,
+    }));
+    if (!CONFIG.dns.ipv6_available && CONFIG.dns.servers.some((s) => s.family === 6)) {
+      $('#dns-note').textContent = "This network doesn't have IPv6 internet, so the IPv6 resolvers aren't being tested.";
+    }
     const p = latencyPanel({
       id: 'panel-dns', endpoint: 'dns', keyParam: 'servers', items: dnsItems, defaultRange: '6h',
       lossLabel: 'Failures', extraParams: () => ({ domain: domainSel.value }),
@@ -684,6 +747,12 @@ async function main() {
     }, 4000);
   };
   $('#run-speedtest').addEventListener('click', () => startTest('main'));
+  $('#region-table').addEventListener('click', (e) => {
+    const b = e.target.closest('.run-conn');
+    if (b && confirm(`Run a speedtest over ${b.dataset.conn} now? It uses a few hundred MB of that connection's data.`)) {
+      startTest(`conn:${encodeURIComponent(b.dataset.conn)}`);
+    }
+  });
   $('#run-regions').addEventListener('click', () => {
     const n = CONFIG.speedtest.regions.length;
     if (confirm(`Run speedtests to ${n} region${n > 1 ? 's' : ''} now? Each test uses a few hundred MB.`)) startTest('regions');

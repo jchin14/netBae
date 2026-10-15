@@ -6,6 +6,9 @@ into SQLite and serves a dashboard + JSON API. Python standard library only.
 """
 import argparse
 import copy
+import ctypes
+import ctypes.util
+import ipaddress
 import json
 import logging
 import math
@@ -38,11 +41,13 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 DEFAULT_CONFIG = {
     "web": {"host": "0.0.0.0", "port": 80},
-    "storage": {"database": "/var/lib/netbae/netbae.db", "retention_days": 30, "raw_retention_days": 7},
+    # raw samples -> 1-minute summaries -> hourly summaries; 0 = keep forever
+    "storage": {"database": "/var/lib/netbae/netbae.db", "raw_retention_days": 7, "minute_retention_days": 90,
+                "retention_days": 0},
     "ping": {
         "interval_seconds": 5,
         "offset_seconds": 0,
@@ -56,8 +61,9 @@ DEFAULT_CONFIG = {
             {"name": "YouTube", "host": "youtube.com", "group": "Google"},
             {"name": "Netflix", "host": "www.netflix.com", "group": "Streaming"},
             {"name": "Twitch", "host": "twitch.tv", "group": "Streaming"},
-            {"name": "Steam", "host": "steampowered.com", "group": "Gaming"},
-            {"name": "Discord", "host": "discord.com", "group": "Gaming"},
+            {"name": "Steam & CS2", "host": "valve:auto", "group": "Gaming"},
+            {"name": "Fortnite", "host": "epic:auto", "group": "Gaming"},
+            {"name": "Discord voice", "host": "discord:auto", "group": "Gaming"},
             {"name": "Facebook", "host": "facebook.com", "group": "Social"},
             {"name": "Reddit", "host": "reddit.com", "group": "Social"},
             {"name": "Microsoft", "host": "microsoft.com", "group": "Cloud & tech"},
@@ -81,8 +87,11 @@ DEFAULT_CONFIG = {
         "servers": [
             {"name": "Router", "host": "gateway"},
             {"name": "Cloudflare", "host": "1.1.1.1"},
-            {"name": "Google DNS", "host": "8.8.8.8"},
+            {"name": "Google", "host": "8.8.8.8"},
             {"name": "Quad9", "host": "9.9.9.9"},
+            {"name": "Cloudflare", "host": "2606:4700:4700::1111"},
+            {"name": "Google", "host": "2001:4860:4860::8888"},
+            {"name": "Quad9", "host": "2620:fe::fe"},
         ],
         "domains": ["google.com", "microsoft.com", "facebook.com", "reddit.com", "netflix.com"],
     },
@@ -98,6 +107,8 @@ DEFAULT_CONFIG = {
         "timeout_seconds": 300,
     },
     "system": {"interval_seconds": 30, "offset_seconds": 0, "disk_path": "/"},
+    # extra internet connections tested through a different source IP or interface (e.g. a 5G backup)
+    "connections": [],
 }
 
 
@@ -111,11 +122,17 @@ def default_gateway():
             f = line.split()
             if len(f) > 2 and f[1] == "00000000" and f[2] != "00000000":
                 return socket.inet_ntoa(struct.pack("<L", int(f[2], 16)))
-    try:  # macOS / BSD, for local development
-        out = subprocess.run(["route", "-n", "get", "default"], capture_output=True, text=True, timeout=5).stdout
-        m = re.search(r"gateway:\s*(\S+)", out)
-        return m.group(1) if m else None
-    except OSError:
+    try:  # macOS / BSD
+        out = subprocess.run(["/sbin/route", "-n", "get", "default"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"gateway:\s*(\S+)", out)
+    if not m:  # e.g. a VPN that routes everything through an interface with no gateway address
+        return None
+    try:
+        return str(ipaddress.IPv4Address(m.group(1)))
+    except ValueError:  # "link#12" and the like
         return None
 
 
@@ -128,6 +145,12 @@ def normalize_target(t, default_port=443):
         host = default_gateway() or "gateway"
         if host == "gateway":
             log.warning("could not detect the default gateway; set the router's IP in the config")
+    provider, _, pref = host.partition(":")
+    if provider.lower() in GAME_PROVIDERS and not is_gateway:
+        # nearest game/voice server, found at runtime: "valve:auto", "epic:oce", "discord:sydney" ...
+        return {"id": host.lower(), "name": t.get("name") or GAME_PROVIDERS[provider.lower()], "host": host.lower(),
+                "method": "game", "port": None, "group": str(t.get("group") or "Gaming"),
+                "provider": provider.lower(), "pref": (pref or "auto").lower()}
     method = str(t.get("method", "icmp")).lower()
     if method not in ("icmp", "tcp"):
         raise ValueError(f"target {host}: method must be 'icmp' or 'tcp'")
@@ -140,6 +163,78 @@ def normalize_target(t, default_port=443):
         name = f"{host}:{port} (TCP)"
     return {"id": tid, "name": name, "host": host, "method": method, "port": port,
             "group": str(t.get("group") or "Other")}
+
+
+# --------------------------------------------------------------------------- game / voice servers
+# Game companies don't publish ping targets, so these use what their own clients use:
+#   valve   - Steam Datagram Relay POPs (Steam, CS2, Dota 2 traffic goes through these relays)
+#   epic    - Epic's regional ping beacons (Fortnite region selection)
+#   discord - Discord's RTC latency service, which lists the nearest voice servers
+GAME_PROVIDERS = {"valve": "Steam & CS2", "epic": "Fortnite", "discord": "Discord voice"}
+EPIC_REGIONS = {"oce": "Oceania", "naw": "NA West", "nac": "NA Central", "nae": "NA East", "eu": "Europe",
+                "asia": "Asia", "me": "Middle East", "br": "Brazil"}
+
+
+def http_json(url, timeout=15):
+    req = urllib.request.Request(url, headers={"User-Agent": f"netBae/{VERSION}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def nearest(candidates, probe):
+    """Pick the candidate with the lowest probe() latency (probes run in parallel)."""
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        times = list(pool.map(probe, candidates))
+    ranked = sorted((t, i) for i, t in enumerate(times) if t is not None)
+    return candidates[ranked[0][1]] if ranked else None
+
+
+def resolve_game_server(provider, pref="auto", bind=None):
+    """-> {host, port, method, label} for the game/voice server to measure, or None."""
+    if provider == "discord":
+        regions = [r for r in http_json("https://latency.discord.media/rtc") if r.get("ips")]
+        region = next((r for r in regions if pref in ("auto", r["region"])), None)
+        if region:  # the service lists the nearest voice regions first; voice servers answer on TCP 443
+            return {"host": region["ips"][0], "port": 443, "method": "tcp", "label": region["region"].title()}
+        return None
+    if provider == "valve":
+        pops = {k: v for k, v in http_json(
+            "https://api.steampowered.com/ISteamApps/GetSDRConfig/v1/?appid=730")["pops"].items()
+            if v.get("relays") and v["relays"][0].get("ipv4")}
+        code = pref if pref in pops else nearest(sorted(pops), lambda k: icmp_ping(pops[k]["relays"][0]["ipv4"], 1, bind))
+        if not code:
+            return None
+        return {"host": pops[code]["relays"][0]["ipv4"], "port": None, "method": "icmp",
+                "label": pops[code].get("desc") or code}
+    if provider == "epic":
+        code = pref if pref in EPIC_REGIONS else nearest(
+            list(EPIC_REGIONS), lambda k: icmp_ping(f"ping-{k}.ds.on.epicgames.com", 2, bind))
+        if not code:
+            return None
+        return {"host": f"ping-{code}.ds.on.epicgames.com", "port": None, "method": "icmp", "label": EPIC_REGIONS[code]}
+    return None
+
+
+# --------------------------------------------------------------------------- connections
+
+def normalize_connection(c):
+    """An extra internet connection (e.g. 5G backup) measured through its own source IP or interface."""
+    if not isinstance(c, dict) or not c.get("name") or not c.get("bind"):
+        raise SystemExit("[[connections]] entries need a name and a bind (source IP or interface name)")
+    name, bind = str(c["name"]), str(c["bind"])
+    try:
+        ipaddress.ip_address(bind)
+    except ValueError:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", bind):
+            raise SystemExit(f"connection {name}: bind must be an IP address or interface name")
+    targets = []
+    for t in c.get("targets") or ["1.1.1.1", "8.8.8.8", "google.com"]:
+        t = normalize_target(t)
+        targets.append(dict(t, id=f"{name}|{t['id']}", group=name, bind=bind, connection=name))
+    return {"name": name, "bind": bind, "targets": targets,
+            "speedtest": bool(c.get("speedtest", True)),
+            "speedtest_interval_minutes": float(c.get("speedtest_interval_minutes", 1440)),
+            "speedtest_offset_minutes": float(c.get("speedtest_offset_minutes", 45))}
 
 
 # Built-in speedtest regions: name -> (Ookla search term, server city name or None for any, country).
@@ -164,6 +259,10 @@ REGIONS = {
     "Cape Town": ("Cape Town", "Cape Town", "South Africa"),
     "Toronto": ("Toronto", "Toronto, ON", "Canada"),
 }
+REGION_FLAGS = {"London": "GB", "New York": "US", "Tokyo": "JP", "Amsterdam": "NL", "Singapore": "SG",
+                "Sydney": "AU", "Auckland": "NZ", "Los Angeles": "US", "Hong Kong": "HK", "Milan": "IT", "Paris": "FR",
+                "Oman": "OM", "Delhi": "IN", "Guam": "GU", "Perth": "AU", "São Paulo": "BR", "Cape Town": "ZA",
+                "Toronto": "CA"}
 REGION_ALIASES = {"sao paulo": "São Paulo", "new delhi": "Delhi", "muscat": "Oman", "milano": "Milan",
                   "nyc": "New York", "la": "Los Angeles", "hk": "Hong Kong"}
 OOKLA_SEARCH = "https://www.speedtest.net/api/js/servers?engine=js&limit=100&https_functional=true&search="
@@ -173,11 +272,12 @@ def normalize_region(r):
     """A region is a built-in name ("Tokyo"), {name, city, country} or {name, server_id}."""
     if isinstance(r, dict):
         if "server_id" in r:
-            return {"name": r.get("name") or f"Server {r['server_id']}", "server_id": int(r["server_id"])}
+            return {"name": r.get("name") or f"Server {r['server_id']}", "server_id": int(r["server_id"]),
+                    "flag": str(r.get("flag", "")).upper()}
         if not r.get("city") or not r.get("country"):
             raise SystemExit(f"[speedtest] region {r!r} needs city and country (or server_id)")
         return {"name": r.get("name") or r["city"], "search": r.get("search") or r["city"],
-                "city": r["city"], "country": r["country"]}
+                "city": r["city"], "country": r["country"], "flag": str(r.get("flag", "")).upper()}
     key = str(r).strip()
     name = REGION_ALIASES.get(key.lower()) or next((n for n in REGIONS if n.lower() == key.lower()), None)
     if name is None:
@@ -186,7 +286,7 @@ def normalize_region(r):
         log.warning("unknown speedtest region %r skipped%s. Built-in regions: %s", key, hint, ", ".join(REGIONS))
         return None
     search, city, country = REGIONS[name]
-    return {"name": name, "search": search, "city": city, "country": country}
+    return {"name": name, "search": search, "city": city, "country": country, "flag": REGION_FLAGS.get(name, "")}
 
 
 def find_region_servers(region):
@@ -220,10 +320,12 @@ def find_region_servers(region):
 
 
 def find_speedtest(binary):
-    """Resolve 'auto' to the Ookla CLI: /usr/bin (official package) or /usr/local/bin (tarball)."""
+    """Resolve 'auto' to the Ookla CLI: /usr/bin (official package), /usr/local/bin (tarball)
+    or Homebrew on macOS."""
     if binary and binary != "auto":
         return binary
-    for cand in ("/usr/bin/speedtest", "/usr/local/bin/speedtest", shutil.which("speedtest")):
+    for cand in ("/usr/bin/speedtest", "/usr/local/bin/speedtest", "/opt/homebrew/bin/speedtest",
+                 shutil.which("speedtest")):
         if cand and os.access(cand, os.X_OK):
             return cand
     return "speedtest"
@@ -239,6 +341,8 @@ def load_config(path):
         for section, values in user.items():
             if isinstance(values, dict):
                 cfg.setdefault(section, {}).update(values)
+            elif section == "connections" and isinstance(values, list):
+                cfg["connections"] = values
     else:
         log.warning("config %s not found, using built-in defaults", path)
 
@@ -246,10 +350,19 @@ def load_config(path):
     cfg["ping"]["regions"] = [r for r in map(normalize_region, cfg["ping"]["regions"]) if r]
     for r in cfg["ping"]["regions"]:
         cfg["ping"]["targets"].append({"id": f"region:{r['name']}", "name": r["name"], "host": None,
-                                       "method": "region", "port": None, "group": "Regions", "region": r})
+                                       "method": "region", "port": None, "group": "Regions", "region": r,
+                                       "flag": r["flag"]})
+    cfg["connections"] = [normalize_connection(c) for c in cfg["connections"]]
+    for c in cfg["connections"]:
+        cfg["ping"]["targets"].extend(c["targets"])
     cfg["dns"]["servers"] = [normalize_target(t) for t in cfg["dns"]["servers"]]
     for s in cfg["dns"]["servers"]:
         s["id"] = s["id"].replace("tcp://", "").rsplit(":", 1)[0] if s["method"] == "tcp" else s["id"]
+        s["family"] = 6 if ":" in s["host"] else 4
+        s["group"] = f"IPv{s['family']}"
+    st = cfg["storage"]
+    if float(st["retention_days"]) > 0:  # never keep finer data longer than the overall retention
+        st["minute_retention_days"] = min(float(st["minute_retention_days"]), float(st["retention_days"]))
     cfg["speedtest"]["binary"] = find_speedtest(cfg["speedtest"]["binary"])
     cfg["speedtest"]["servers"] = [int(s) for s in cfg["speedtest"]["servers"]]
     cfg["speedtest"]["regions"] = [r for r in map(normalize_region, cfg["speedtest"]["regions"]) if r]
@@ -321,13 +434,19 @@ CREATE TABLE IF NOT EXISTS dns_1m (
     server TEXT NOT NULL, domain TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
     avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL, PRIMARY KEY (server, domain, ts)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS dns_1m_ts ON dns_1m(ts);
+CREATE TABLE IF NOT EXISTS ping_1h (
+    target TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
+    avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL, PRIMARY KEY (target, ts)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS dns_1h (
+    server TEXT NOT NULL, domain TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
+    avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL, PRIMARY KEY (server, domain, ts)) WITHOUT ROWID;
 """
 
 # Raw samples are summarised into 1-minute rows (count, avg, min, max, p5, p95) so long
 # ranges stay fast and raw data can be dropped after raw_retention_days.
 SERIES = {
-    "ping": {"raw": "ping", "rollup": "ping_1m", "keys": ["target"], "val": "rtt"},
-    "dns": {"raw": "dns", "rollup": "dns_1m", "keys": ["server", "domain"], "val": "ms"},
+    "ping": {"raw": "ping", "rollup": "ping_1m", "hourly": "ping_1h", "keys": ["target"], "val": "rtt"},
+    "dns": {"raw": "dns", "rollup": "dns_1m", "hourly": "dns_1h", "keys": ["server", "domain"], "val": "ms"},
 }
 ROLLUP_ABOVE_SECONDS = 6 * 3600  # whole-range stats longer than this come from the 1-minute table
 
@@ -343,6 +462,18 @@ def pct_select(val, bucket_expr, keys, table, where):
         f"   COUNT({val}) OVER (PARTITION BY {part}) AS cnt"
         f"   FROM {table} WHERE {where})"
         f" GROUP BY {', '.join(keys)}, b")
+
+
+COMBINE = ("SUM(n), SUM(ok), SUM(avg * ok) / NULLIF(SUM(ok), 0), MIN(mn), MAX(mx),"
+           " SUM(p5 * ok) / NULLIF(SUM(ok), 0), SUM(p95 * ok) / NULLIF(SUM(ok), 0)")
+
+
+def rollup_hourly(db, spec, frm, to):
+    keys = ", ".join(spec["keys"])
+    db.conn().execute(
+        f"INSERT OR REPLACE INTO {spec['hourly']} ({keys}, ts, n, ok, avg, mn, mx, p5, p95)"
+        f" SELECT {keys}, CAST(ts / 3600 AS INTEGER) * 3600 AS h, {COMBINE}"
+        f" FROM {spec['rollup']} WHERE ts >= ? AND ts < ? GROUP BY {keys}, h", (frm, to))
 
 
 def rollup(db, spec, frm, to):
@@ -362,9 +493,9 @@ class DB:
         self.local = threading.local()
         self.conn().executescript(SCHEMA)
         cols = {r[1] for r in self.query("PRAGMA table_info(speedtest)")}
-        for col in ("kind", "label"):  # added in 1.1
+        for col, typ in (("kind", "TEXT"), ("label", "TEXT"), ("data_bytes", "INTEGER")):  # added in 1.1/1.2
             if col not in cols:
-                self.conn().execute(f"ALTER TABLE speedtest ADD COLUMN {col} TEXT")
+                self.conn().execute(f"ALTER TABLE speedtest ADD COLUMN {col} {typ}")
 
     def conn(self):
         c = getattr(self.local, "c", None)
@@ -397,15 +528,36 @@ class DB:
 
 # --------------------------------------------------------------------------- probes
 
+SKIP = object()  # "no measurement this tick" (e.g. server not resolved yet)
+
 PING_RE = re.compile(r"time[=<]\s*([\d.]+)\s*ms")
 
 
-def icmp_ping(host, timeout):
+def is_ip(v):
+    try:
+        ipaddress.ip_address(v)
+        return True
+    except ValueError:
+        return False
+
+
+def bind_socket(s, bind):
+    """Send from a specific source IP, or out of a specific interface (Linux)."""
+    if not bind:
+        return
+    if is_ip(bind):
+        s.bind((bind, 0))
+    else:
+        s.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_BINDTODEVICE", 25), bind.encode())
+
+
+def icmp_ping(host, timeout, bind=None):
     t = str(max(1, math.ceil(timeout)))
     if sys.platform == "darwin":
-        cmd = ["ping", "-n", "-c", "1", "-t", t, host]
+        cmd = ["ping", "-n", "-c", "1", "-t", t] + ((["-S", bind] if is_ip(bind) else ["-b", bind]) if bind else [])
     else:
-        cmd = ["ping", "-n", "-c", "1", "-W", t, host]
+        cmd = ["ping", "-n", "-c", "1", "-W", t] + (["-I", bind] if bind else [])
+    cmd.append(host)
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5).stdout
     except (subprocess.TimeoutExpired, OSError):
@@ -414,14 +566,16 @@ def icmp_ping(host, timeout):
     return float(m.group(1)) if m else None
 
 
-def tcp_ping(host, port, timeout):
+def tcp_ping(host, port, timeout, bind=None):
+    family = socket.AF_INET if bind and is_ip(bind) and ":" not in bind else 0
     try:
-        family, stype, proto, _, addr = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
+        family, stype, proto, _, addr = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)[0]
     except OSError:
         return None
     s = socket.socket(family, stype, proto)
     s.settimeout(timeout)
     try:
+        bind_socket(s, bind)
         t0 = time.perf_counter()
         s.connect(addr)
         return (time.perf_counter() - t0) * 1000
@@ -473,19 +627,70 @@ def read_file(path):
         return None
 
 
+def run_cmd(args):
+    """stdout of a short-lived command, or None."""
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return p.stdout.strip() if p.returncode == 0 else None
+
+
+def sysctl(name):
+    return run_cmd(["/usr/sbin/sysctl", "-n", name])
+
+
+IS_MAC = sys.platform == "darwin"
+
+
+class MacCPU:
+    """Cumulative CPU ticks from the Mach host_statistics() call (macOS has no /proc/stat)."""
+    HOST_CPU_LOAD_INFO = 3
+    CPU_STATE_MAX = 4  # user, system, idle, nice
+
+    def __init__(self):
+        self.lib = ctypes.CDLL(ctypes.util.find_library("System") or "/usr/lib/libSystem.B.dylib")
+        self.lib.mach_host_self.restype = ctypes.c_uint32
+        self.lib.host_statistics.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_void_p,
+                                             ctypes.POINTER(ctypes.c_uint32)]
+        self.host = self.lib.mach_host_self()
+
+    def ticks(self):
+        info = (ctypes.c_uint32 * self.CPU_STATE_MAX)()
+        count = ctypes.c_uint32(self.CPU_STATE_MAX)
+        if self.lib.host_statistics(self.host, self.HOST_CPU_LOAD_INFO, info, ctypes.byref(count)) != 0:
+            return None
+        user, system, idle, nice = info
+        return idle, user + system + idle + nice
+
+
 class SystemStats:
     def __init__(self, disk_path):
         self.disk_path = disk_path
         self.prev_cpu = None
         self.latest = {}
+        self.mac_cpu = None
+        if IS_MAC:
+            try:
+                self.mac_cpu = MacCPU()
+            except (OSError, AttributeError):
+                log.warning("could not read CPU usage via host_statistics()")
 
-    def cpu_percent(self):
+    def cpu_ticks(self):
+        """(idle, total) cumulative CPU ticks."""
+        if self.mac_cpu:
+            return self.mac_cpu.ticks()
         line = read_file("/proc/stat")
         if not line:
             return None
         vals = [int(v) for v in line.splitlines()[0].split()[1:9]]
-        idle = vals[3] + vals[4]
-        total = sum(vals)
+        return vals[3] + vals[4], sum(vals)
+
+    def cpu_percent(self):
+        cur = self.cpu_ticks()
+        if not cur:
+            return None
+        idle, total = cur
         prev, self.prev_cpu = self.prev_cpu, (idle, total)
         if not prev or total == prev[1]:
             return None
@@ -495,7 +700,7 @@ class SystemStats:
     def meminfo():
         raw = read_file("/proc/meminfo")
         if not raw:
-            return None
+            return SystemStats.mac_meminfo() if IS_MAC else None
         info = {}
         for line in raw.splitlines():
             k, v = line.split(":", 1)
@@ -507,6 +712,35 @@ class SystemStats:
             "percent": round(100.0 * (total - avail) / total, 1) if total else None,
             "swap_total": info.get("SwapTotal", 0),
             "swap_used": info.get("SwapTotal", 0) - info.get("SwapFree", 0),
+        }
+
+    def mac_meminfo():
+        """Memory like Activity Monitor: used = app memory + wired + compressed."""
+        total, raw = sysctl("hw.memsize"), run_cmd(["/usr/bin/vm_stat"])
+        if not total or not raw:
+            return None
+        total = int(total)
+        m = re.search(r"page size of (\d+) bytes", raw)
+        page = int(m.group(1)) if m else 4096
+        pages = {k.strip().strip('"'): int(v.strip().rstrip("."))
+                 for k, v in (line.split(":", 1) for line in raw.splitlines()[1:] if ":" in line)
+                 if v.strip().rstrip(".").isdigit()}
+        app = pages.get("Anonymous pages", 0) - pages.get("Pages purgeable", 0)
+        used = (max(app, 0) + pages.get("Pages wired down", 0) + pages.get("Pages occupied by compressor", 0)) * page
+        used = min(used, total)
+        swap_total = swap_used = 0
+        swap = sysctl("vm.swapusage") or ""  # total = 2048.00M  used = 1024.50M  free = ...
+        units = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
+        for key, val, unit in re.findall(r"(total|used) = ([\d.]+)([KMG])", swap):
+            n = int(float(val) * units[unit])
+            if key == "total":
+                swap_total = n
+            else:
+                swap_used = n
+        return {
+            "total": total, "available": total - used, "used": used,
+            "percent": round(100.0 * used / total, 1) if total else None,
+            "swap_total": swap_total, "swap_used": swap_used,
         }
 
     def disk(self):
@@ -522,6 +756,7 @@ class SystemStats:
 
     @staticmethod
     def temperature():
+        # macOS only exposes sensors to root (powermetrics), so it has no temperature reading.
         best = None
         base = "/sys/class/thermal"
         try:
@@ -559,7 +794,10 @@ class SystemStats:
     @staticmethod
     def uptime():
         raw = read_file("/proc/uptime")
-        return float(raw.split()[0]) if raw else None
+        if raw:
+            return float(raw.split()[0])
+        m = re.search(r"sec = (\d+)", sysctl("kern.boottime") or "") if IS_MAC else None
+        return time.time() - int(m.group(1)) if m else None
 
     @staticmethod
     def primary_ip():
@@ -591,8 +829,16 @@ class SystemStats:
             if line.lower().startswith(("model name", "hardware")):
                 cpu_model = line.split(":", 1)[1].strip()
                 break
+        if IS_MAC:
+            model = model or sysctl("hw.model") or ""
+            cpu_model = cpu_model or sysctl("machdep.cpu.brand_string")
+            name, ver = run_cmd(["/usr/bin/sw_vers", "-productName"]), run_cmd(["/usr/bin/sw_vers", "-productVersion"])
+            if name and ver:
+                os_name = f"{name} {ver}"
+        hostname = (run_cmd(["/usr/sbin/scutil", "--get", "LocalHostName"]) if IS_MAC else None) \
+            or socket.gethostname()
         return {
-            "hostname": socket.gethostname(),
+            "hostname": hostname,
             "model": model or None,
             "os": os_name or f"{platform.system()} {platform.release()}",
             "kernel": platform.release(),
@@ -629,6 +875,8 @@ class Monitor:
         self.st_status = {"running": False}
         self.region_cache = {}
         self.region_lookups = set()
+        self.game_cache = {}
+        self.ipv6 = (0, None)  # (checked_at, available)
         self.started = time.time()
 
     def start(self):
@@ -648,6 +896,11 @@ class Monitor:
                 run_aligned("speedtest-regions", c["speedtest"]["regions_interval_minutes"] * 60,
                             c["speedtest"]["regions_offset_minutes"] * 60,
                             lambda: self.run_speedtest(scope="regions"))
+            for conn in c["connections"]:
+                if conn["speedtest"] and conn["speedtest_interval_minutes"] > 0:
+                    run_aligned(f"speedtest-{conn['name']}", conn["speedtest_interval_minutes"] * 60,
+                                conn["speedtest_offset_minutes"] * 60,
+                                lambda n=conn["name"]: self.run_speedtest(scope=f"conn:{n}"))
         run_aligned("rollup", 60, 10, self.rollup_all)
         run_aligned("cleanup", 3600, 1800, self.cleanup)
         self.pool.submit(self.collect_system)
@@ -655,9 +908,41 @@ class Monitor:
     # -- collectors
     def ping_one(self, t):
         timeout = self.cfg["ping"]["timeout_seconds"]
+        bind = t.get("bind")
+        if t["method"] == "game":
+            srv = self.game_server(t)
+            if not srv:
+                return SKIP
+            if srv["method"] == "tcp":
+                return tcp_ping(srv["host"], srv["port"], timeout, bind)
+            return icmp_ping(srv["host"], timeout, bind)
         if t["method"] == "tcp":
-            return tcp_ping(t["host"], t["port"], timeout)
-        return icmp_ping(t["host"], timeout)
+            return tcp_ping(t["host"], t["port"], timeout, bind)
+        return icmp_ping(t["host"], timeout, bind)
+
+    def game_server(self, t):
+        """Resolved game/voice server for a target (cached daily, looked up in the background)."""
+        key = (t["id"], t.get("bind"))
+        cached = self.game_cache.get(key)
+        if cached and cached[0] > 0 and time.time() - cached[0] < (86400 if cached[1] else 600):
+            return cached[1]
+        if not cached or cached[0] > 0:
+            self.game_cache[key] = (-1, cached[1] if cached else None)  # lookup in progress
+            self.pool.submit(self._lookup_game, t, key)
+        return self.game_cache[key][1]
+
+    def _lookup_game(self, t, key):
+        try:
+            srv = resolve_game_server(t["provider"], t["pref"], t.get("bind"))
+        except Exception as e:
+            log.warning("could not find a %s server: %s", t["provider"], e)
+            srv = None
+        self.game_cache[key] = (time.time(), srv)
+        if srv:
+            port = ":%s" % srv["port"] if srv["port"] else ""
+            t["display"] = "%s · %s%s" % (srv["label"], srv["host"], port)
+            # shown on the tile: the city/region measured, and whether it was picked as the nearest
+            t["where"] = srv["label"] + (" (nearest)" if t["pref"] == "auto" else "")
 
     def region_servers(self, region, wait=True):
         """Cached fastest-first server list for a region; refreshed daily. None if unknown yet."""
@@ -703,15 +988,29 @@ class Monitor:
         targets = [t for t in self.cfg["ping"]["targets"] if t["method"] != "region"]
         results = list(self.pool.map(self.ping_one, targets))
         self.db.insert_many("INSERT INTO ping VALUES (?,?,?)",
-                            [(ts, t["id"], r) for t, r in zip(targets, results)])
+                            [(ts, t["id"], r) for t, r in zip(targets, results) if r is not SKIP])
 
     def collect_dns(self):
         ts = time.time()
         timeout = self.cfg["dns"]["timeout_seconds"]
-        jobs = [(s, d) for s in self.cfg["dns"]["servers"] for d in self.cfg["dns"]["domains"]]
+        v6 = self.ipv6_available()  # don't record failures for IPv6 servers on an IPv4-only network
+        jobs = [(s, d) for s in self.cfg["dns"]["servers"] for d in self.cfg["dns"]["domains"]
+                if s["family"] == 4 or v6]
         results = list(self.pool.map(lambda j: dns_query(j[0]["host"], j[1], timeout), jobs))
         self.db.insert_many("INSERT INTO dns VALUES (?,?,?,?)",
                             [(ts, s["id"], d, r) for (s, d), r in zip(jobs, results)])
+
+    def ipv6_available(self):
+        if time.time() - self.ipv6[0] > 600:
+            try:
+                s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+                s.connect(("2606:4700:4700::1111", 53))  # no packets sent; fails without an IPv6 route
+                s.close()
+                ok = True
+            except OSError:
+                ok = False
+            self.ipv6 = (time.time(), ok)
+        return self.ipv6[1]
 
     def collect_system(self):
         s = self.sys.sample()
@@ -736,16 +1035,30 @@ class Monitor:
                 end = min(now_m, start + 86400)
                 rollup(self.db, spec, start, end)
                 start = end
+            # hourly summaries from the minute table (the current hour is refreshed every minute)
+            start = self.db.scalar(f"SELECT MAX(ts) FROM {spec['hourly']}")
+            if start is None:
+                start = self.db.scalar(f"SELECT MIN(ts) FROM {spec['rollup']}")
+            if start is None:
+                continue
+            start = int(start // 3600) * 3600
+            while start <= now_m:
+                end = start + 30 * 86400
+                rollup_hourly(self.db, spec, start, min(end, now_m + 60))
+                start = end
 
     def cleanup(self):
         st = self.cfg["storage"]
         now = time.time()
-        cutoff = now - float(st["retention_days"]) * 86400
-        raw_cutoff = max(cutoff, now - float(st["raw_retention_days"]) * 86400)
-        for table in ("ping", "dns"):
-            self.db.conn().execute(f"DELETE FROM {table} WHERE ts < ?", (raw_cutoff,))
-        for table in ("ping_1m", "dns_1m", "system", "speedtest"):
-            self.db.conn().execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
+        days = float(st["retention_days"])
+        cutoff = now - days * 86400 if days > 0 else 0          # 0 = keep forever
+        minute_cutoff = max(cutoff, now - float(st["minute_retention_days"]) * 86400)
+        raw_cutoff = max(minute_cutoff, now - float(st["raw_retention_days"]) * 86400)
+        for tables, cut in ((("ping", "dns"), raw_cutoff), (("ping_1m", "dns_1m"), minute_cutoff),
+                            (("ping_1h", "dns_1h", "system", "speedtest"), cutoff)):
+            if cut > 0:
+                for table in tables:
+                    self.db.conn().execute(f"DELETE FROM {table} WHERE ts < ?", (cut,))
         self.db.conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     # -- speedtest
@@ -757,6 +1070,11 @@ class Monitor:
             if scope == "regions":
                 for region in self.cfg["speedtest"]["regions"]:
                     self._region_test(region)
+            elif scope.startswith("conn:"):
+                for conn in self.cfg["connections"]:
+                    if conn["name"] == scope[5:]:
+                        self._save_speedtest(time.time(), "connection", conn["name"],
+                                             self._run_cli(None, conn["name"], conn["bind"]))
             else:
                 for sid in (self.cfg["speedtest"]["servers"] or [None]):
                     self._save_speedtest(time.time(), "main", "Auto" if sid is None else f"Server {sid}",
@@ -782,16 +1100,18 @@ class Monitor:
     @staticmethod
     def _error_row(msg):
         row = dict.fromkeys(["server_id", "server_name", "server_location", "isp", "ping_ms", "jitter_ms",
-                             "download_mbps", "upload_mbps", "packet_loss", "result_url"])
+                             "download_mbps", "upload_mbps", "packet_loss", "result_url", "data_bytes"])
         row["error"] = msg
         return row
 
-    def _run_cli(self, server_id, label):
+    def _run_cli(self, server_id, label, bind=None):
         st = self.cfg["speedtest"]
         self.st_status = {"running": True, "label": label, "server_id": server_id, "started": time.time()}
         cmd = [st["binary"], "--format=json", "--accept-license", "--accept-gdpr"]
         if server_id:
             cmd += ["--server-id", str(server_id)]
+        if bind:
+            cmd += [f"--ip={bind}" if is_ip(bind) else f"--interface={bind}"]
         row = self._error_row(None)
         row["server_id"] = server_id
         log.info("running speedtest %s (server=%s)", label, server_id or "auto")
@@ -818,6 +1138,7 @@ class Monitor:
                     upload_mbps=result["upload"]["bandwidth"] * 8 / 1e6,
                     packet_loss=result.get("packetLoss"),
                     result_url=result.get("result", {}).get("url"),
+                    data_bytes=(result["download"].get("bytes") or 0) + (result["upload"].get("bytes") or 0),
                 )
             else:
                 row["error"] = err or p.stderr.strip()[-500:] or f"speedtest exited with code {p.returncode}"
@@ -844,7 +1165,8 @@ class Monitor:
 
 # --------------------------------------------------------------------------- API
 
-NICE_BUCKETS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400]
+NICE_BUCKETS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400,
+                2 * 86400, 7 * 86400]
 
 
 def parse_range(q, base_interval):
@@ -867,10 +1189,17 @@ def aggregate(m, name, frm, to, bucket, keys=None, extra=("", ())):
     """Rows of (key, bucket, n, ok, avg, min, max, p5, p95). bucket=None aggregates the whole range."""
     spec = SERIES[name]
     key = spec["keys"][0]
-    raw_cutoff = time.time() - float(m.cfg["storage"]["raw_retention_days"]) * 86400
-    # 1-minute summaries serve anything that doesn't need sub-minute detail
-    coarse = (to - frm) > ROLLUP_ABOVE_SECONDS if bucket is None else bucket >= 60
-    use_rollup = coarse or frm < raw_cutoff
+    st, now = m.cfg["storage"], time.time()
+    span = to - frm
+    # raw samples for short ranges, 1-minute summaries for days, hourly summaries for months/years
+    if bucket is None:
+        level = "hourly" if span > 31 * 86400 else "rollup" if span > ROLLUP_ABOVE_SECONDS else "raw"
+    else:
+        level = "hourly" if bucket >= 3600 else "rollup" if bucket >= 60 else "raw"
+    if frm < now - float(st["minute_retention_days"]) * 86400:
+        level = "hourly"
+    elif level == "raw" and frm < now - float(st["raw_retention_days"]) * 86400:
+        level = "rollup"
     bexpr = "0" if bucket is None else f"CAST(ts / {float(bucket)!r} AS INTEGER)"
     where, params = "ts >= ? AND ts <= ?", [frm, to]
     if keys:
@@ -879,11 +1208,9 @@ def aggregate(m, name, frm, to, bucket, keys=None, extra=("", ())):
     if extra[0]:
         where += " AND " + extra[0]
         params += list(extra[1])
-    if use_rollup:
-        # Combine minute rows: exact count/min/max, sample-weighted avg and percentiles.
-        sql = (f"SELECT {key}, {bexpr} AS b, SUM(n), SUM(ok), SUM(avg * ok) / NULLIF(SUM(ok), 0), MIN(mn), MAX(mx),"
-               f" SUM(p5 * ok) / NULLIF(SUM(ok), 0), SUM(p95 * ok) / NULLIF(SUM(ok), 0)"
-               f" FROM {spec['rollup']} WHERE {where} GROUP BY {key}, b ORDER BY b")
+    if level != "raw":
+        # Combine summary rows: exact count/min/max, sample-weighted avg and percentiles.
+        sql = f"SELECT {key}, {bexpr} AS b, {COMBINE} FROM {spec[level]} WHERE {where} GROUP BY {key}, b ORDER BY b"
     else:
         sql = pct_select(spec["val"], bexpr, [key], spec["raw"], where) + " ORDER BY b"
     return m.db.query(sql, params)
@@ -913,19 +1240,24 @@ def api_config(m, q):
                  "region_interval_seconds": c["ping"]["region_interval_seconds"],
                  "targets": [{k: v for k, v in t.items() if k != "region"} for t in c["ping"]["targets"]]},
         "dns": {"enabled": c["dns"]["enabled"], "interval_seconds": c["dns"]["interval_seconds"],
-                "servers": c["dns"]["servers"], "domains": c["dns"]["domains"]},
+                "servers": c["dns"]["servers"], "domains": c["dns"]["domains"],
+                "ipv6_available": m.ipv6_available()},
+        "connections": [{"name": x["name"], "bind": x["bind"], "speedtest": x["speedtest"],
+                         "speedtest_interval_minutes": x["speedtest_interval_minutes"]} for x in c["connections"]],
         "speedtest": {"enabled": c["speedtest"]["enabled"], "interval_minutes": c["speedtest"]["interval_minutes"],
                       "offset_minutes": c["speedtest"]["offset_minutes"], "servers": c["speedtest"]["servers"],
                       "next_run": next_aligned(c["speedtest"]["interval_minutes"] * 60,
                                                c["speedtest"]["offset_minutes"] * 60)
                       if c["speedtest"]["enabled"] else None,
                       "regions": [r["name"] for r in c["speedtest"]["regions"]],
+                      "flags": {r["name"]: r.get("flag", "") for r in c["speedtest"]["regions"] + c["ping"]["regions"]},
                       "regions_interval_minutes": c["speedtest"]["regions_interval_minutes"],
                       "next_regions_run": next_aligned(c["speedtest"]["regions_interval_minutes"] * 60,
                                                        c["speedtest"]["regions_offset_minutes"] * 60)
                       if c["speedtest"]["enabled"] and c["speedtest"]["regions"] else None},
         "system": {"interval_seconds": c["system"]["interval_seconds"]},
         "retention_days": c["storage"]["retention_days"],
+        "storage": {k: v for k, v in c["storage"].items() if k != "database"},
     }
 
 
@@ -948,7 +1280,7 @@ def api_speedtest(m, q):
     to = float(q.get("to") or now)
     frm = float(q.get("from") or to - 7 * 86400)
     cols = ["ts", "kind", "label", "server_id", "server_name", "server_location", "isp", "ping_ms", "jitter_ms",
-            "download_mbps", "upload_mbps", "packet_loss", "result_url", "error"]
+            "download_mbps", "upload_mbps", "packet_loss", "data_bytes", "result_url", "error"]
     rows = m.db.query(f"SELECT ts, COALESCE(kind, 'main'), COALESCE(label, 'Auto'), {','.join(cols[3:])}"
                       " FROM speedtest WHERE ts >= ? AND ts <= ? ORDER BY ts", (frm, to))
     return {"from": frm, "to": to, "results": [dict(zip(cols, r)) for r in rows], "status": m.st_status}
@@ -984,49 +1316,63 @@ def api_summary(m, q):
     for t in m.cfg["ping"]["targets"]:
         l = last.get(t["id"], (None, None))
         a = agg.get(t["id"])
-        ping.append({"id": t["id"], "name": t["name"], "host": t["host"], "method": t["method"], "group": t["group"],
+        ping.append({"id": t["id"], "name": t["name"], "host": t.get("display") or t["host"], "method": t["method"],
+                     "group": t["group"], "flag": t.get("flag", ""), "connection": t.get("connection"),
+                     "where": t.get("where") or ("finding nearest server…" if t["method"] == "game" else None),
                      "last": r2(l[0]), "last_ts": l[1],
                      "avg5m": r2(a[0]) if a else None,
                      "loss5m": round(100.0 * (a[1] - a[2]) / a[1], 1) if a else None})
     dns = {s: {"avg5m": r2(avg), "fail5m": round(100.0 * (n - ok) / n, 1)} for s, avg, n, ok in m.db.query(
         "SELECT server, AVG(ms), COUNT(*), COUNT(ms) FROM dns WHERE ts > ? GROUP BY server", (now - 300,))}
-    cols = ["ts", "server_name", "server_location", "isp", "ping_ms", "jitter_ms",
-            "download_mbps", "upload_mbps", "packet_loss", "result_url", "error"]
     main = "COALESCE(kind, 'main') = 'main'"
-    ok = m.db.query(f"SELECT {','.join(cols)} FROM speedtest WHERE {main} AND error IS NULL ORDER BY ts DESC LIMIT 1")
-    latest = m.db.query(f"SELECT {','.join(cols)} FROM speedtest WHERE {main} ORDER BY ts DESC LIMIT 1")
-    averages = {}
-    for label, span in (("24h", 86400), ("7d", 7 * 86400)):
-        n, dl, ul, pg = m.db.query(
-            "SELECT COUNT(*), AVG(download_mbps), AVG(upload_mbps), AVG(ping_ms) FROM speedtest"
-            f" WHERE {main} AND error IS NULL AND ts > ?", (now - span,))[0]
-        averages[label] = {"tests": n, "download_mbps": r2(dl), "upload_mbps": r2(ul), "ping_ms": r2(pg)}
-    # latest result and 7-day averages per region
-    rcols = ["ts", "server_name", "server_location", "ping_ms", "download_mbps", "upload_mbps", "error"]
-    regions = {lbl: dict(zip(rcols, vals)) for lbl, *vals, _ in m.db.query(
-        f"SELECT label, {','.join(rcols)}, MAX(ts) FROM speedtest WHERE kind = 'region' GROUP BY label")}
-    for lbl, n, dl, ul, pg in m.db.query(
-            "SELECT label, COUNT(*), AVG(download_mbps), AVG(upload_mbps), AVG(ping_ms) FROM speedtest"
-            " WHERE kind = 'region' AND error IS NULL AND ts > ? GROUP BY label", (now - 7 * 86400,)):
-        if lbl in regions:
-            regions[lbl]["avg7d"] = {"tests": n, "download_mbps": r2(dl), "upload_mbps": r2(ul), "ping_ms": r2(pg)}
-    regions_avg = {}
-    for label, span in (("24h", 86400), ("7d", 7 * 86400)):
-        n, dl, ul, pg = m.db.query(
-            "SELECT COUNT(*), AVG(download_mbps), AVG(upload_mbps), AVG(ping_ms) FROM speedtest"
-            " WHERE kind = 'region' AND error IS NULL AND ts > ?", (now - span,))[0]
-        regions_avg[label] = {"tests": n, "download_mbps": r2(dl), "upload_mbps": r2(ul), "ping_ms": r2(pg)}
+    ok = m.db.query(f"SELECT {','.join(ST_COLS)} FROM speedtest WHERE {main} AND error IS NULL ORDER BY ts DESC LIMIT 1")
+    latest = m.db.query(f"SELECT {','.join(ST_COLS)} FROM speedtest WHERE {main} ORDER BY ts DESC LIMIT 1")
+    averages = {label: st_avg(m, main, (), now - span) for label, span in (("24h", 86400), ("7d", 7 * 86400))}
+    regions = st_by_label(m, "region", now)
+    conns = st_by_label(m, "connection", now)
+    flags = {r["name"]: r.get("flag", "") for r in m.cfg["speedtest"]["regions"]}
     return {
         "now": now, "ping": ping, "dns": dns,
         "speedtest": {
-            "last_ok": dict(zip(cols, ok[0])) if ok else None,
-            "latest": dict(zip(cols, latest[0])) if latest else None,
+            "last_ok": dict(zip(ST_COLS, ok[0])) if ok else None,
+            "latest": dict(zip(ST_COLS, latest[0])) if latest else None,
             "averages": averages,
-            "regions": [dict(regions.get(r["name"], {}), name=r["name"]) for r in m.cfg["speedtest"]["regions"]],
-            "regions_avg": regions_avg,
+            "regions": [dict(regions.get(r["name"], {}), name=r["name"], flag=flags.get(r["name"], ""))
+                        for r in m.cfg["speedtest"]["regions"]],
+            "regions_avg": {label: st_avg(m, "kind = 'region'", (), now - span)
+                            for label, span in (("24h", 86400), ("7d", 7 * 86400))},
+            "connections": [dict(conns.get(c["name"], {}), name=c["name"]) for c in m.cfg["connections"]],
             "status": m.st_status,
         },
     }
+
+
+ST_COLS = ["ts", "server_name", "server_location", "isp", "ping_ms", "jitter_ms", "download_mbps", "upload_mbps",
+           "packet_loss", "data_bytes", "result_url", "error"]
+
+
+def st_avg(m, where, params, since):
+    """Averages of successful speedtests since a time, plus total data used (failed tests included)."""
+    n, dl, ul, pg, jt, pl = m.db.query(
+        "SELECT COUNT(*), AVG(download_mbps), AVG(upload_mbps), AVG(ping_ms), AVG(jitter_ms), AVG(packet_loss)"
+        f" FROM speedtest WHERE {where} AND error IS NULL AND ts > ?", (*params, since))[0]
+    data = m.db.scalar(f"SELECT SUM(data_bytes) FROM speedtest WHERE {where} AND ts > ?", (*params, since))
+    return {"tests": n, "download_mbps": r2(dl), "upload_mbps": r2(ul), "ping_ms": r2(pg), "jitter_ms": r2(jt),
+            "packet_loss": r2(pl), "data_bytes": data or 0}
+
+
+def st_by_label(m, kind, now):
+    """Latest result (ok or failed), last good result and 7-day averages for each label of a kind."""
+    out = {}
+    for lbl, *vals, _ in m.db.query(
+            f"SELECT label, {','.join(ST_COLS)}, MAX(ts) FROM speedtest WHERE kind = ? GROUP BY label", (kind,)):
+        out[lbl] = dict(zip(ST_COLS, vals))
+        out[lbl]["avg7d"] = st_avg(m, "kind = ? AND label = ?", (kind, lbl), now - 7 * 86400)
+        out[lbl]["avg24h"] = st_avg(m, "kind = ? AND label = ?", (kind, lbl), now - 86400)
+        good = m.db.query(f"SELECT {','.join(ST_COLS)} FROM speedtest WHERE kind = ? AND label = ? AND error IS NULL"
+                          " ORDER BY ts DESC LIMIT 1", (kind, lbl))
+        out[lbl]["last_ok"] = dict(zip(ST_COLS, good[0])) if good else None
+    return out
 
 
 def api_run_speedtest(m, q):
@@ -1034,9 +1380,13 @@ def api_run_speedtest(m, q):
         return {"started": False, "reason": "speedtest is disabled in config"}
     if m.st_lock.locked():
         return {"started": False, "reason": "a speedtest is already running"}
-    scope = "regions" if q.get("scope") == "regions" else "main"
+    scope = q.get("scope") or "main"
     if scope == "regions" and not m.cfg["speedtest"]["regions"]:
         return {"started": False, "reason": "no regions configured"}
+    if scope.startswith("conn:") and scope[5:] not in [c["name"] for c in m.cfg["connections"]]:
+        return {"started": False, "reason": "unknown connection"}
+    if scope not in ("main", "regions") and not scope.startswith("conn:"):
+        return {"started": False, "reason": "unknown scope"}
     threading.Thread(target=m.run_speedtest, kwargs={"blocking": False, "scope": scope}, daemon=True).start()
     return {"started": True}
 

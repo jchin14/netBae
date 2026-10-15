@@ -3,6 +3,25 @@
 set -euo pipefail
 if [[ $EUID -ne 0 ]]; then exec sudo bash "$0" "$@"; fi
 
+if [[ $(uname -s) == Darwin ]]; then
+  LABEL=com.github.netbae
+  launchctl bootout "system/$LABEL" 2>/dev/null || true
+  rm -f "/Library/LaunchDaemons/$LABEL.plist" /etc/newsyslog.d/netbae.conf
+  rm -rf /usr/local/lib/netbae
+  rm -f /usr/local/bin/netbae
+  echo "netBae removed. The Ookla speedtest CLI was left installed (brew uninstall speedtest to remove it)."
+  if [[ "${1:-}" == "--purge" ]]; then
+    rm -rf /usr/local/etc/netbae /usr/local/var/netbae
+    rm -f /usr/local/var/log/netbae.log*
+    dscl . -delete /Users/_netbae 2>/dev/null || true
+    dscl . -delete /Groups/_netbae 2>/dev/null || true
+    echo "Config, data, log and the _netbae user were deleted."
+  else
+    echo "Config (/usr/local/etc/netbae) and data (/usr/local/var/netbae) kept. Re-run with --purge to delete them."
+  fi
+  exit 0
+fi
+
 systemctl disable --now netbae 2>/dev/null || true
 rm -f /etc/systemd/system/netbae.service
 systemctl daemon-reload
