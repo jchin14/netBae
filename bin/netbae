@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# netbae - manage the netBae service. Installed to /usr/local/bin/netbae.
+set -euo pipefail
+
+REPO="__NETBAE_REPO__"   # filled in by install.sh
+APP=/opt/netbae
+CONF=/etc/netbae/config.toml
+
+as_root() { if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi; }
+version() { python3 -c "import sys; sys.path.insert(0, '$APP'); import netbae; print(netbae.VERSION)" 2>/dev/null || echo unknown; }
+
+case "${1:-help}" in
+  update|upgrade)
+    echo "Installed: netBae $(version). Fetching the latest from github.com/$REPO …"
+    curl -fsSL "https://raw.githubusercontent.com/$REPO/main/install.sh" | as_root env NETBAE_REPO="$REPO" bash
+    ;;
+  status)  systemctl status netbae --no-pager ;;
+  logs)    journalctl -u netbae -f ;;
+  restart) as_root systemctl restart netbae && echo "restarted" ;;
+  stop)    as_root systemctl stop netbae ;;
+  start)   as_root systemctl start netbae ;;
+  config)
+    as_root "${EDITOR:-nano}" "$CONF"
+    if as_root runuser -u netbae -- python3 "$APP/netbae.py" -c "$CONF" --check-config >/dev/null; then
+      as_root systemctl restart netbae && echo "config OK - netBae restarted"
+    else
+      echo "config has errors - not restarted" >&2; exit 1
+    fi
+    ;;
+  check)   as_root runuser -u netbae -- python3 "$APP/netbae.py" -c "$CONF" --check-config ;;
+  version) echo "netBae $(version)" ;;
+  uninstall) as_root bash "$APP/uninstall.sh" "${@:2}" ;;
+  *)
+    cat <<EOF
+netbae - manage the netBae internet monitor
+
+  netbae update       update to the latest version (keeps config + data)
+  netbae status       service status
+  netbae logs         follow the log
+  netbae config       edit the config, validate it and restart
+  netbae check        validate the config and show the next speedtest times
+  netbae restart | start | stop
+  netbae version
+  netbae uninstall [--purge]
+EOF
+    ;;
+esac

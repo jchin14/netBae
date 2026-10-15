@@ -25,11 +25,15 @@
     <section class="grid2">
       <div class="card" id="speed-card">
         <div class="card-head">
-          <h2>Latest speedtest</h2>
-          <button id="run-speedtest" class="btn">Run now</button>
+          <h2>Speedtest <span class="muted small">closest server · latest and averages</span></h2>
+          <span class="controls">
+            <button id="run-regions" class="btn ghost" hidden>Run regions</button>
+            <button id="run-speedtest" class="btn">Run now</button>
+          </span>
         </div>
         <div id="speed-summary" class="speed-summary"><span class="muted">No results yet</span></div>
         <div id="speed-meta" class="muted small"></div>
+        <div class="table-wrap"><table id="region-table" class="stats" hidden></table></div>
       </div>
       <div class="card" id="system-card">
         <div class="card-head"><h2>System</h2><span id="sys-model" class="muted small"></span></div>
@@ -42,9 +46,13 @@
         <h2>Ping latency</h2>
         <div class="controls">
           <select class="metric" aria-label="Metric">
-            <option value="avg">Average</option>
-            <option value="max">Maximum</option>
+            <option value="latency">Latency</option>
             <option value="loss">Packet loss %</option>
+          </select>
+          <select class="band" aria-label="Spread band">
+            <option value="pct">P5–P95 band</option>
+            <option value="minmax">Min–max band</option>
+            <option value="none">No band</option>
           </select>
           <span class="range"></span>
         </div>
@@ -60,9 +68,13 @@
         <div class="controls">
           <select class="domain" aria-label="Domain"><option value="">All domains</option></select>
           <select class="metric" aria-label="Metric">
-            <option value="avg">Average</option>
-            <option value="max">Maximum</option>
+            <option value="latency">Latency</option>
             <option value="loss">Failures %</option>
+          </select>
+          <select class="band" aria-label="Spread band">
+            <option value="pct">P5–P95 band</option>
+            <option value="minmax">Min–max band</option>
+            <option value="none">No band</option>
           </select>
           <span class="range"></span>
         </div>
@@ -76,7 +88,7 @@
       <div class="panel-head">
         <h2>Speedtest history</h2>
         <div class="controls">
-          <select class="server" aria-label="Server"><option value="">All servers</option></select>
+          <select class="server" aria-label="Server"><option value="Auto">Closest server</option></select>
           <span class="range"></span>
         </div>
       </div>

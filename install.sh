@@ -180,12 +180,23 @@ mkdir -p "$APP_DIR" "$CONF_DIR" "$DATA_DIR"
 chown "$SVC_USER:$SVC_USER" "$DATA_DIR"
 chmod 750 "$DATA_DIR"
 
-c_info "Installing app to $APP_DIR"
+OLD_VERSION=""
+if [[ -f "$APP_DIR/netbae.py" ]]; then
+  OLD_VERSION=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$APP_DIR/netbae.py")
+fi
+NEW_VERSION=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$SRC_DIR/app/netbae.py")
+if [[ -n "$OLD_VERSION" ]]; then
+  c_info "Updating netBae $OLD_VERSION -> $NEW_VERSION (config and data are kept)"
+else
+  c_info "Installing netBae $NEW_VERSION to $APP_DIR"
+fi
 VENDOR_BACKUP=""
 if [[ -d "$APP_DIR/static/vendor" ]]; then VENDOR_BACKUP=$(mktemp -d); cp -a "$APP_DIR/static/vendor/." "$VENDOR_BACKUP/"; fi
 rm -rf "$APP_DIR/static"
 cp -a "$SRC_DIR/app/." "$APP_DIR/"
 install -m 0755 "$SRC_DIR/uninstall.sh" "$APP_DIR/uninstall.sh"
+sed "s#__NETBAE_REPO__#$NETBAE_REPO#" "$SRC_DIR/bin/netbae" >/usr/local/bin/netbae
+chmod 0755 /usr/local/bin/netbae
 mkdir -p "$APP_DIR/static/vendor"
 if [[ -n "$VENDOR_BACKUP" ]]; then cp -a "$VENDOR_BACKUP/." "$APP_DIR/static/vendor/"; rm -rf "$VENDOR_BACKUP"; fi
 
@@ -266,11 +277,12 @@ if systemctl is-active --quiet netbae; then
   [[ -n "$IP" ]] || IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
   SUFFIX=""; [[ $PORT == 80 ]] || SUFFIX=":$PORT"
   echo
-  c_info "netBae is running!"
+  if [[ -n "$OLD_VERSION" ]]; then c_info "netBae updated to $NEW_VERSION and running!"; else c_info "netBae is running!"; fi
   echo "    Dashboard:  http://${IP:-<this-machine-ip>}$SUFFIX"
   echo "                http://$(hostname).local$SUFFIX  (if mDNS/avahi is available)"
-  echo "    Config:     $CONF_DIR/config.toml   (then: sudo systemctl restart netbae)"
-  echo "    Logs:       journalctl -u netbae -f"
+  echo "    Config:     netbae config     ($CONF_DIR/config.toml)"
+  echo "    Logs:       netbae logs"
+  echo "    Update:     netbae update     (or re-run the install command)"
   [[ -n "$ST" ]] || c_warn "Ookla speedtest CLI is missing - see https://www.speedtest.net/apps/cli"
 else
   journalctl -u netbae -n 30 --no-pager || true

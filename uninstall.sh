@@ -7,6 +7,7 @@ systemctl disable --now netbae 2>/dev/null || true
 rm -f /etc/systemd/system/netbae.service
 systemctl daemon-reload
 rm -rf /opt/netbae
+rm -f /usr/local/bin/netbae
 echo "netBae removed. The Ookla speedtest CLI was left installed."
 
 if [[ "${1:-}" == "--purge" ]]; then

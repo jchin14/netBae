@@ -1,21 +1,77 @@
-MIT License
+netBae License (Personal Use) - Version 1.0
 
-Copyright (c) 2026 netBae contributors
+Copyright (c) 2026 jchin14 (https://github.com/jchin14)
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Permission
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+   Subject to the conditions below, you may, free of charge:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+   - download, install and run netBae;
+   - copy and modify it, and share copies or modified versions; and
+   - contribute changes back to the project.
+
+2. Personal, non-commercial use only
+
+   The permission in section 1 covers personal, non-commercial use: for example,
+   monitoring your own home network, a hobby or homelab, or your own learning.
+
+3. Uses that need permission first
+
+   You must get written permission from the copyright holder BEFORE you:
+
+   a) use netBae for commercial purposes, including use by or on behalf of a
+      business, use for a business's internal operations, or use as part of a
+      product or service offered to others;
+
+   b) use netBae at or on behalf of an educational institution (such as a school,
+      college, university or training provider), including on its networks or
+      in teaching material it distributes. An individual student or teacher
+      using netBae privately at home is personal use under section 2;
+
+   c) sell, rent, license or sublicense netBae or a modified version, offer it
+      as a hosted or managed service, bundle it with something you sell, or
+      charge for installing or supporting it; or
+
+   d) otherwise make money, directly or indirectly, from netBae or a modified
+      version.
+
+   To ask for permission, open an issue at https://github.com/jchin14/netBae or
+   contact the copyright holder through GitHub. Permission is only valid if it
+   is given in writing and may come with its own terms.
+
+4. Conditions for sharing
+
+   If you share netBae or a modified version, you must:
+
+   - include this license and the copyright notice above;
+   - clearly mark modified files as changed; and
+   - share it under these same terms, free of charge.
+
+5. Contributions
+
+   Pull requests and other contributions are welcome. By submitting a
+   contribution, you agree that it is provided under this license, and you grant
+   the copyright holder a perpetual, worldwide, royalty-free, irrevocable license
+   to use, modify, sublicense and relicense your contribution, including as part
+   of permission granted under section 3. You confirm that you have the right to
+   submit it.
+
+6. Termination
+
+   If you break any of these terms, your permission under this license ends
+   automatically. It is restored if you stop the breach within 30 days of
+   becoming aware of it, unless you have breached it before.
+
+7. No warranty
+
+   NETBAE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+   INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+   PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+   COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH NETBAE OR THE USE OR OTHER DEALINGS IN IT.
+
+8. Third-party software
+
+   This license covers netBae only. The Ookla Speedtest CLI, Chart.js and other
+   tools netBae downloads or uses are covered by their own licenses and terms.

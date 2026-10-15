@@ -10,3 +10,4 @@ app/static/vendor/
 *.db-wal
 *.db-shm
 .DS_Store
+local.toml

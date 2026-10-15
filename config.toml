@@ -14,7 +14,8 @@ port = 80             # dashboard at http://<this-machine>/ ; change if somethin
 
 [storage]
 database = "/var/lib/netbae/netbae.db"
-retention_days = 30    # older data is deleted automatically
+retention_days = 30    # 1-minute summaries (min/p5/avg/p95/max) are kept this long
+raw_retention_days = 7 # full-resolution samples are kept this long
 
 [ping]
 interval_seconds = 5
@@ -23,14 +24,36 @@ timeout_seconds = 2
 # method = "icmp" (default, normal ping) or "tcp" (times a TCP connect, for hosts
 # that block ping), e.g. { name = "Example HTTPS", host = "example.com", method = "tcp", port = 443 }
 # host = "gateway" auto-detects your router (default gateway); or put its IP.
+# group = how the dashboard groups targets (any name you like).
 targets = [
-  { name = "Router",     host = "gateway" },
-  { name = "Cloudflare", host = "1.1.1.1" },
-  { name = "Google DNS", host = "8.8.8.8" },
-  { name = "Quad9",      host = "9.9.9.9" },
-  { name = "Microsoft",  host = "microsoft.com" },
-  { name = "Facebook",   host = "facebook.com" },
+  { name = "Router",         host = "gateway",          group = "Network" },
+  { name = "Cloudflare DNS", host = "1.1.1.1",          group = "DNS" },
+  { name = "Google DNS",     host = "8.8.8.8",          group = "DNS" },
+  { name = "Quad9",          host = "9.9.9.9",          group = "DNS" },
+  { name = "Google",         host = "google.com",       group = "Google" },
+  { name = "YouTube",        host = "youtube.com",      group = "Google" },
+  { name = "Netflix",        host = "www.netflix.com",  group = "Streaming" },   # netflix.com itself blocks ping
+  { name = "Twitch",         host = "twitch.tv",        group = "Streaming" },
+  { name = "Steam",          host = "steampowered.com", group = "Gaming" },
+  { name = "Discord",        host = "discord.com",      group = "Gaming" },
+  { name = "Facebook",       host = "facebook.com",     group = "Social" },
+  { name = "Reddit",         host = "reddit.com",       group = "Social" },
+  { name = "Microsoft",      host = "microsoft.com",    group = "Cloud & tech" },
+  { name = "Apple",          host = "apple.com",        group = "Cloud & tech" },
+  { name = "AWS",            host = "aws.amazon.com",   group = "Cloud & tech" },
+  { name = "GitHub",         host = "github.com",       group = "Cloud & tech" },
+  { name = "Akamai",         host = "akamai.com",       group = "CDN" },
+  { name = "Fastly",         host = "fastly.com",       group = "CDN" },
+  # more ideas: store.steampowered.com, x.com, instagram.com, spotify.com,
+  # { name = "Amazon", host = "amazon.com", method = "tcp", port = 443, group = "Shopping" },   # blocks ping
 ]
+
+# Region pings: latency to the fastest Ookla speedtest server in each city (TCP connect to
+# the server, found automatically and refreshed daily). Same names as [speedtest] regions.
+regions = ["Sydney", "Perth", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Guam", "Delhi", "Oman",
+           "Los Angeles", "Toronto", "New York", "São Paulo", "London", "Amsterdam", "Paris", "Milan",
+           "Cape Town"]
+region_interval_seconds = 30
 
 [dns]
 enabled = true
@@ -44,7 +67,7 @@ servers = [
   { name = "Google DNS", host = "8.8.8.8" },
   { name = "Quad9",      host = "9.9.9.9" },
 ]
-domains = ["google.com", "microsoft.com", "facebook.com"]
+domains = ["google.com", "microsoft.com", "facebook.com", "reddit.com", "netflix.com"]
 
 [speedtest]
 enabled = true
@@ -54,6 +77,16 @@ offset_minutes = 0     # e.g. 6 -> runs at hh:06 instead of hh:00
 # Otherwise list server IDs (find them with: speedtest -L); each listed server
 # is tested in turn on every run, e.g. servers = [12492, 2629]
 servers = []
+
+# Region speedtests: test against servers in other cities on their own (slower) schedule.
+# Built-in: London, New York, Tokyo, Amsterdam, Singapore, Sydney, Auckland, Los Angeles,
+# Hong Kong, Milan, Paris, Oman, Delhi, Guam, Perth, São Paulo, Cape Town, Toronto.
+# (Ookla has no public servers in mainland China, so Beijing isn't available.)
+# Custom: { name = "Frankfurt", city = "Frankfurt", country = "Germany" } or { name = "Work", server_id = 12345 }
+# Each test uses ~0.5-1 GB on a fast connection, so keep the interval long or the list short.
+regions = []           # e.g. ["Sydney", "Singapore", "Los Angeles", "London"]
+regions_interval_minutes = 1440   # once a day
+regions_offset_minutes = 30       # e.g. 00:30 - with 1440, the offset is the time of day
 binary = "auto"       # auto = official Ookla CLI in /usr/bin or /usr/local/bin
 timeout_seconds = 300
 
