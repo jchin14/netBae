@@ -1,0 +1,63 @@
+# netBae configuration
+# Location after install: /etc/netbae/config.toml
+# Apply changes with:     sudo systemctl restart netbae
+# Validate with:          sudo -u netbae python3 /opt/netbae/netbae.py --check-config
+#
+# Scheduling: every collector runs on wall-clock boundaries (local time).
+# The offset shifts the boundary, e.g. interval_minutes = 60 + offset_minutes = 6
+# runs at 00:06, 01:06, 02:06 ...; interval_minutes = 30 + offset_minutes = 6
+# runs at :06 and :36.
+
+[web]
+host = "0.0.0.0"       # 0.0.0.0 = reachable from other machines on your network
+port = 80             # dashboard at http://<this-machine>/ ; change if something else uses 80
+
+[storage]
+database = "/var/lib/netbae/netbae.db"
+retention_days = 30    # older data is deleted automatically
+
+[ping]
+interval_seconds = 5
+offset_seconds = 0     # e.g. 2 -> pings at :02, :07, :12 ...
+timeout_seconds = 2
+# method = "icmp" (default, normal ping) or "tcp" (times a TCP connect, for hosts
+# that block ping), e.g. { name = "Example HTTPS", host = "example.com", method = "tcp", port = 443 }
+# host = "gateway" auto-detects your router (default gateway); or put its IP.
+targets = [
+  { name = "Router",     host = "gateway" },
+  { name = "Cloudflare", host = "1.1.1.1" },
+  { name = "Google DNS", host = "8.8.8.8" },
+  { name = "Quad9",      host = "9.9.9.9" },
+  { name = "Microsoft",  host = "microsoft.com" },
+  { name = "Facebook",   host = "facebook.com" },
+]
+
+[dns]
+enabled = true
+interval_seconds = 30
+offset_seconds = 0
+timeout_seconds = 2
+# Every server is asked for every domain on each run.
+servers = [
+  { name = "Router",     host = "gateway" },
+  { name = "Cloudflare", host = "1.1.1.1" },
+  { name = "Google DNS", host = "8.8.8.8" },
+  { name = "Quad9",      host = "9.9.9.9" },
+]
+domains = ["google.com", "microsoft.com", "facebook.com"]
+
+[speedtest]
+enabled = true
+interval_minutes = 60
+offset_minutes = 0     # e.g. 6 -> runs at hh:06 instead of hh:00
+# Empty = Ookla picks the best server automatically.
+# Otherwise list server IDs (find them with: speedtest -L); each listed server
+# is tested in turn on every run, e.g. servers = [12492, 2629]
+servers = []
+binary = "auto"       # auto = official Ookla CLI in /usr/bin or /usr/local/bin
+timeout_seconds = 300
+
+[system]
+interval_seconds = 30
+offset_seconds = 0
+disk_path = "/"        # filesystem shown in storage usage

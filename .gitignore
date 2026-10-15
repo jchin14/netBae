@@ -1,0 +1,12 @@
+# build output
+dist/
+# python
+__pycache__/
+*.pyc
+# downloaded at install time
+app/static/vendor/
+# local test data
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
