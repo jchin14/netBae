@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -45,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -303,7 +304,7 @@ def resolve_game_server(provider, pref="auto", bind=None):
 
 # --------------------------------------------------------------------------- connections
 
-def normalize_connection(c):
+def normalize_connection(c, all_targets=None):
     """A secondary internet connection (e.g. a 5G/4G WAN) measured through its own source IP or interface."""
     if not isinstance(c, dict) or not c.get("name") or not c.get("bind"):
         raise SystemExit("[[connections]] entries need a name and a bind (source IP or interface name)")
@@ -316,7 +317,10 @@ def normalize_connection(c):
         if IS_WINDOWS:  # no SO_BINDTODEVICE, and Windows ping only takes a source address (-S)
             raise SystemExit(f"connection {name}: on Windows, bind must be this PC's source IP address, not {bind!r}")
     targets = []
-    for t in c.get("targets") or ["1.1.1.1", "8.8.8.8", "google.com"]:
+    wanted = c.get("targets") or ["1.1.1.1", "8.8.8.8", "google.com"]
+    if wanted == "all":  # mirror every main ping target over this connection
+        wanted = [dict(t) for t in (all_targets or []) if str(t.get("host") if isinstance(t, dict) else t) != "gateway"]
+    for t in wanted:
         t = normalize_target(t)
         targets.append(dict(t, id=f"{name}|{t['id']}", group=name, bind=bind, connection=name))
     return {"name": name, "bind": bind, "targets": targets,
@@ -449,13 +453,14 @@ def load_config(path):
     else:
         log.warning("config %s not found, using built-in defaults", path)
 
+    raw_targets = list(cfg["ping"]["targets"])
     cfg["ping"]["targets"] = [normalize_target(t) for t in cfg["ping"]["targets"]]
     cfg["ping"]["regions"] = [r for r in map(normalize_region, cfg["ping"]["regions"]) if r]
     for r in cfg["ping"]["regions"]:
         cfg["ping"]["targets"].append({"id": f"region:{r['name']}", "name": r["name"], "host": None,
                                        "method": "region", "port": None, "group": "Regions", "region": r,
                                        "flag": r["flag"]})
-    cfg["connections"] = [normalize_connection(c) for c in cfg["connections"]]
+    cfg["connections"] = [normalize_connection(c, raw_targets) for c in cfg["connections"]]
     for c in cfg["connections"]:
         cfg["ping"]["targets"].extend(c["targets"])
     servers = []
@@ -927,6 +932,53 @@ def as_name(asn):
     return _as_name_cache[asn]
 
 
+_IX = {"loaded": 0, "nets": []}
+
+
+def load_ix_prefixes(cache_path):
+    """Internet-exchange peering LAN prefixes from PeeringDB, refreshed daily, cached next to the database."""
+    if time.time() - _IX["loaded"] < 86400 and _IX["nets"]:
+        return
+    rows = None
+    try:
+        def fetch(ep):  # PeeringDB rate-limits anonymous use: back off and retry on HTTP 429
+            for attempt in range(3):
+                try:
+                    return http_json(f"https://www.peeringdb.com/api/{ep}", timeout=60)["data"]
+                except urllib.error.HTTPError as e:
+                    if e.code != 429 or attempt == 2:
+                        raise
+                    time.sleep(60 * (attempt + 1))
+        lan_ix = {x["id"]: x["ix_id"] for x in fetch("ixlan")}
+        ix = {x["id"]: [x["name"], x.get("city") or "", x.get("country") or ""] for x in fetch("ix")}
+        rows = [[p["prefix"]] + ix.get(lan_ix.get(p["ixlan_id"]), ["Internet exchange", "", ""]) for p in fetch("ixpfx")]
+        with open(cache_path, "w") as f:
+            json.dump(rows, f)
+    except Exception as e:
+        log.warning("couldn't refresh internet-exchange prefixes from PeeringDB (%s); using the cached copy", e)
+        try:
+            with open(cache_path) as f:
+                rows = json.load(f)
+        except (OSError, ValueError):
+            rows = rows or []
+    nets = []
+    for prefix, name, city, cc in rows or []:
+        try:
+            nets.append((ipaddress.ip_network(prefix, strict=False), name))
+        except ValueError:
+            pass
+    _IX.update(loaded=time.time(), nets=nets)
+
+
+def ix_for_ip(ip):
+    """Name of the internet exchange whose peering LAN this address is on, if any."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except (ValueError, TypeError):
+        return None
+    return next((name for net, name in _IX["nets"] if a.version == net.version and a in net), None)
+
+
 def is_ixp(name):
     return bool(re.search(r"(^|[\s-])IX($|[\s-])|internet exchange|\bexchange\b|-IX\b|IXP", name or "", re.I))
 
@@ -976,8 +1028,12 @@ def classify_route(hops, dest_ip, isp_asn=None):
         if not asn and m and ip and not ipaddress.ip_address(ip).is_private:
             asn = int(m.group(1))  # unannounced backbone address, but the hostname names its network
             name = as_name(asn)
-        detailed.append({"hop": n, "ip": ip, "host": host, "rtt": rtt, "asn": asn, "name": name})
-        if asn and (not path or (path[-1]["asn"] != asn and path[-1]["name"] != name)):
+        ix = ix_for_ip(ip) if ip else None
+        detailed.append({"hop": n, "ip": ip, "host": host, "rtt": rtt, "asn": asn, "name": name, "ix": ix})
+        if ix:  # an exchange's peering LAN: the hand-over between two networks happens here
+            if not path or path[-1]["name"] != ix:
+                path.append({"asn": None, "name": ix, "ixp": True})
+        elif asn and (not path or (path[-1]["asn"] != asn and path[-1]["name"] != name)):
             path.append({"asn": asn, "name": name, "ixp": is_ixp(name)})
     dest_asn, dest_name = ip_asn(dest_ip) if dest_ip else (None, None)
     if dest_asn and (not path or path[-1]["asn"] != dest_asn):
@@ -988,13 +1044,13 @@ def classify_route(hops, dest_ip, isp_asn=None):
     elif dest_asn == isp_asn:
         kind = "on-net"
     else:
-        middle = [x for x in path if x["asn"] not in (isp_asn, dest_asn)]
-        if not middle:
-            kind = "peering"
-        elif all(x["ixp"] for x in middle):
-            kind = "peering (IXP)"
+        middle = [x for x in path if x["asn"] not in (isp_asn, dest_asn) or x["ixp"]]
+        if any(not x["ixp"] for x in middle):
+            kind = "transit"          # another carrier sits between your ISP and the destination
+        elif middle:
+            kind = "ix"               # handed over across an internet exchange
         else:
-            kind = "transit"
+            kind = "direct"           # your ISP connects straight to the destination's network
     return kind, path, detailed
 
 
@@ -1506,6 +1562,7 @@ class Monitor:
         if not self.trace_lock.acquire(blocking=False):
             return  # previous round still running
         try:
+            load_ix_prefixes(os.path.join(os.path.dirname(os.path.abspath(self.db.path)), "peeringdb-ix.json"))
             tr = self.cfg["traceroute"]
             isp = {c["connection"]: c["last_ok"] for c in isp_current(self)} if self.cfg["isp"]["enabled"] else {}
             conn_of_bind = {c["bind"]: c["name"] for c in self.cfg["connections"]}

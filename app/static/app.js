@@ -296,16 +296,24 @@ let lastPing = [];
 let ROUTES = {};
 
 // How traffic reaches a target, from the latest traceroute: on-net / peering / transit via X.
-const ROUTE_BADGE = { 'on-net': 'on-net', peering: 'peering', 'peering (IXP)': 'IXP peering', transit: 'transit', unknown: 'route ?' };
+// on-net = inside your ISP; direct = your ISP connects straight to the destination's network;
+// IX = handed over across an internet exchange; transit = another carrier in between.
+const ROUTE_BADGE = { 'on-net': 'on-net', direct: 'direct', ix: 'IX', transit: 'transit', unknown: 'route ?',
+  peering: 'direct', 'peering (IXP)': 'IX' };  // (older names)
+const ROUTE_CLASS = { peering: 'direct', 'peering (IXP)': 'ix' };
 function routeHtml(id) {
   const r = ROUTES[id];
   if (!r) return '<span class="muted">route not traced yet</span>';
   const names = r.path.map((p) => p.name);
   const mid = r.path.slice(1, -1).filter((p) => !p.ixp).map((p) => p.name);
-  const text = r.kind === 'transit' ? `via ${mid.join(', ')}`
-    : r.kind === 'on-net' ? `inside ${names[0] || 'your ISP'}`
-      : r.kind.startsWith('peering') ? `${names[0]} ↔ ${names[names.length - 1]}` : names.join(' → ');
-  const cls = r.kind.split(' ')[0];
+  const ixs = r.path.filter((p) => p.ixp).map((p) => p.name);
+  const dest = names[names.length - 1];
+  const kind = ROUTE_CLASS[r.kind] || r.kind;
+  const text = kind === 'transit' ? `via ${mid.join(', ')}${ixs.length ? ` (${ixs[0]})` : ''}`
+    : kind === 'on-net' ? `inside ${names[0] || 'your ISP'}`
+      : kind === 'ix' ? `via ${ixs[0] || 'an exchange'} to ${dest}`
+        : kind === 'direct' ? `direct to ${dest}` : names.join(' → ');
+  const cls = kind;
   return `<button class="route-link" data-route="${esc(id)}" title="${esc(names.join(' → '))} · traced ${fmtAgo(r.ts)} · click for hops">`
     + `<span class="route-badge route-${cls}">${ROUTE_BADGE[r.kind] || r.kind}</span> ${esc(text)}</button>`;
 }
@@ -316,12 +324,12 @@ async function showRoute(id, title) {
   const dlg = $('#route-dialog');
   const hops = (r?.hops || []).map((h) => `<tr><td>${h.hop}</td><td style="text-align:left">${h.ip
       ? `${h.host ? `<div class="hop-host">${esc(h.host)}</div>` : ''}<div class="muted">${esc(h.ip)}</div>` : '<span class="muted">* no reply</span>'}</td>
-    <td>${h.rtt == null ? '-' : fmtMs(h.rtt)}</td><td style="text-align:left">${h.asn ? `${esc(h.name)} <span class="muted">AS${h.asn}</span>` : '<span class="muted">private / unknown</span>'}</td></tr>`).join('');
+    <td>${h.rtt == null ? '-' : fmtMs(h.rtt)}</td><td style="text-align:left">${h.ix ? `<span class="route-badge route-ix">IX</span> ${esc(h.ix)}` : h.asn ? `${esc(h.name)} <span class="muted">AS${h.asn}</span>` : '<span class="muted">private / unknown</span>'}</td></tr>`).join('');
   const hist = d.history.slice(0, 10).map((x) => `<li>${fmtTime(x.ts)}: ${x.error ? `<span class="error-text">${esc(x.error)}</span>`
     : `<b>${esc(ROUTE_BADGE[x.kind] || x.kind)}</b> ${esc(x.path.map((p) => p.name).join(' → '))}`}</li>`).join('');
   dlg.innerHTML = `<div class="dlg-head"><h2>Route to ${esc(title)}</h2><button class="link" data-close>Close</button></div>
-    ${r ? `<p><span class="route-badge route-${(r.kind || '').split(' ')[0]}">${esc(ROUTE_BADGE[r.kind] || r.kind || '?')}</span>
-      ${esc(r.path.map((p) => `${p.name} (AS${p.asn})${p.ixp ? ' [exchange]' : ''}`).join(' → '))}</p>
+    ${r ? `<p><span class="route-badge route-${ROUTE_CLASS[r.kind] || r.kind}">${esc(ROUTE_BADGE[r.kind] || r.kind || '?')}</span>
+      ${esc(r.path.map((p) => (p.asn ? `${p.name} (AS${p.asn})` : `${p.name} [internet exchange]`)).join(' → '))}</p>
       <p class="muted small">Destination ${esc(r.dest_host && r.dest_host !== r.dest ? `${r.dest_host} (${r.dest})` : (r.dest || ''))} · traced ${fmtAgo(r.ts)} · networks from Team Cymru's IP-to-ASN data, hostnames from reverse DNS</p>
       <div class="table-wrap"><table class="stats"><thead><tr><th>#</th><th style="text-align:left">Hop (hostname / IP)</th><th>ms</th><th style="text-align:left">Network</th></tr></thead><tbody>${hops}</tbody></table></div>
       <h3 class="small">Recent routes</h3><ul class="route-hist">${hist}</ul>` : '<p class="muted">Not traced yet. Routes are traced every 12 hours (the first a few minutes after netBae starts).</p>'}`;

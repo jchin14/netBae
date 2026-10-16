@@ -118,7 +118,8 @@ table.stats tr.total td { border-top: 1px solid var(--border); }
 .route-link:hover { color: var(--text); }
 .route-badge { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--text); }
 .route-badge.route-on-net { border-color: var(--good); color: var(--good); }
-.route-badge.route-peering { border-color: var(--accent); color: var(--accent); }
+.route-badge.route-direct { border-color: var(--accent); color: var(--accent); }
+.route-badge.route-ix { border-color: #a855f7; color: #a855f7; }
 .route-badge.route-transit { border-color: var(--warn); color: var(--warn); }
 #route-dialog { max-width: min(720px, calc(100vw - 32px)); width: 100%; color: var(--text); padding: 18px 20px; }
 #route-dialog::backdrop { background: rgba(0, 0, 0, .55); }

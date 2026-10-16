@@ -26,7 +26,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 - **Speedtests** with the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages
 - **Worldwide view:** latency to 18 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them
 - **Which ISP you're on:** the public IP and ISP of each connection, checked every 10 minutes and marked on the charts, so failovers stand out
-- **Routes and transit providers:** every 12 hours netBae traces the route to each target and shows whether it's **on-net**, **peering** (your ISP connects straight to the destination) or **transit** via carriers like Cogent, Arelion, GTT or Vodafone, with every hop one click away
+- **Routes and transit providers:** every 12 hours netBae traces the route to each target and shows whether it's **on-net**, a **direct** connection to the destination's network, handed over at an **IX** (internet exchange, named) or **transit** via carriers like Cogent, Arelion, GTT or Vodafone, with every hop and hostname one click away
 - **Secondary connection monitoring:** test a second internet connection (e.g. a 5G/4G failover link) alongside your main one, at the same time
 - **DNS over IPv4 and IPv6:** response times for your router, the DNS servers DHCP gave you, and Cloudflare, Google, Quad9, OpenDNS, CleanBrowsing, AdGuard, NextDNS and Control D
 - **History kept forever,** at the right resolution: every ping for 7 days, 1-minute summaries for 90 days, hourly summaries for ever
@@ -206,7 +206,7 @@ New-NetIPAddress -InterfaceAlias "Ethernet" -IPAddress 192.168.1.51 -PrefixLengt
 [[connections]]
 name = "Secondary"
 bind = "192.168.1.51"          # or an interface: "eth1" on Linux, "en7" on macOS
-targets = ["1.1.1.1", "8.8.8.8", "google.com", "valve:auto"]
+targets = ["1.1.1.1", "8.8.8.8", "google.com", "valve:auto"]   # or "all": every main ping target
 speedtest_interval_minutes = 1440   # daily, to save data on mobile plans (0 = only when you press Run)
 ```
 
@@ -219,7 +219,7 @@ The connection gets its own group of ping tiles and its own row in the speedtest
 - **Sites:** each name is pinged at the address it resolves to, which for big services is their nearest edge or CDN server. That's the path your real traffic takes.
 - **DNS:** one UDP A-record query per resolver and domain, timed in Python, over IPv4 and IPv6. "DHCP DNS" is read from the system's resolver settings (`/etc/resolv.conf` or systemd-resolved on Linux and macOS, the network adapter settings on Windows) at startup.
 - **ISP:** an HTTPS request to [ipinfo.io](https://ipinfo.io) through each connection (main and secondary) returns its public IP and ISP. The header shows the current one, and the charts mark every check: one colour per connection and one shape per ISP. Click a marker type above a chart to hide it. ipinfo.io sees your public IP, about 4,500 requests a month per connection at the default interval (its free tier allows 50,000).
-- **Routes:** the system `traceroute` (`tracert` on Windows) to each target every 12 hours. Each hop's network comes from [Team Cymru's IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) over DNS. A route is **on-net** if the destination is inside your ISP, **peering** if your ISP hands traffic straight to the destination's network (directly or across an internet exchange), and **transit** if other carriers sit in between. Traceroute only sees routers that answer it, so treat it as a strong hint, not proof.
+- **Routes:** the system `traceroute` (`tracert` on Windows) to each target every 12 hours. Each hop's network comes from [Team Cymru's IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) over DNS. A route is **on-net** if the destination is inside your ISP, **direct** if your ISP connects straight to the destination's network (a private interconnect), **IX** if the hand-over happens across an internet exchange (hops on an exchange's peering LAN, using [PeeringDB](https://www.peeringdb.com)'s prefix list, refreshed daily), and **transit** if another carrier sits in between. Traceroute only sees routers that answer it, so treat it as a strong hint, not proof.
 - **Speedtests:** the official Ookla CLI, auto-selecting the closest server unless you choose one.
 - **System:** the model name comes from the device tree on a Raspberry Pi (`/proc/device-tree/model`), DMI/BIOS info on PCs and VMs, `sysctl` on a Mac and the registry on Windows.
 
