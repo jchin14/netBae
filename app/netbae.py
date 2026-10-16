@@ -6,11 +6,13 @@ into SQLite and serves a dashboard + JSON API. Python standard library only.
 """
 import argparse
 import copy
+import glob
 import ctypes
 import ctypes.util
 import ipaddress
 import json
 import logging
+import logging.handlers
 import math
 import os
 import platform
@@ -41,13 +43,32 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.2.1"
+VERSION = "1.3.0"
+IS_MAC = sys.platform == "darwin"
+IS_WINDOWS = sys.platform == "win32"
+# Windows keeps config, database and log together in %ProgramData%\netBae.
+WIN_DATA_DIR = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "netBae")
+DEFAULT_CONFIG_PATH = os.path.join(WIN_DATA_DIR, "config.toml") if IS_WINDOWS else "/etc/netbae/config.toml"
+# Don't flash a console window for each ping when running outside a console.
+SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if IS_WINDOWS else {}
+
+# Popular public resolvers: (name, IPv4, IPv6). NextDNS and Control D answer without an account.
+PUBLIC_RESOLVERS = [
+    ("Cloudflare", "1.1.1.1", "2606:4700:4700::1111"),
+    ("Google", "8.8.8.8", "2001:4860:4860::8888"),
+    ("Quad9", "9.9.9.9", "2620:fe::fe"),
+    ("OpenDNS", "208.67.222.222", "2620:119:35::35"),
+    ("CleanBrowsing", "185.228.168.9", "2a0d:2a00:1::2"),
+    ("AdGuard", "94.140.14.14", "2a10:50c0::ad1:ff"),
+    ("NextDNS", "45.90.28.0", "2a07:a8c0::"),
+    ("Control D", "76.76.2.0", "2606:1a40::"),
+]
 
 DEFAULT_CONFIG = {
     "web": {"host": "0.0.0.0", "port": 80},
     # raw samples -> 1-minute summaries -> hourly summaries; 0 = keep forever
-    "storage": {"database": "/var/lib/netbae/netbae.db", "raw_retention_days": 7, "minute_retention_days": 90,
-                "retention_days": 0},
+    "storage": {"database": os.path.join(WIN_DATA_DIR, "netbae.db") if IS_WINDOWS else "/var/lib/netbae/netbae.db",
+                "raw_retention_days": 7, "minute_retention_days": 90, "retention_days": 0},
     "ping": {
         "interval_seconds": 5,
         "offset_seconds": 0,
@@ -57,6 +78,11 @@ DEFAULT_CONFIG = {
             {"name": "Cloudflare DNS", "host": "1.1.1.1", "group": "DNS"},
             {"name": "Google DNS", "host": "8.8.8.8", "group": "DNS"},
             {"name": "Quad9", "host": "9.9.9.9", "group": "DNS"},
+            {"name": "OpenDNS", "host": "208.67.222.222", "group": "DNS"},
+            {"name": "CleanBrowsing", "host": "185.228.168.9", "group": "DNS"},
+            {"name": "AdGuard DNS", "host": "94.140.14.14", "group": "DNS"},
+            {"name": "NextDNS", "host": "45.90.28.0", "group": "DNS"},
+            {"name": "Control D", "host": "76.76.2.0", "group": "DNS"},
             {"name": "Google", "host": "google.com", "group": "Google"},
             {"name": "YouTube", "host": "youtube.com", "group": "Google"},
             {"name": "Netflix", "host": "www.netflix.com", "group": "Streaming"},
@@ -86,13 +112,8 @@ DEFAULT_CONFIG = {
         "timeout_seconds": 2,
         "servers": [
             {"name": "Router", "host": "gateway"},
-            {"name": "Cloudflare", "host": "1.1.1.1"},
-            {"name": "Google", "host": "8.8.8.8"},
-            {"name": "Quad9", "host": "9.9.9.9"},
-            {"name": "Cloudflare", "host": "2606:4700:4700::1111"},
-            {"name": "Google", "host": "2001:4860:4860::8888"},
-            {"name": "Quad9", "host": "2620:fe::fe"},
-        ],
+            {"name": "DHCP DNS", "host": "dhcp"},  # resolvers this machine got from DHCP, if not the router
+        ] + [{"name": name, "host": ip} for name, v4, v6 in PUBLIC_RESOLVERS for ip in (v4, v6)],
         "domains": ["google.com", "microsoft.com", "facebook.com", "reddit.com", "netflix.com"],
     },
     "speedtest": {
@@ -122,6 +143,8 @@ def default_gateway():
             f = line.split()
             if len(f) > 2 and f[1] == "00000000" and f[2] != "00000000":
                 return socket.inet_ntoa(struct.pack("<L", int(f[2], 16)))
+    if IS_WINDOWS:
+        return windows_default_gateway()
     try:  # macOS / BSD
         out = subprocess.run(["/sbin/route", "-n", "get", "default"], capture_output=True, text=True,
                              timeout=5).stdout
@@ -134,6 +157,54 @@ def default_gateway():
         return str(ipaddress.IPv4Address(m.group(1)))
     except ValueError:  # "link#12" and the like
         return None
+
+
+def system_dns_servers():
+    """The DNS servers this machine uses (normally handed out by DHCP), loopback stubs excluded."""
+    found = []
+    try:
+        if IS_WINDOWS:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-DnsClientServerAddress | ForEach-Object { $_.ServerAddresses }"],
+                capture_output=True, text=True, timeout=20, **SUBPROCESS_FLAGS).stdout
+            found = out.split()
+        else:
+            # systemd-resolved keeps the real upstream servers here; /etc/resolv.conf may only list 127.0.0.53
+            for path in ("/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"):
+                raw = read_file(path)
+                if raw:
+                    found = [ln.split()[1] for ln in raw.splitlines() if ln.startswith("nameserver") and len(ln.split()) > 1]
+                    if found:
+                        break
+    except (OSError, subprocess.SubprocessError):
+        return []
+    out = []
+    for ip in found:
+        ip = ip.split("%")[0]  # drop IPv6 zone ids (fe80::1%eth0)
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if not (a.is_loopback or a.is_unspecified or a.is_link_local) and ip not in out:
+            out.append(ip)
+    return out
+
+
+def windows_default_gateway():
+    """Lowest-metric 0.0.0.0/0 route from `route print`. Its columns are the same in every
+    language: destination, netmask, gateway ("On-link" when there is none), interface, metric."""
+    best = None
+    for line in (run_cmd(["route", "print", "-4", "0.0.0.0"]) or "").splitlines():
+        f = line.split()
+        if len(f) == 5 and f[0] == "0.0.0.0" and f[1] == "0.0.0.0" and f[4].isdigit():
+            try:
+                gw = str(ipaddress.IPv4Address(f[2]))
+            except ValueError:
+                continue
+            if gw != "0.0.0.0" and (best is None or int(f[4]) < best[0]):
+                best = (int(f[4]), gw)
+    return best[1] if best else None
 
 
 def normalize_target(t, default_port=443):
@@ -227,6 +298,8 @@ def normalize_connection(c):
     except ValueError:
         if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", bind):
             raise SystemExit(f"connection {name}: bind must be an IP address or interface name")
+        if IS_WINDOWS:  # no SO_BINDTODEVICE, and Windows ping only takes a source address (-S)
+            raise SystemExit(f"connection {name}: on Windows, bind must be this PC's source IP address, not {bind!r}")
     targets = []
     for t in c.get("targets") or ["1.1.1.1", "8.8.8.8", "google.com"]:
         t = normalize_target(t)
@@ -319,13 +392,28 @@ def find_region_servers(region):
     return sorted(found, key=lambda c: (c["ms"] is None, c["ms"] or 0))
 
 
+def windows_speedtest_paths():
+    """Where install.ps1 puts speedtest.exe: winget (machine or user scope) or Ookla's zip."""
+    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+    local = os.environ.get("LOCALAPPDATA", "")
+    found = [os.path.join(pf, "netBae", "speedtest", "speedtest.exe"),
+             os.path.join(pf, "WinGet", "Links", "speedtest.exe")]
+    found += sorted(glob.glob(os.path.join(pf, "WinGet", "Packages", "Ookla.Speedtest.CLI*", "speedtest.exe")))
+    if local:
+        found += [os.path.join(local, "Microsoft", "WinGet", "Links", "speedtest.exe")]
+        found += sorted(glob.glob(os.path.join(local, "Microsoft", "WinGet", "Packages",
+                                               "Ookla.Speedtest.CLI*", "speedtest.exe")))
+    return found
+
+
 def find_speedtest(binary):
-    """Resolve 'auto' to the Ookla CLI: /usr/bin (official package), /usr/local/bin (tarball)
-    or Homebrew on macOS."""
+    """Resolve 'auto' to the Ookla CLI: /usr/bin (official package), /usr/local/bin (tarball),
+    Homebrew on macOS, or winget / the netBae program folder on Windows."""
     if binary and binary != "auto":
         return binary
-    for cand in ("/usr/bin/speedtest", "/usr/local/bin/speedtest", "/opt/homebrew/bin/speedtest",
-                 shutil.which("speedtest")):
+    cands = windows_speedtest_paths() if IS_WINDOWS else \
+        ["/usr/bin/speedtest", "/usr/local/bin/speedtest", "/opt/homebrew/bin/speedtest"]
+    for cand in cands + [shutil.which("speedtest")]:
         if cand and os.access(cand, os.X_OK):
             return cand
     return "speedtest"
@@ -355,9 +443,24 @@ def load_config(path):
     cfg["connections"] = [normalize_connection(c) for c in cfg["connections"]]
     for c in cfg["connections"]:
         cfg["ping"]["targets"].extend(c["targets"])
-    cfg["dns"]["servers"] = [normalize_target(t) for t in cfg["dns"]["servers"]]
+    servers = []
+    for t in cfg["dns"]["servers"]:
+        if isinstance(t, dict) and str(t.get("host", "")).lower() == "dhcp":
+            # add the DHCP-provided resolvers that aren't the router or already in the list
+            gw = default_gateway()
+            listed = {str(x.get("host") if isinstance(x, dict) else x) for x in cfg["dns"]["servers"]}
+            extra = [ip for ip in system_dns_servers() if ip != gw and ip not in listed]
+            for i, ip in enumerate(extra):
+                servers.append(dict(normalize_target({"name": t.get("name") or "DHCP DNS", "host": ip}),
+                                    id="dhcp" if i == 0 else f"dhcp-{i + 1}"))
+            if not extra:
+                log.info("DHCP DNS: this machine uses the router (or a listed resolver) for DNS, nothing extra to test")
+        else:
+            servers.append(normalize_target(t))
+    cfg["dns"]["servers"] = servers
     for s in cfg["dns"]["servers"]:
         s["id"] = s["id"].replace("tcp://", "").rsplit(":", 1)[0] if s["method"] == "tcp" else s["id"]
+        s["dhcp"] = s["id"].startswith("dhcp")
         s["family"] = 6 if ":" in s["host"] else 4
         s["group"] = f"IPv{s['family']}"
     st = cfg["storage"]
@@ -531,6 +634,9 @@ class DB:
 SKIP = object()  # "no measurement this tick" (e.g. server not resolved yet)
 
 PING_RE = re.compile(r"time[=<]\s*([\d.]+)\s*ms")
+# Windows translates "time" (Zeit=12ms, temps=12 ms, tiempo<1ms ...) but always prints "=12ms" or "<1ms",
+# and nothing else on a reply line ends in "ms".
+WIN_PING_RE = re.compile(r"[=<]\s*(\d+)\s*ms\b")
 
 
 def is_ip(v):
@@ -542,27 +648,36 @@ def is_ip(v):
 
 
 def bind_socket(s, bind):
-    """Send from a specific source IP, or out of a specific interface (Linux)."""
+    """Send from a specific source IP, or out of a specific interface (Linux, macOS)."""
     if not bind:
         return
     if is_ip(bind):
         s.bind((bind, 0))
+    elif IS_MAC:  # IP_BOUND_IF / IPV6_BOUND_IF take the interface index
+        v6 = s.family == socket.AF_INET6
+        s.setsockopt(socket.IPPROTO_IPV6 if v6 else socket.IPPROTO_IP, 125 if v6 else 25, socket.if_nametoindex(bind))
     else:
         s.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_BINDTODEVICE", 25), bind.encode())
 
 
 def icmp_ping(host, timeout, bind=None):
     t = str(max(1, math.ceil(timeout)))
-    if sys.platform == "darwin":
-        cmd = ["ping", "-n", "-c", "1", "-t", t] + ((["-S", bind] if is_ip(bind) else ["-b", bind]) if bind else [])
+    if IS_WINDOWS:  # -S picks the source address; Windows ping can't bind to an interface by name
+        cmd = ["ping", "-n", "1", "-w", str(max(1, int(timeout * 1000)))] + (["-S", bind] if is_ip(bind) else [])
+    elif IS_MAC:
+        if ":" in host:  # macOS ping is IPv4-only; ping6 has no -t timeout
+            cmd = ["ping6", "-n", "-c", "1"] + ((["-S", bind] if is_ip(bind) else ["-B", bind]) if bind else [])
+        else:
+            cmd = ["ping", "-n", "-c", "1", "-t", t] + ((["-S", bind] if is_ip(bind) else ["-b", bind]) if bind else [])
     else:
         cmd = ["ping", "-n", "-c", "1", "-W", t] + (["-I", bind] if bind else [])
     cmd.append(host)
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5).stdout
+        out = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout + 5,
+                             **SUBPROCESS_FLAGS).stdout
     except (subprocess.TimeoutExpired, OSError):
         return None
-    m = PING_RE.search(out)
+    m = (WIN_PING_RE if IS_WINDOWS else PING_RE).search(out)
     return float(m.group(1)) if m else None
 
 
@@ -630,7 +745,7 @@ def read_file(path):
 def run_cmd(args):
     """stdout of a short-lived command, or None."""
     try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=5)
+        p = subprocess.run(args, capture_output=True, text=True, errors="replace", timeout=5, **SUBPROCESS_FLAGS)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return p.stdout.strip() if p.returncode == 0 else None
@@ -638,9 +753,6 @@ def run_cmd(args):
 
 def sysctl(name):
     return run_cmd(["/usr/sbin/sysctl", "-n", name])
-
-
-IS_MAC = sys.platform == "darwin"
 
 
 class MacCPU:
@@ -664,12 +776,91 @@ class MacCPU:
         return idle, user + system + idle + nice
 
 
+class FILETIME(ctypes.Structure):
+    _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
+
+    @property
+    def value(self):
+        return (self.high << 32) | self.low
+
+
+class MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32),
+                ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+
+
+class WinStats:
+    """CPU, memory and uptime from kernel32 (Windows has no /proc)."""
+
+    def __init__(self):
+        self.k32 = ctypes.WinDLL("kernel32")
+        self.k32.GetTickCount64.restype = ctypes.c_uint64
+
+    def ticks(self):
+        idle, kernel, user = FILETIME(), FILETIME(), FILETIME()
+        if not self.k32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+            return None
+        return idle.value, kernel.value + user.value  # kernel time includes idle time
+
+    def meminfo(self):
+        m = MEMORYSTATUSEX()
+        m.dwLength = ctypes.sizeof(m)
+        if not self.k32.GlobalMemoryStatusEx(ctypes.byref(m)):
+            return None
+        total, avail = m.ullTotalPhys, m.ullAvailPhys
+        # The commit limit is RAM + page file, so what is committed beyond RAM is the page file in use.
+        swap_total = max(m.ullTotalPageFile - total, 0)
+        swap_used = min(max((m.ullTotalPageFile - m.ullAvailPageFile) - (total - avail), 0), swap_total)
+        return {
+            "total": total, "available": avail, "used": total - avail,
+            "percent": round(100.0 * (total - avail) / total, 1) if total else None,
+            "swap_total": swap_total, "swap_used": swap_used,
+        }
+
+    def uptime(self):
+        return self.k32.GetTickCount64() / 1000
+
+    @staticmethod
+    def reg(path, name):
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path) as k:
+                return str(winreg.QueryValueEx(k, name)[0]).strip() or None
+        except OSError:
+            return None
+
+    @classmethod
+    def static_info(cls):
+        bios = r"HARDWARE\DESCRIPTION\System\BIOS"
+        model = " ".join(filter(None, (cls.reg(bios, "SystemManufacturer"), cls.reg(bios, "SystemProductName"))))
+        nt = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+        name = cls.reg(nt, "ProductName")
+        build = cls.reg(nt, "CurrentBuildNumber") or ""
+        if name and build.isdigit() and int(build) >= 22000:  # Windows 11 still says "Windows 10" here
+            name = name.replace("Windows 10", "Windows 11")
+        if name and cls.reg(nt, "DisplayVersion"):
+            name = f"{name} {cls.reg(nt, 'DisplayVersion')}"
+        cpu = cls.reg(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString")
+        return model or None, name or f"Windows {platform.release()} ({platform.version()})", cpu
+
+
 class SystemStats:
     def __init__(self, disk_path):
+        if IS_WINDOWS and disk_path in ("/", "\\"):  # the shipped config's "/" means the system drive
+            disk_path = os.environ.get("SystemDrive", "C:") + "\\"
         self.disk_path = disk_path
         self.prev_cpu = None
         self.latest = {}
         self.mac_cpu = None
+        self.win = None
+        if IS_WINDOWS:
+            try:
+                self.win = WinStats()
+            except (OSError, AttributeError):
+                log.warning("could not load kernel32 for system stats")
         if IS_MAC:
             try:
                 self.mac_cpu = MacCPU()
@@ -680,6 +871,8 @@ class SystemStats:
         """(idle, total) cumulative CPU ticks."""
         if self.mac_cpu:
             return self.mac_cpu.ticks()
+        if self.win:
+            return self.win.ticks()
         line = read_file("/proc/stat")
         if not line:
             return None
@@ -696,8 +889,9 @@ class SystemStats:
             return None
         return round(100.0 * (1 - (idle - prev[0]) / (total - prev[1])), 1)
 
-    @staticmethod
-    def meminfo():
+    def meminfo(self):
+        if self.win:
+            return self.win.meminfo()
         raw = read_file("/proc/meminfo")
         if not raw:
             return SystemStats.mac_meminfo() if IS_MAC else None
@@ -714,6 +908,7 @@ class SystemStats:
             "swap_used": info.get("SwapTotal", 0) - info.get("SwapFree", 0),
         }
 
+    @staticmethod
     def mac_meminfo():
         """Memory like Activity Monitor: used = app memory + wired + compressed."""
         total, raw = sysctl("hw.memsize"), run_cmd(["/usr/bin/vm_stat"])
@@ -744,6 +939,13 @@ class SystemStats:
         }
 
     def disk(self):
+        if not hasattr(os, "statvfs"):  # Windows
+            try:
+                total, used, free = shutil.disk_usage(self.disk_path)
+            except OSError:
+                return None
+            return {"path": self.disk_path, "total": total, "used": used, "free": free,
+                    "percent": round(100.0 * used / total, 1) if total else None}
         try:
             st = os.statvfs(self.disk_path)
         except OSError:
@@ -788,11 +990,12 @@ class SystemStats:
             return [float(x) for x in raw.split()[:3]]
         try:
             return list(os.getloadavg())
-        except OSError:
+        except (OSError, AttributeError):  # Windows has no load average
             return None
 
-    @staticmethod
-    def uptime():
+    def uptime(self):
+        if self.win:
+            return self.win.uptime()
         raw = read_file("/proc/uptime")
         if raw:
             return float(raw.split()[0])
@@ -810,8 +1013,7 @@ class SystemStats:
         except OSError:
             return None
 
-    @staticmethod
-    def static_info():
+    def static_info(self):
         model = (read_file("/proc/device-tree/model") or "").rstrip("\x00")
         if not model:
             vendor = read_file("/sys/class/dmi/id/sys_vendor") or ""
@@ -835,6 +1037,8 @@ class SystemStats:
             name, ver = run_cmd(["/usr/bin/sw_vers", "-productName"]), run_cmd(["/usr/bin/sw_vers", "-productVersion"])
             if name and ver:
                 os_name = f"{name} {ver}"
+        if IS_WINDOWS:
+            model, os_name, cpu_model = WinStats.static_info()
         hostname = (run_cmd(["/usr/sbin/scutil", "--get", "LocalHostName"]) if IS_MAC else None) \
             or socket.gethostname()
         return {
@@ -1116,7 +1320,8 @@ class Monitor:
         row["server_id"] = server_id
         log.info("running speedtest %s (server=%s)", label, server_id or "auto")
         try:
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=st["timeout_seconds"])
+            p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=st["timeout_seconds"],
+                               **SUBPROCESS_FLAGS)
             result, err = None, None
             for line in (p.stdout + "\n" + p.stderr).splitlines():
                 try:
@@ -1144,6 +1349,8 @@ class Monitor:
                 row["error"] = err or p.stderr.strip()[-500:] or f"speedtest exited with code {p.returncode}"
         except FileNotFoundError:
             row["error"] = f"speedtest binary not found at {st['binary']}"
+        except OSError as e:  # e.g. permission denied
+            row["error"] = f"could not run {st['binary']}: {e}"
         except subprocess.TimeoutExpired:
             row["error"] = "speedtest timed out"
         if row["error"]:
@@ -1463,13 +1670,19 @@ def make_handler(monitor):
 
 def main():
     ap = argparse.ArgumentParser(description="netBae internet connection monitor")
-    ap.add_argument("-c", "--config", default=os.environ.get("NETBAE_CONFIG", "/etc/netbae/config.toml"))
+    ap.add_argument("-c", "--config", default=os.environ.get("NETBAE_CONFIG", DEFAULT_CONFIG_PATH))
     ap.add_argument("--print-port", action="store_true", help="print the configured web port and exit")
     ap.add_argument("--check-config", action="store_true", help="validate and print the effective config")
+    ap.add_argument("--log-file", help="log to this file (rotated at 1 MB, 5 kept) instead of stderr")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+    handlers = None
+    if args.log_file:  # Windows: a scheduled task has no journal to catch stderr
+        handlers = [logging.handlers.RotatingFileHandler(args.log_file, maxBytes=1 << 20, backupCount=5,
+                                                         encoding="utf-8")]
+        sys.excepthook = lambda *exc: log.critical("netBae stopped", exc_info=exc)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
-                        format="%(asctime)s %(levelname)s %(message)s")
+                        format="%(asctime)s %(levelname)s %(message)s", handlers=handlers)
     cfg = load_config(args.config)
     if args.print_port:
         print(cfg["web"]["port"])
@@ -1489,7 +1702,8 @@ def main():
     monitor = Monitor(cfg)
     monitor.start()
     host, port = cfg["web"]["host"], int(cfg["web"]["port"])
-    ThreadingHTTPServer.allow_reuse_address = True
+    # On Windows SO_REUSEADDR would let a second copy bind the same port instead of failing.
+    ThreadingHTTPServer.allow_reuse_address = not IS_WINDOWS
     ThreadingHTTPServer.request_queue_size = 128  # default of 5 drops parallel dashboard requests
     httpd = ThreadingHTTPServer((host, port), make_handler(monitor))
     httpd.daemon_threads = True

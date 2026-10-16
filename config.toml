@@ -32,6 +32,11 @@ targets = [
   { name = "Cloudflare DNS", host = "1.1.1.1",          group = "DNS" },
   { name = "Google DNS",     host = "8.8.8.8",          group = "DNS" },
   { name = "Quad9",          host = "9.9.9.9",          group = "DNS" },
+  { name = "OpenDNS",        host = "208.67.222.222",   group = "DNS" },
+  { name = "CleanBrowsing",  host = "185.228.168.9",    group = "DNS" },
+  { name = "AdGuard DNS",    host = "94.140.14.14",     group = "DNS" },
+  { name = "NextDNS",        host = "45.90.28.0",       group = "DNS" },
+  { name = "Control D",      host = "76.76.2.0",        group = "DNS" },
   { name = "Google",         host = "google.com",       group = "Google" },
   { name = "YouTube",        host = "youtube.com",      group = "Google" },
   { name = "Netflix",        host = "www.netflix.com",  group = "Streaming" },   # netflix.com itself blocks ping
@@ -70,14 +75,28 @@ offset_seconds = 0
 timeout_seconds = 2
 # Every server is asked for every domain on each run. IPv6 servers are only queried when
 # this machine has IPv6 internet (checked every 10 minutes).
+#   host = "gateway" - your router
+#   host = "dhcp"    - the DNS servers this machine was given by DHCP, if they're not the router
+#                      (e.g. your ISP's resolvers, or the router's IPv6 address)
 servers = [
-  { name = "Router",     host = "gateway" },
-  { name = "Cloudflare", host = "1.1.1.1" },
-  { name = "Google",     host = "8.8.8.8" },
-  { name = "Quad9",      host = "9.9.9.9" },
-  { name = "Cloudflare", host = "2606:4700:4700::1111" },
-  { name = "Google",     host = "2001:4860:4860::8888" },
-  { name = "Quad9",      host = "2620:fe::fe" },
+  { name = "Router",        host = "gateway" },
+  { name = "DHCP DNS",      host = "dhcp" },
+  { name = "Cloudflare",    host = "1.1.1.1" },
+  { name = "Cloudflare",    host = "2606:4700:4700::1111" },
+  { name = "Google",        host = "8.8.8.8" },
+  { name = "Google",        host = "2001:4860:4860::8888" },
+  { name = "Quad9",         host = "9.9.9.9" },
+  { name = "Quad9",         host = "2620:fe::fe" },
+  { name = "OpenDNS",       host = "208.67.222.222" },
+  { name = "OpenDNS",       host = "2620:119:35::35" },
+  { name = "CleanBrowsing", host = "185.228.168.9" },        # security filter
+  { name = "CleanBrowsing", host = "2a0d:2a00:1::2" },
+  { name = "AdGuard",       host = "94.140.14.14" },
+  { name = "AdGuard",       host = "2a10:50c0::ad1:ff" },
+  { name = "NextDNS",       host = "45.90.28.0" },           # no account needed; add your profile's IPs to test your own
+  { name = "NextDNS",       host = "2a07:a8c0::" },
+  { name = "Control D",     host = "76.76.2.0" },
+  { name = "Control D",     host = "2606:1a40::" },
 ]
 domains = ["google.com", "microsoft.com", "facebook.com", "reddit.com", "netflix.com"]
 

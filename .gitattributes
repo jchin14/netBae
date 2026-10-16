@@ -1,0 +1,4 @@
+# Windows scripts get CRLF in checkouts (cmd.exe needs it; Windows PowerShell is happier with it)
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf

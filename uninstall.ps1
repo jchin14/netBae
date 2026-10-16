@@ -1,0 +1,64 @@
+# Removes netBae from Windows. Pass -Purge to also delete the config, database and log.
+#   powershell -ExecutionPolicy Bypass -File "C:\Program Files\netBae\uninstall.ps1" [-Purge]
+#   or: netbae uninstall [-Purge]
+# -Deferred (used by `netbae uninstall`) leaves bin\ for a few seconds, because cmd.exe errors out
+# if the netbae.cmd it is running disappears underneath it.
+param([switch]$Purge, [switch]$Deferred)
+$ErrorActionPreference = 'Stop'
+
+$me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $a = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    if ($Purge) { $a += ' -Purge' }
+    if ($Deferred) { $a += ' -Deferred' }
+    $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $a -Wait -PassThru
+    exit $p.ExitCode
+}
+
+$AppDir = Join-Path $env:ProgramFiles 'netBae'
+$DataDir = Join-Path $env:ProgramData 'netBae'
+$TaskName = 'netBae'
+
+# Machine PATH via the registry, keeping it REG_EXPAND_SZ (%SystemRoot% entries stay unexpanded).
+function Set-MachinePath([scriptblock]$change) {
+    $key = Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+    $old = $key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+    $new = (& $change (($old -split ';') | Where-Object { $_ })) -join ';'
+    if ($new -ne $old) {
+        Set-ItemProperty $key.PSPath -Name Path -Value $new -Type ExpandString
+        # setting any variable through .NET broadcasts WM_SETTINGCHANGE so new terminals see the PATH
+        [Environment]::SetEnvironmentVariable('NETBAE_PATH_REFRESH', '1', 'User')
+        [Environment]::SetEnvironmentVariable('NETBAE_PATH_REFRESH', $null, 'User')
+    }
+}
+
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+}
+Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like "*$AppDir\netbae.py*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Get-Process speedtest -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$AppDir\*" } |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+Remove-NetFirewallRule -Name 'netBae-dashboard' -ErrorAction SilentlyContinue
+
+$binDir = "$AppDir\bin"
+Set-MachinePath { param($parts) $parts | Where-Object { $_ -ne $binDir } }
+
+Set-Location $env:SystemRoot   # in case the shell is inside the folder being deleted
+Start-Sleep -Seconds 1         # let the killed python release its files
+if ($Deferred) {
+    Get-ChildItem $AppDir | Where-Object Name -ne 'bin' | Remove-Item -Recurse -Force
+    Start-Process cmd.exe -WindowStyle Hidden -ArgumentList '/c', "ping -n 4 127.0.0.1 >nul & rd /s /q `"$AppDir`""
+} else {
+    Remove-Item $AppDir -Recurse -Force
+}
+Write-Host 'netBae removed. Python and a winget-installed Ookla speedtest CLI were left installed.'
+
+if ($Purge) {
+    Remove-Item $DataDir -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "Config, data and log ($DataDir) were deleted."
+} else {
+    Write-Host "Config and data ($DataDir) kept. Re-run with -Purge to delete them."
+}

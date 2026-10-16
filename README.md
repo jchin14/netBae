@@ -3,9 +3,9 @@
 # netBae
 
 **A self-hosted dashboard for your home internet connection.**<br>
-Ping, DNS, game servers and speedtests, recorded around the clock on a Raspberry Pi, a Linux VM or a Mac.
+Ping, DNS, game servers and speedtests, recorded around the clock on a Raspberry Pi, a Linux VM, a Mac or a Windows PC.
 
-![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-2f6fe4)
+![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-2f6fe4)
 ![Python](https://img.shields.io/badge/python-3.8%2B-2f6fe4)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-1a9e5c)
 ![License](https://img.shields.io/badge/license-personal%20use-d48806)
@@ -24,7 +24,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 - **Speedtests** with the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages
 - **Worldwide view:** latency to 18 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them
 - **Secondary connection monitoring:** test a second internet connection (e.g. a 5G/4G failover link) alongside your main one, at the same time
-- **DNS over IPv4 and IPv6:** response times for each resolver and domain
+- **DNS over IPv4 and IPv6:** response times for your router, the DNS servers DHCP gave you, and Cloudflare, Google, Quad9, OpenDNS, CleanBrowsing, AdGuard, NextDNS and Control D
 - **History kept forever,** at the right resolution: every ping for 7 days, 1-minute summaries for 90 days, hourly summaries for ever
 - **Works from any device** on your network, including when the internet is down
 - **No Docker, no dependencies:** Python's standard library and SQLite. One command installs or updates it.
@@ -37,13 +37,19 @@ On a Raspberry Pi, a Linux VM (Proxmox, etc.) or a Mac:
 curl -fsSL https://raw.githubusercontent.com/jchin14/netBae/main/install.sh | sudo bash
 ```
 
+On Windows 10/11, in **PowerShell as Administrator**:
+
+```powershell
+irm https://raw.githubusercontent.com/jchin14/netBae/main/install.ps1 | iex
+```
+
 Then open **`http://<that-machine>/`** on your phone or laptop. Run the same command again any time to update; your config and history are kept.
 
 | | Supported |
 |---|---|
 | **Linux** | Raspberry Pi OS, Debian, Ubuntu, Fedora, RHEL/Rocky/Alma, Arch, openSUSE (systemd) on x86_64, arm64, armhf, armv6, i386 |
 | **macOS** | 12 Monterey or later, Apple silicon or Intel (uses Homebrew) |
-| **Windows** | Not yet. Run netBae on a Pi or VM and open the dashboard from Windows. |
+| **Windows** | 10 and 11 (and Server 2019+), x64 or arm64, with its own PowerShell installer (`install.ps1`) |
 
 <details>
 <summary><b>What the installer does on Linux</b></summary>
@@ -61,6 +67,8 @@ On Proxmox, use a VM or a *privileged* LXC container; unprivileged LXC can block
 <details>
 <summary><b>What the installer does on macOS</b></summary>
 
+Install [Homebrew](https://brew.sh) first, then run the Quick start command in Terminal and enter your Mac password when `sudo` asks. The dashboard is at `http://<your-mac>.local/` (the installer prints the exact address). The installer:
+
 1. uses (or `brew install`s) a Python 3.11+; macOS's own `python3` is too old
 2. installs the Ookla CLI from Ookla's Homebrew tap (`teamookla/speedtest`). Homebrew always runs as your user, never as root.
 3. creates a hidden `_netbae` user and installs the app to `/usr/local/lib/netbae`
@@ -68,19 +76,38 @@ On Proxmox, use a VM or a *privileged* LXC container; unprivileged LXC can block
 5. starts a launchd LaunchDaemon (`com.github.netbae`) on port 80, so it runs from boot with nobody logged in, still as an unprivileged user
 6. allows Python through the macOS firewall if it's on
 
-Tips: stop the Mac from sleeping (System Settings → Energy), and use Ethernet so the charts measure your internet rather than your Wi-Fi. Temperature isn't available on macOS without root.
+Tips: stop the Mac from sleeping (System Settings → Energy), and use Ethernet so the charts measure your internet rather than your Wi-Fi. If you turn the macOS firewall on later, re-run the install command so other devices can still reach the dashboard. Temperature isn't available on macOS without root. `netbae uninstall` leaves the speedtest CLI installed; `brew uninstall speedtest` removes it.
+</details>
+
+<details>
+<summary><b>What the installer does on Windows</b></summary>
+
+`install.sh` is a bash script built around systemd and launchd, and a stock Windows has neither, so Windows gets `install.ps1`, written for the Windows PowerShell that every Windows 10/11 already has. From a clone, run `powershell -ExecutionPolicy Bypass -File install.ps1`; from a non-admin window it asks for admin rights (UAC) and continues in a new window. It:
+
+1. uses an installed Python 3.11+, or installs Python 3.12 with `winget` (or the python.org installer if winget is missing)
+2. installs the official Ookla CLI with `winget` (`Ookla.Speedtest.CLI`) or from Ookla's zip, and keeps a copy in `C:\Program Files\netBae\speedtest` that the service account can run
+3. installs the app to `C:\Program Files\netBae` and puts the `netbae` command on the PATH (works in cmd and PowerShell)
+4. writes `C:\ProgramData\netBae\config.toml` (an existing config is never overwritten)
+5. registers a scheduled task (`netBae`) that starts at boot with nobody logged in, as the unprivileged built-in *LOCAL SERVICE* account, and comes back within 5 minutes if it ever stops. A real Windows service would need pywin32 or a wrapper exe; a task needs nothing extra.
+6. allows the port in Windows Firewall from your local network only. Port 80 is often taken on Windows (IIS, http.sys); on a first install the installer then moves to 8080 and tells you.
+
+`netbae uninstall -Purge` removes everything, including the task, firewall rule and PATH entry; Python and a winget-installed speedtest CLI are left alone.
+
+Tips: turn off sleep (Settings → System → Power). Load average and temperature aren't available on Windows; CPU, RAM, page file, storage and uptime are. For a [secondary connection](#monitoring-a-secondary-connection), `bind` must be an IP address (Windows `ping` can't pick an interface by name).
+
+**WSL2?** You could run the Linux installer inside WSL2, but it makes a poor monitor: WSL2 sits behind its own NAT, so `gateway` is the WSL virtual switch rather than your router and every ping has an extra hop; other devices can't reach the dashboard without port forwarding or mirrored networking; and WSL only runs while something keeps it alive. Use the native installer instead.
 </details>
 
 <details>
 <summary><b>Where things live</b></summary>
 
-| | Linux | macOS |
-|---|---|---|
-| App | `/opt/netbae` | `/usr/local/lib/netbae` |
-| Config | `/etc/netbae/config.toml` | `/usr/local/etc/netbae/config.toml` |
-| Database | `/var/lib/netbae/netbae.db` | `/usr/local/var/netbae/netbae.db` |
-| Log | `journalctl -u netbae` | `/usr/local/var/log/netbae.log` |
-| Service | systemd `netbae.service` | launchd `com.github.netbae` |
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| App | `/opt/netbae` | `/usr/local/lib/netbae` | `C:\Program Files\netBae` |
+| Config | `/etc/netbae/config.toml` | `/usr/local/etc/netbae/config.toml` | `C:\ProgramData\netBae\config.toml` |
+| Database | `/var/lib/netbae/netbae.db` | `/usr/local/var/netbae/netbae.db` | `C:\ProgramData\netBae\netbae.db` |
+| Log | `journalctl -u netbae` | `/usr/local/var/log/netbae.log` | `C:\ProgramData\netBae\netbae.log` |
+| Service | systemd `netbae.service` | launchd `com.github.netbae` | scheduled task `netBae` |
 </details>
 
 ## Everyday use
@@ -91,8 +118,11 @@ netbae status        # is it running?
 netbae logs          # follow the log
 netbae config        # edit the config, validate it and restart
 netbae check         # validate the config and show the next speedtest times
-netbae uninstall     # remove (add --purge to also delete config + history)
+netbae restart       # also start / stop
+netbae uninstall     # remove (add --purge to also delete config + history; -Purge on Windows)
 ```
+
+On Windows, commands that change something (update, restart, config, uninstall) ask for admin rights.
 
 When an update adds new options or default targets, your config isn't overwritten. The latest defaults are saved next to it as `config.toml.default`.
 
@@ -106,7 +136,7 @@ Everything lives in one commented [config file](config.toml). The highlights:
 | `[ping] targets` | 21 hosts in 9 groups | `{ name, host, group }`; `host = "gateway"` = your router; `method = "tcp"` for hosts that block ping |
 | `[ping] interval_seconds` / `offset_seconds` | `5` / `0` | |
 | `[ping] regions` | 18 cities | latency to the fastest Ookla server in each city, every `region_interval_seconds` (30) |
-| `[dns] servers` / `domains` | router + Cloudflare, Google, Quad9 over IPv4 and IPv6 / 5 domains | IPv6 servers are skipped automatically on IPv4-only networks |
+| `[dns] servers` / `domains` | router, DHCP DNS + 8 public resolvers over IPv4 and IPv6 / 5 domains | `host = "dhcp"` adds the DNS servers this machine got from DHCP if they differ from the router; IPv6 servers are skipped on IPv4-only networks |
 | `[speedtest] interval_minutes` / `offset_minutes` | `60` / `0` | e.g. `offset_minutes = 6` → runs at :06 every hour |
 | `[speedtest] regions` | none | cities to speedtest, e.g. `["Sydney", "Singapore", "London"]`, once a day by default |
 | `[storage]` | `7` / `90` / `0` days | raw samples / 1-minute summaries / hourly summaries (`0` = forever) |
@@ -147,16 +177,29 @@ sudo nmcli con mod "Wired connection 1" +ipv4.addresses 192.168.1.51/24 && sudo 
 
 (netplan: add it under `addresses:`; ifupdown: `up ip addr add 192.168.1.51/24 dev eth0`.)
 
+```bash
+# macOS: a second "service" on the same port, with a manual IP (survives reboots)
+sudo networksetup -duplicatenetworkservice "Ethernet" "netBae secondary"
+sudo networksetup -setmanual "netBae secondary" 192.168.1.51 255.255.255.0 192.168.1.1
+```
+
+```powershell
+# Windows (admin PowerShell). The adapter must have a static IP: Windows can't add an address to a DHCP adapter.
+New-NetIPAddress -InterfaceAlias "Ethernet" -IPAddress 192.168.1.51 -PrefixLength 24 -SkipAsSource $true
+```
+
+`-SkipAsSource` stops Windows using the new address for normal traffic; netBae still sends from it when told to.
+
 **2. Route that IP out of the secondary WAN on your router.** A normal *static route* matches the destination, but this needs a **source-based (policy) route**: *source 192.168.1.51 → WAN2*. Routers call it Policy Routing (TP-Link Omada, DrayTek), Policy-Based Routes / Traffic Routes (UniFi), a firewall rule with a gateway (pfSense/OPNsense) or a routing mark (MikroTik). If you can, turn off failover for that rule, so the secondary tests fail when the secondary connection is down instead of quietly using your main connection.
 
-**Alternative:** plug a second network adapter (USB Ethernet or Wi-Fi) into the secondary modem and use its interface name instead of an IP.
+**Alternative:** plug a second network adapter (USB Ethernet or Wi-Fi) into the secondary modem and use its interface name (Linux, e.g. `eth1`; macOS, e.g. `en7`) instead of an IP. On Windows, use the adapter's IP address.
 
 **3. Add the connection** with `netbae config`:
 
 ```toml
 [[connections]]
 name = "Secondary"
-bind = "192.168.1.51"          # or an interface, e.g. "eth1"
+bind = "192.168.1.51"          # or an interface: "eth1" on Linux, "en7" on macOS
 targets = ["1.1.1.1", "8.8.8.8", "google.com", "valve:auto"]
 speedtest_interval_minutes = 1440   # daily, to save data on mobile plans (0 = only when you press Run)
 ```
@@ -166,11 +209,11 @@ The connection gets its own group of ping tiles and its own row in the speedtest
 ## How it measures
 
 - **Ping:** one ICMP echo per host per interval, using the system `ping`. Hosts that block ping can use a timed TCP connect instead.
-- **Router:** `gateway` reads the default route from the kernel (`/proc/net/route`; `route get default` on macOS), so it follows whatever router you're using.
+- **Router:** `gateway` reads the default route from the kernel (`/proc/net/route`; `route get default` on macOS, `route print` on Windows), so it follows whatever router you're using.
 - **Sites:** each name is pinged at the address it resolves to, which for big services is their nearest edge or CDN server. That's the path your real traffic takes.
-- **DNS:** one UDP A-record query per resolver and domain, timed in Python, over IPv4 and IPv6.
+- **DNS:** one UDP A-record query per resolver and domain, timed in Python, over IPv4 and IPv6. "DHCP DNS" is read from the system's resolver settings (`/etc/resolv.conf` or systemd-resolved on Linux and macOS, the network adapter settings on Windows) at startup.
 - **Speedtests:** the official Ookla CLI, auto-selecting the closest server unless you choose one.
-- **System:** the model name comes from the device tree on a Raspberry Pi (`/proc/device-tree/model`), DMI/BIOS info on PCs and VMs, and `sysctl` on a Mac.
+- **System:** the model name comes from the device tree on a Raspberry Pi (`/proc/device-tree/model`), DMI/BIOS info on PCs and VMs, `sysctl` on a Mac and the registry on Windows.
 
 ## Data storage
 
@@ -201,7 +244,7 @@ Everything on the dashboard comes from a small JSON API you can use from Home As
 
 ## FAQ
 
-**Does it run on Windows?** Not natively yet. Run it on a Raspberry Pi, a Linux VM or a Mac, and open the dashboard from any browser on Windows.
+**Does it run on Windows?** Yes, Windows 10 and 11, with `install.ps1` (see [Quick start](#quick-start)). Windows can't run `install.sh` because it has no bash, so it has its own installer.
 
 **How much data does it use?** Pings and DNS are tiny (a few MB a day). Speedtests are what count: each uses roughly what your connection can move in about 20 seconds. On a gigabit line that's about 1 GB per test, so hourly tests add up. The dashboard shows data used per test and per day.
 
@@ -211,7 +254,7 @@ Everything on the dashboard comes from a small JSON API you can use from Home As
 
 ## Contributing
 
-Pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). netBae has no build step: edit, run `python3 app/netbae.py -c <your config>`, refresh.
+Pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). netBae has no build step: edit, run `python3 app/netbae.py -c <your config>`, refresh. It needs Python 3.8+ with `tomli`, or 3.11+ (the installers set this up; on a Mac, use Homebrew's `python3`).
 
 ## Licence
 
