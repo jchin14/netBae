@@ -22,20 +22,20 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 
 // ------------------------------------------------------------------ formatting
 function fmtMs(v) {
-  if (v == null) return '—';
+  if (v == null) return '-';
   return v < 10 ? v.toFixed(2) : v < 100 ? v.toFixed(1) : Math.round(v).toString();
 }
-const fmtPct = (v, d = 1) => (v == null ? '—' : `${v.toFixed(d)}%`);
-const fmtMbps = (v) => (v == null ? '—' : v >= 100 ? Math.round(v).toString() : v.toFixed(1));
+const fmtPct = (v, d = 1) => (v == null ? '-' : `${v.toFixed(d)}%`);
+const fmtMbps = (v) => (v == null ? '-' : v >= 100 ? Math.round(v).toString() : v.toFixed(1));
 function fmtBytes(b) {
-  if (b == null) return '—';
+  if (b == null) return '-';
   const u = ['B', 'KB', 'MB', 'GB', 'TB'];
   let i = 0;
   while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
   return `${b.toFixed(b >= 100 || i === 0 ? 0 : 1)} ${u[i]}`;
 }
 function fmtDuration(s) {
-  if (s == null) return '—';
+  if (s == null) return '-';
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
   return d ? `${d}d ${h}h ${m}m` : h ? `${h}h ${m}m` : `${m}m ${Math.floor(s % 60)}s`;
 }
@@ -198,9 +198,30 @@ function groupColors(targets) {
 
 // ------------------------------------------------------------------ charts
 function themeChartDefaults() {
+  Chart.Interaction.modes.nearLines = nearLines;
   Chart.defaults.color = css('--muted');
   Chart.defaults.borderColor = css('--grid');
   Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+}
+
+// Tooltip mode: only the line(s) right under the pointer, nearest first, instead of every series.
+function nearLines(chart, e) {
+  const found = [];
+  chart.data.datasets.forEach((ds, di) => {
+    const meta = chart.getDatasetMeta(di);
+    if (ds.role === 'band' || meta.hidden || !meta.data.length) return;
+    const pts = meta.data;
+    let lo = 0, hi = pts.length - 1;  // points are in time order: binary search for the nearest x
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (pts[mid].x < e.x) lo = mid; else hi = mid; }
+    const el = Math.abs(pts[lo].x - e.x) <= Math.abs(pts[hi].x - e.x) ? pts[lo] : pts[hi];
+    const idx = el === pts[lo] ? lo : hi;
+    if (el.skip || el.y == null || isNaN(el.y)) return;
+    const dx = Math.abs(el.x - e.x), dy = Math.abs(el.y - e.y);
+    if (dx < 40 && dy < 28) found.push({ element: el, datasetIndex: di, index: idx, d: dy + dx / 4 });
+  });
+  found.sort((a, b) => a.d - b.d);
+  // the nearest line, plus any others practically on top of it
+  return found.filter((f) => f.d <= found[0].d + 12).slice(0, 5).map(({ d, ...it }) => it);
 }
 
 function lineChart(canvas, { yTitle, y1Title, yMax } = {}) {
@@ -209,12 +230,13 @@ function lineChart(canvas, { yTitle, y1Title, yMax } = {}) {
     y: { beginAtZero: true, max: yMax, title: { display: !!yTitle, text: yTitle }, grid: { color: css('--grid') } },
   };
   if (y1Title) scales.y1 = { position: 'right', beginAtZero: true, title: { display: true, text: y1Title }, grid: { drawOnChartArea: false } };
+  scales.yIsp = { display: false, min: 0, max: 1 }; // ISP markers ride along the top of the chart
   return new Chart(canvas, {
     type: 'line',
     data: { datasets: [] },
     options: {
       animation: false, responsive: true, maintainAspectRatio: false, parsing: false, normalized: true,
-      interaction: { mode: 'nearest', axis: 'x', intersect: false },
+      interaction: { mode: 'nearLines', intersect: false },
       elements: { point: { radius: 0, hoverRadius: 4, hitRadius: 6 }, line: { borderWidth: 1.75, tension: 0.15 } },
       scales,
       plugins: {
@@ -222,9 +244,10 @@ function lineChart(canvas, { yTitle, y1Title, yMax } = {}) {
         tooltip: {
           callbacks: {
             label: (ctx) => {
+              if (ctx.dataset.role === 'isp') return ispLabel(ctx);
               const unit = ctx.dataset.unit || '';
               const y = ctx.parsed.y;
-              return ` ${ctx.dataset.label}: ${y == null ? '—' : (unit === 'ms' ? fmtMs(y) : y.toFixed(unit === 'Mbps' ? 1 : 2))} ${unit}`;
+              return ` ${ctx.dataset.label}: ${y == null ? '-' : (unit === 'ms' ? fmtMs(y) : y.toFixed(unit === 'Mbps' ? 1 : 2))} ${unit}`;
             },
           },
         },
@@ -270,6 +293,40 @@ function groupStatus(members) {
 
 const mean = (xs) => { const v = xs.filter((x) => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
 let lastPing = [];
+let ROUTES = {};
+
+// How traffic reaches a target, from the latest traceroute: on-net / peering / transit via X.
+const ROUTE_BADGE = { 'on-net': 'on-net', peering: 'peering', 'peering (IXP)': 'IXP peering', transit: 'transit', unknown: 'route ?' };
+function routeHtml(id) {
+  const r = ROUTES[id];
+  if (!r) return '<span class="muted">route not traced yet</span>';
+  const names = r.path.map((p) => p.name);
+  const mid = r.path.slice(1, -1).filter((p) => !p.ixp).map((p) => p.name);
+  const text = r.kind === 'transit' ? `via ${mid.join(', ')}`
+    : r.kind === 'on-net' ? `inside ${names[0] || 'your ISP'}`
+      : r.kind.startsWith('peering') ? `${names[0]} ↔ ${names[names.length - 1]}` : names.join(' → ');
+  const cls = r.kind.split(' ')[0];
+  return `<button class="route-link" data-route="${esc(id)}" title="${esc(names.join(' → '))} · traced ${fmtAgo(r.ts)} · click for hops">`
+    + `<span class="route-badge route-${cls}">${ROUTE_BADGE[r.kind] || r.kind}</span> ${esc(text)}</button>`;
+}
+
+async function showRoute(id, title) {
+  const d = await api('traceroute', { target: id });
+  const r = d.latest;
+  const dlg = $('#route-dialog');
+  const hops = (r?.hops || []).map((h) => `<tr><td>${h.hop}</td><td style="text-align:left">${h.ip
+      ? `${h.host ? `<div class="hop-host">${esc(h.host)}</div>` : ''}<div class="muted">${esc(h.ip)}</div>` : '<span class="muted">* no reply</span>'}</td>
+    <td>${h.rtt == null ? '-' : fmtMs(h.rtt)}</td><td style="text-align:left">${h.asn ? `${esc(h.name)} <span class="muted">AS${h.asn}</span>` : '<span class="muted">private / unknown</span>'}</td></tr>`).join('');
+  const hist = d.history.slice(0, 10).map((x) => `<li>${fmtTime(x.ts)}: ${x.error ? `<span class="error-text">${esc(x.error)}</span>`
+    : `<b>${esc(ROUTE_BADGE[x.kind] || x.kind)}</b> ${esc(x.path.map((p) => p.name).join(' → '))}`}</li>`).join('');
+  dlg.innerHTML = `<div class="dlg-head"><h2>Route to ${esc(title)}</h2><button class="link" data-close>Close</button></div>
+    ${r ? `<p><span class="route-badge route-${(r.kind || '').split(' ')[0]}">${esc(ROUTE_BADGE[r.kind] || r.kind || '?')}</span>
+      ${esc(r.path.map((p) => `${p.name} (AS${p.asn})${p.ixp ? ' [exchange]' : ''}`).join(' → '))}</p>
+      <p class="muted small">Destination ${esc(r.dest_host && r.dest_host !== r.dest ? `${r.dest_host} (${r.dest})` : (r.dest || ''))} · traced ${fmtAgo(r.ts)} · networks from Team Cymru's IP-to-ASN data, hostnames from reverse DNS</p>
+      <div class="table-wrap"><table class="stats"><thead><tr><th>#</th><th style="text-align:left">Hop (hostname / IP)</th><th>ms</th><th style="text-align:left">Network</th></tr></thead><tbody>${hops}</tbody></table></div>
+      <h3 class="small">Recent routes</h3><ul class="route-hist">${hist}</ul>` : '<p class="muted">Not traced yet. Routes are traced every 12 hours (the first a few minutes after netBae starts).</p>'}`;
+  dlg.showModal();
+}
 
 function memberTile(p, color) {
   const how = p.method === 'region' ? 'TCP to the fastest Ookla server' : p.method.toUpperCase();
@@ -277,8 +334,9 @@ function memberTile(p, color) {
     <div class="tile member" title="${esc(p.host || 'looking up server…')} · ${how}">
       <div class="name"><span class="dot ${tileStatus(p)}"></span><span>${flag(p.flag)}${esc(p.name)}</span><i class="swatch" style="background:${color}"></i></div>
       ${p.where ? `<div class="where">${esc(p.where)}</div>` : ''}
-      <div class="value">${p.last == null ? (p.last_ts ? '<span style="color:var(--bad)">timeout</span>' : '—') : fmtMs(p.last) + '<small>ms</small>'}</div>
+      <div class="value">${p.last == null ? (p.last_ts ? '<span style="color:var(--bad)">timeout</span>' : '-') : fmtMs(p.last) + '<small>ms</small>'}</div>
       <div class="host">avg ${fmtMs(p.avg5m)} · loss ${fmtPct(p.loss5m)}</div>
+      <div class="route">${routeHtml(p.id)}</div>
     </div>`;
 }
 
@@ -289,7 +347,8 @@ function renderTiles() {
   $('#ping-tiles').innerHTML = groups.map((g) => {
     const members = lastPing.filter((p) => p.group === g);
     const status = groupStatus(members);
-    const last = mean(members.map((p) => p.last));
+    const avg = mean(members.map((p) => p.avg5m)); // members' 5-minute averages (spikes trimmed)
+    const now = mean(members.map((p) => p.last));
     const down = members.filter((p) => p.last == null && p.last_ts != null).length;
     const isOpen = open.has(g);
     return `
@@ -298,8 +357,8 @@ function renderTiles() {
           <span class="dot ${status}"></span><span class="gname">${esc(g)}</span>
           <span class="count">${members.length}</span><span class="chev">▾</span>
         </button>
-        <div class="value">${last == null ? '—' : fmtMs(last) + '<small>ms avg</small>'}</div>
-        <div class="host">5m avg ${fmtMs(mean(members.map((p) => p.avg5m)))} · loss ${fmtPct(mean(members.map((p) => p.loss5m)))}${down ? ` · <span style="color:var(--bad)">${down} down</span>` : ''}</div>
+        <div class="value">${avg == null ? '-' : fmtMs(avg) + '<small>ms avg</small>'}</div>
+        <div class="host">now ${fmtMs(now)} · loss ${fmtPct(mean(members.map((p) => p.loss5m)))}${down ? ` · <span style="color:var(--bad)">${down} down</span>` : ''}</div>
         ${isOpen ? `<div class="members">${members.map((p) => memberTile(p, PING_COLORS[p.id])).join('')}</div>` : ''}
       </div>`;
   }).join('');
@@ -308,6 +367,13 @@ function renderTiles() {
 async function refreshSummary() {
   const s = await api('summary');
   lastPing = s.ping;
+  ROUTES = s.routes || {};
+  $('#isp-now').innerHTML = (s.isp || []).map((c) => {
+    const x = c.last_ok;
+    const failing = c.latest && c.latest.error;
+    return x ? `<span title="${esc(x.asn || '')} · checked ${fmtAgo(x.ts)}${failing ? ' · latest check failed' : ''}">${esc(c.connection)}: <b>${esc(x.isp || '?')}</b> ${esc(x.ip || '')}</span>`
+      : failing ? `<span>${esc(c.connection)}: <span class="error-text">no internet</span></span>` : '';
+  }).filter(Boolean).join(' · ');
   renderTiles();
 
   const st = s.speedtest;
@@ -324,9 +390,9 @@ async function refreshSummary() {
       + col('Upload', 'upload_mbps', 'Mbps', fmtMbps) + col('Ping', 'ping_ms', 'ms', fmtMs);
     const a7 = avg['7d'] || {};
     $('#speed-details').innerHTML = [
-      ['ISP', esc(ok.isp || '—')],
+      ['ISP', esc(ok.isp || '-')],
       ['Jitter', `${fmtMs(ok.jitter_ms)} ms`, `7d avg ${fmtMs(a7.jitter_ms)}`],
-      ['Packet loss', ok.packet_loss == null ? '—' : fmtPct(ok.packet_loss), `7d avg ${a7.packet_loss == null ? '—' : fmtPct(a7.packet_loss)}`],
+      ['Packet loss', ok.packet_loss == null ? '-' : fmtPct(ok.packet_loss), `7d avg ${a7.packet_loss == null ? '-' : fmtPct(a7.packet_loss)}`],
       ['Data used', fmtBytes(ok.data_bytes), `24h ${fmtBytes(avg['24h']?.data_bytes)} · 7d ${fmtBytes(a7.data_bytes)}`],
     ].map(([l, v, sub]) => `<div><div class="label">${l}</div><div class="val">${v}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`).join('');
   }
@@ -345,22 +411,22 @@ async function refreshSummary() {
     const latestCells = (x) => (!x || x.ts == null ? '<td colspan="6" class="muted" style="text-align:left">not tested yet</td>'
       : x.error ? `<td colspan="6" class="error-text" style="text-align:left" title="${esc(x.error)}">failed: ${esc(x.error.slice(0, 60))}</td>`
       : `<td style="text-align:left">${esc(x.isp || '')}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td>
-         <td>${fmtMs(x.ping_ms)}</td><td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '—' : fmtPct(x.packet_loss)}</td>`);
+         <td>${fmtMs(x.ping_ms)}</td><td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td>`);
     const avgCells = (a) => `<td>${fmtMbps(a?.download_mbps)}</td><td>${fmtMbps(a?.upload_mbps)}</td><td>${fmtMs(a?.ping_ms)}</td><td>${fmtBytes(a?.data_bytes)}</td>`;
-    const row = (name, x, a, cls = '', action = '') => `<tr class="${cls}"><td>${name}</td>${latestCells(x)}${avgCells(a)}
-      <td>${x?.ts ? fmtAgo(x.ts) : ''}</td><td>${action}</td></tr>`;
+    const row = (name, x, a, cls = '', action = '', route = '') => `<tr class="${cls}"><td>${name}</td>${latestCells(x)}${avgCells(a)}
+      <td>${x?.ts ? fmtAgo(x.ts) : ''}</td><td style="text-align:left">${route ? routeHtml(route) : ''}</td><td>${action}</td></tr>`;
     $('#region-table').innerHTML = `
       <thead>
-        <tr><th></th><th colspan="6" class="span">Latest</th><th colspan="4" class="span">Last 7 days</th><th></th><th></th></tr>
+        <tr><th></th><th colspan="6" class="span">Latest</th><th colspan="4" class="span">Last 7 days</th><th></th><th></th><th></th></tr>
         <tr><th>Test</th><th style="text-align:left">ISP</th><th>Down</th><th>Up</th><th>Ping</th><th>Jitter</th><th>Loss</th>
-            <th>Avg down</th><th>Avg up</th><th>Avg ping</th><th>Data</th><th>Tested</th><th></th></tr>
+            <th>Avg down</th><th>Avg up</th><th>Avg ping</th><th>Data</th><th>Tested</th><th style="text-align:left">Route</th><th></th></tr>
       </thead>
       <tbody>
-        ${row('<b>Closest server</b>', ok, st.averages?.['7d'], 'strong')}
+        ${row('<b>Closest server</b>', ok, st.averages?.['7d'], 'strong', '', 'speedtest:Auto')}
         ${conns.map((x) => row(`<b>${esc(x.name)}</b>`, x.ts != null && x.error && x.last_ok ? x.last_ok : x, x.avg7d, 'strong',
           CONFIG.speedtest.enabled ? `<button class="link run-conn" data-conn="${esc(x.name)}">Run</button>` : '')).join('')}
-        ${regions.map((x) => row(`${flag(x.flag)}${esc(x.name)}`, x, x.avg7d)).join('')}
-        ${regions.length ? `<tr class="strong total"><td><b>All regions</b></td><td colspan="6" class="muted" style="text-align:left">${st.regions_avg?.['7d']?.tests ?? 0} tests in 7 days</td>${avgCells(st.regions_avg?.['7d'])}<td></td><td></td></tr>` : ''}
+        ${regions.map((x) => row(`${flag(x.flag)}${esc(x.name)}`, x, x.avg7d, '', '', `region:${x.name}`)).join('')}
+        ${regions.length ? `<tr class="strong total"><td><b>All regions</b></td><td colspan="6" class="muted" style="text-align:left">${st.regions_avg?.['7d']?.tests ?? 0} tests in 7 days</td>${avgCells(st.regions_avg?.['7d'])}<td></td><td></td><td></td></tr>` : ''}
       </tbody>`;
   }
 
@@ -387,10 +453,10 @@ async function refreshSystem() {
   $('#sys-model').textContent = info.model || info.cpu_model || '';
   const items = [
     ['Uptime', fmtDuration(s.uptime), `${info.arch} · ${info.cpu_count} cores`],
-    ['Load', s.load ? s.load.map((l) => l.toFixed(2)).join('  ') : '—', '1 · 5 · 15 min'],
+    ['Load', s.load ? s.load.map((l) => l.toFixed(2)).join('  ') : '-', '1 · 5 · 15 min'],
     ['CPU', fmtPct(s.cpu), bar(s.cpu)],
-    ['Memory', s.mem ? fmtPct(s.mem.percent) : '—', s.mem ? `${fmtBytes(s.mem.used)} / ${fmtBytes(s.mem.total)}${bar(s.mem.percent)}` : ''],
-    ['Storage', s.disk ? fmtPct(s.disk.percent) : '—', s.disk ? `${fmtBytes(s.disk.used)} / ${fmtBytes(s.disk.total)} (${esc(s.disk.path)})${bar(s.disk.percent)}` : ''],
+    ['Memory', s.mem ? fmtPct(s.mem.percent) : '-', s.mem ? `${fmtBytes(s.mem.used)} / ${fmtBytes(s.mem.total)}${bar(s.mem.percent)}` : ''],
+    ['Storage', s.disk ? fmtPct(s.disk.percent) : '-', s.disk ? `${fmtBytes(s.disk.used)} / ${fmtBytes(s.disk.total)} (${esc(s.disk.path)})${bar(s.disk.percent)}` : ''],
   ];
   if (s.temp != null) items.push(['Temperature', `${s.temp.toFixed(1)} °C`, bar(s.temp)]);
   if (s.mem && s.mem.swap_total) items.push(['Swap', fmtBytes(s.mem.swap_used), `of ${fmtBytes(s.mem.swap_total)}`]);
@@ -477,6 +543,60 @@ function yZoom(root, key, chart) {
   };
 }
 
+// ------------------------------------------------------------------ ISP markers
+// Each connection's ISP checks are drawn as a row of markers along the top of the time charts:
+// one colour per connection, one shape per ISP, so a failover shows up next to the latency it caused.
+const ISP_SHAPES = [['circle', '●'], ['triangle', '▲'], ['rect', '■'], ['rectRot', '◆'], ['star', '★'], ['crossRot', '✕']];
+const ISP_COLORS = ['#fbbf24', '#22d3ee', '#f472b6', '#a3e635', '#c084fc'];
+const ispShapeIndex = {};
+const ispShape = (isp) => {
+  if (!(isp in ispShapeIndex)) ispShapeIndex[isp] = Object.keys(ispShapeIndex).length;
+  return ISP_SHAPES[ispShapeIndex[isp] % ISP_SHAPES.length];
+};
+const ispLabel = (ctx) => ` ${ctx.raw.conn} ISP: ${ctx.raw.isp}${ctx.raw.ip ? ` · ${ctx.raw.ip}` : ''}${ctx.raw.changed ? '  (changed)' : ''}`;
+
+async function ispOverlay(root, r, onToggle) {
+  if (!CONFIG.isp?.enabled) return [];
+  let legend = $('.isp-legend', root);
+  if (!legend) {
+    legend = document.createElement('div');
+    legend.className = 'isp-legend';
+    $('.chips', root).after(legend);
+    legend.addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-key]');
+      if (!b) return;
+      const off = new Set(store.get('isp:off', []));
+      if (off.has(b.dataset.key)) off.delete(b.dataset.key); else off.add(b.dataset.key);
+      store.set('isp:off', [...off]);
+      onToggle();
+    });
+  }
+  // routine checks ~14px apart; ISP/IP changes are always included and drawn larger
+  const d = await api('isp', { from: r.from.toFixed(0), to: r.to.toFixed(0), points: Math.max(30, Math.round(root.clientWidth / 14)) });
+  const off = new Set(store.get('isp:off', []));
+  const datasets = [];
+  const buttons = [];
+  CONFIG.isp.connections.forEach((conn, ci) => {
+    const pts = d.series[conn] || [];
+    const color = ISP_COLORS[ci % ISP_COLORS.length];
+    for (const isp of [...new Set(pts.map((p) => p[1]).filter(Boolean))]) {
+      const [style, glyph] = ispShape(isp);
+      const key = `${conn}|${isp}`;
+      buttons.push(`<button data-key="${esc(key)}" class="${off.has(key) ? 'off' : ''}" title="Show or hide ${esc(conn)} ISP checks">
+        <span style="color:${color}">${glyph}</span>${esc(conn)}: ${esc(isp)}</button>`);
+      if (off.has(key)) continue;
+      datasets.push({
+        role: 'isp', label: `${conn} ISP`, yAxisID: 'yIsp', showLine: false,
+        pointStyle: style, pointRadius: (c) => (c.raw?.changed ? 7 : 3.5), pointHoverRadius: 8, pointHitRadius: 8,
+        borderColor: color, backgroundColor: color + 'cc', borderWidth: 1,
+        data: pts.filter((p) => p[1] === isp).map((p) => ({ x: p[0], y: 0.965 - ci * 0.06, isp: p[1], ip: p[2], conn, changed: p[4] })),
+      });
+    }
+  });
+  legend.innerHTML = buttons.length ? `<span class="isp-title" title="Each marker along the top of the chart is an ISP check: colour = connection, shape = ISP. A bigger marker means the ISP or IP changed.">ISP checks</span>${buttons.join('')}` : '';
+  return datasets;
+}
+
 function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams, lossLabel, defaultOff = [] }) {
   const root = $(`#${id}`);
   const metricSel = $('.metric', root);
@@ -488,8 +608,9 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
   const zoom = yZoom(root, id, chart);
   // Only the average line gets a tooltip entry; it carries the band values with it.
   chart.options.plugins.tooltip.filter = (item) => item.dataset.role !== 'band';
-  chart.options.plugins.tooltip.itemSort = (a, b) => (b.parsed.y ?? -1) - (a.parsed.y ?? -1); // slowest first
+
   chart.options.plugins.tooltip.callbacks.label = (ctx) => {
+    if (ctx.dataset.role === 'isp') return ispLabel(ctx);
     const p = ctx.raw;
     if (ctx.dataset.unit === '%') return ` ${ctx.dataset.label}: ${fmtPct(p.y, 2)}`;
     const band = p.lo != null ? `  (${p.bandName} ${fmtMs(p.lo)} – ${fmtMs(p.hi)})` : '';
@@ -533,8 +654,8 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
         data: pts.map((p) => ({ x: p[0], y: p[1], lo: band === 'none' ? null : p[loI], hi: p[hiI], bandName })),
       });
     }
-    chart.data.datasets = datasets;
     zoom.fit(datasets.filter((ds) => ds.role !== 'band').flatMap((ds) => ds.data.map((p) => p.y)), metric === 'loss' ? 5 : 1);
+    chart.data.datasets = datasets.concat(await ispOverlay(root, r, refresh));
     setXRange(chart, r);
     chart.update();
 
@@ -542,9 +663,9 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
       const s = d.stats[it.id] || {};
       return `<tr><td><span class="dot" style="background:${it.color}"></span> ${esc(it.label)}</td>
         <td><b>${fmtMs(s.avg)}</b></td><td>${fmtMs(s.min)}</td><td>${fmtMs(s.p5)}</td><td>${fmtMs(s.p95)}</td><td>${fmtMs(s.max)}</td>
-        <td>${fmtPct(s.loss, 2)}</td><td>${(s.samples ?? 0).toLocaleString()}</td></tr>`;
+        <td>${fmtPct(s.loss, 2)}</td><td>${(s.samples ?? 0).toLocaleString()}</td>${endpoint === 'ping' ? `<td style="text-align:left">${routeHtml(it.id)}</td>` : ''}</tr>`;
     }).join('');
-    $('.stats', root).innerHTML = `<thead><tr><th>Host</th><th>Avg ms</th><th>Min</th><th>P5</th><th>P95</th><th>Max</th><th>${lossLabel}</th><th>Samples</th></tr></thead><tbody>${rows}</tbody>`;
+    $('.stats', root).innerHTML = `<thead><tr><th>Host</th><th>Avg ms</th><th>Min</th><th>P5</th><th>P95</th><th>Max</th><th>${lossLabel}</th><th>Samples</th>${endpoint === 'ping' ? '<th style="text-align:left">Route</th>' : ''}</tr></thead><tbody>${rows}</tbody>`;
     return r.live;
   };
   const chips = chipFilter($('.chips', root), id, items, refresh, defaultOff);
@@ -606,6 +727,7 @@ function speedPanel() {
       chart.options.scales.y.title.text = 'Mbps';
       chart.options.scales.y1.display = sel.includes('ping') || sel.includes('jitter');
     }
+    chart.data.datasets = chart.data.datasets.concat(await ispOverlay(root, r, refresh));
     setXRange(chart, r);
     chart.update();
 
@@ -619,7 +741,7 @@ function speedPanel() {
         ${recent.map((x) => x.error
           ? `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}</td><td colspan="9" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
           : `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td>
-             <td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '—' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td>
+             <td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td>
              <td style="text-align:left">${esc(x.isp || '')}</td>
              <td style="text-align:left">${esc(x.server_name)}${x.server_location ? ', ' + esc(x.server_location) : ''}</td>
              <td>${x.result_url ? `<a href="${esc(x.result_url)}" target="_blank" rel="noopener">result ↗</a>` : ''}</td></tr>`).join('')}
@@ -669,7 +791,7 @@ async function refreshAll(force = false) {
   const failed = res.find((r) => r.status === 'rejected');
   if (failed) {
     console.error(failed.reason);
-    setStatus(false, Date.now() - lastOk > 60000 ? 'offline — retrying' : 'update failed');
+    setStatus(false, Date.now() - lastOk > 60000 ? 'offline - retrying' : 'update failed');
   } else {
     lastOk = Date.now();
     setStatus(true, 'updated ' + new Date().toLocaleTimeString());
@@ -700,7 +822,7 @@ async function main() {
   }));
   $('#ping-tiles').addEventListener('click', (e) => {
     const card = e.target.closest('.group');
-    if (!card || !e.target.closest('.group-head')) return;
+    if (!card || e.target.closest('.tile.member')) return;  // anywhere on the card except a host's own tile
     const open = new Set(store.get('tiles:open', []));
     const g = card.dataset.group;
     if (open.has(g)) open.delete(g); else open.add(g);
@@ -747,6 +869,16 @@ async function main() {
     }, 4000);
   };
   $('#run-speedtest').addEventListener('click', () => startTest('main'));
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('.route-link');
+    if (b) {
+      e.stopPropagation();  // don't also collapse the group card
+      const t = CONFIG.ping.targets.find((x) => x.id === b.dataset.route);
+      showRoute(b.dataset.route, t ? t.name : b.dataset.route.replace(/^(region|speedtest):/, '').replace('Auto', 'speedtest server'));
+    }
+    if (e.target.closest('[data-close]')) $('#route-dialog').close();
+  }, true);
+  $('#route-dialog').addEventListener('click', (e) => { if (e.target.id === 'route-dialog') e.target.close(); });
   $('#region-table').addEventListener('click', (e) => {
     const b = e.target.closest('.run-conn');
     if (b && confirm(`Run a speedtest over ${b.dataset.conn} now? It uses a few hundred MB of that connection's data.`)) {
@@ -759,9 +891,12 @@ async function main() {
   });
 
   const sp = CONFIG.speedtest;
-  $('#footer').textContent = `netBae ${CONFIG.version} · ping every ${CONFIG.ping.interval_seconds}s · ` +
-    (sp.enabled ? `speedtest every ${sp.interval_minutes} min${sp.offset_minutes ? ` (+${sp.offset_minutes} min offset)` : ''} · ` : '') +
-    'tip: double-click a chip to show only that series';
+  if (CONFIG.repo) $('#repo-link').href = CONFIG.repo;
+  $('#footer').innerHTML = `<a href="${esc(CONFIG.repo || '#')}" target="_blank" rel="noopener">netBae ${esc(CONFIG.version)}</a> by `
+    + '<a href="https://github.com/jchin14" target="_blank" rel="noopener">jchin14</a> · '
+    + `ping every ${CONFIG.ping.interval_seconds}s · `
+    + (sp.enabled ? `speedtest every ${sp.interval_minutes} min${sp.offset_minutes ? ` (+${sp.offset_minutes} min offset)` : ''} · ` : '')
+    + 'tip: double-click a chip to show only that series';
 
   await refreshAll(true);
   setInterval(refreshAll, REFRESH_MS);

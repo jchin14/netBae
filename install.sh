@@ -82,16 +82,16 @@ if [[ $OS == Darwin ]]; then
 elif command -v apt-get >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq python3 iputils-ping iproute2 curl ca-certificates tar gnupg >/dev/null
+  apt-get install -y -qq python3 iputils-ping iproute2 traceroute curl ca-certificates tar gnupg >/dev/null
   PM=apt
 elif command -v dnf >/dev/null; then
-  dnf install -y -q python3 iputils iproute curl ca-certificates tar shadow-utils; PM=dnf
+  dnf install -y -q python3 iputils iproute traceroute curl ca-certificates tar shadow-utils; PM=dnf
 elif command -v yum >/dev/null; then
-  yum install -y -q python3 iputils iproute curl ca-certificates tar shadow-utils; PM=yum
+  yum install -y -q python3 iputils iproute traceroute curl ca-certificates tar shadow-utils; PM=yum
 elif command -v pacman >/dev/null; then
-  pacman -Sy --noconfirm --needed python iputils iproute2 curl ca-certificates tar; PM=pacman
+  pacman -Sy --noconfirm --needed python iputils iproute2 traceroute curl ca-certificates tar; PM=pacman
 elif command -v zypper >/dev/null; then
-  zypper -n -q install python3 iputils iproute2 curl ca-certificates tar; PM=zypper
+  zypper -n -q install python3 iputils iproute2 traceroute curl ca-certificates tar; PM=zypper
 else
   die "unsupported package manager - install python3 (3.8+), ping and curl manually, then re-run"
 fi

@@ -10,7 +10,9 @@ import glob
 import ctypes
 import ctypes.util
 import ipaddress
+import http.client
 import json
+import ssl
 import logging
 import logging.handlers
 import math
@@ -43,7 +45,8 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.3.0"
+VERSION = "1.4.0"
+REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
 # Windows keeps config, database and log together in %ProgramData%\netBae.
@@ -92,12 +95,20 @@ DEFAULT_CONFIG = {
             {"name": "Discord voice", "host": "discord:auto", "group": "Gaming"},
             {"name": "Facebook", "host": "facebook.com", "group": "Social"},
             {"name": "Reddit", "host": "reddit.com", "group": "Social"},
+            {"name": "X", "host": "x.com", "group": "Social"},
             {"name": "Microsoft", "host": "microsoft.com", "group": "Cloud & tech"},
             {"name": "Apple", "host": "apple.com", "group": "Cloud & tech"},
             {"name": "AWS", "host": "aws.amazon.com", "group": "Cloud & tech"},
             {"name": "GitHub", "host": "github.com", "group": "Cloud & tech"},
             {"name": "Akamai", "host": "akamai.com", "group": "CDN"},
             {"name": "Fastly", "host": "fastly.com", "group": "CDN"},
+            {"name": "Cloudflare", "host": "www.cloudflare.com", "group": "CDN"},
+            {"name": "CloudFront", "host": "d1.awsstatic.com", "group": "CDN"},
+            {"name": "Azure Front Door", "host": "www.office.com", "group": "CDN"},
+            {"name": "Bunny", "host": "bunny.net", "group": "CDN"},
+            {"name": "Gcore", "host": "gcore.com", "group": "CDN"},
+            {"name": "Eweka", "host": "news.eweka.nl", "group": "Usenet"},
+            {"name": "Highwinds", "host": "news.newshosting.com", "group": "Usenet"},
         ],
         # Latency to the fastest Ookla speedtest server in each region (TCP connect), shown as a "Regions" group.
         "regions": ["Sydney", "Perth", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Guam", "Delhi", "Oman",
@@ -128,6 +139,10 @@ DEFAULT_CONFIG = {
         "timeout_seconds": 300,
     },
     "system": {"interval_seconds": 30, "offset_seconds": 0, "disk_path": "/"},
+    # public IP + ISP of the main connection and every secondary connection (shows failovers)
+    "isp": {"enabled": True, "interval_minutes": 10, "offset_minutes": 0, "main_name": "Main"},
+    # route to every target every 12 h: which networks (ASNs) carry it - on-net, peering or transit
+    "traceroute": {"enabled": True, "interval_hours": 12, "offset_minutes": 15, "max_hops": 25, "parallel": 6},
     # extra internet connections tested through a different source IP or interface (e.g. a secondary 5G/4G WAN)
     "connections": [],
 }
@@ -528,6 +543,12 @@ CREATE TABLE IF NOT EXISTS speedtest (
     result_url TEXT, error TEXT);
 CREATE INDEX IF NOT EXISTS speedtest_ts ON speedtest(ts);
 CREATE TABLE IF NOT EXISTS system (ts REAL NOT NULL, cpu REAL, mem REAL, disk REAL, temp REAL, load1 REAL);
+CREATE TABLE IF NOT EXISTS isp (ts REAL NOT NULL, connection TEXT NOT NULL, ip TEXT, isp TEXT, asn TEXT,
+    location TEXT, error TEXT);
+CREATE INDEX IF NOT EXISTS isp_ts ON isp(ts);
+CREATE TABLE IF NOT EXISTS traceroute (ts REAL NOT NULL, target TEXT NOT NULL, dest TEXT, kind TEXT,
+    path TEXT, hops TEXT, error TEXT, dest_host TEXT);
+CREATE INDEX IF NOT EXISTS traceroute_target_ts ON traceroute(target, ts);
 CREATE INDEX IF NOT EXISTS system_ts ON system(ts);
 CREATE TABLE IF NOT EXISTS ping_1m (
     target TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
@@ -554,11 +575,33 @@ SERIES = {
 ROLLUP_ABOVE_SECONDS = 6 * 3600  # whole-range stats longer than this come from the 1-minute table
 
 
+# Averages ignore the fastest and slowest 5% of samples once there are at least 10, so a few
+# spikes don't drag the average around (min, max and P95 still show them).
+TRIMMED_AVG = "AVG(CASE WHEN cnt < 10 OR (rn > 0.05 * cnt AND rn <= 0.95 * cnt) THEN v END)"
+
+
+def trimmed_mean(values):
+    v = sorted(x for x in values if x is not None)
+    if len(v) >= 10:
+        v = v[int(len(v) * 0.05):len(v) - int(len(v) * 0.05)]
+    return sum(v) / len(v) if v else None
+
+
+def outlier_free(values):
+    """Drop values outside Tukey's fences (1.5x the interquartile range) when there are enough to judge."""
+    v = sorted(x for x in values if x is not None)
+    if len(v) < 5:
+        return v
+    q1, q3 = v[len(v) // 4], v[(3 * len(v)) // 4]
+    lo, hi = q1 - 1.5 * (q3 - q1), q3 + 1.5 * (q3 - q1)
+    return [x for x in v if lo <= x <= hi]
+
+
 def pct_select(val, bucket_expr, keys, table, where):
     """Per-bucket count/ok/avg/min/max/p5/p95 from raw samples (nearest-rank percentiles)."""
     part = ", ".join(keys + [bucket_expr])
     return (
-        f"SELECT {', '.join(keys)}, b, COUNT(*), COUNT(v), AVG(v), MIN(v), MAX(v),"
+        f"SELECT {', '.join(keys)}, b, COUNT(*), COUNT(v), {TRIMMED_AVG}, MIN(v), MAX(v),"
         f" MIN(CASE WHEN rn >= 0.05 * cnt THEN v END), MIN(CASE WHEN rn >= 0.95 * cnt THEN v END)"
         f" FROM (SELECT {', '.join(keys)}, {bucket_expr} AS b, {val} AS v,"
         f"   ROW_NUMBER() OVER (PARTITION BY {part} ORDER BY {val} IS NULL, {val}) AS rn,"
@@ -596,9 +639,12 @@ class DB:
         self.local = threading.local()
         self.conn().executescript(SCHEMA)
         cols = {r[1] for r in self.query("PRAGMA table_info(speedtest)")}
-        for col, typ in (("kind", "TEXT"), ("label", "TEXT"), ("data_bytes", "INTEGER")):  # added in 1.1/1.2
+        for col, typ in (("kind", "TEXT"), ("label", "TEXT"), ("data_bytes", "INTEGER"),
+                         ("server_host", "TEXT")):  # added in 1.1-1.4
             if col not in cols:
                 self.conn().execute(f"ALTER TABLE speedtest ADD COLUMN {col} {typ}")
+        if "dest_host" not in {r[1] for r in self.query("PRAGMA table_info(traceroute)")}:  # added in 1.4
+            self.conn().execute("ALTER TABLE traceroute ADD COLUMN dest_host TEXT")
 
     def conn(self):
         c = getattr(self.local, "c", None)
@@ -660,6 +706,44 @@ def bind_socket(s, bind):
         s.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_BINDTODEVICE", 25), bind.encode())
 
 
+class _BoundHTTPS(http.client.HTTPSConnection):
+    """HTTPS connection sent from a specific source IP or interface."""
+
+    def __init__(self, host, bind, timeout):
+        super().__init__(host, timeout=timeout)
+        self._bind = bind
+
+    def connect(self):
+        family = socket.AF_INET if self._bind and is_ip(self._bind) and ":" not in self._bind else 0
+        fam, st, pr, _, addr = socket.getaddrinfo(self.host, self.port, family, socket.SOCK_STREAM)[0]
+        sock = socket.socket(fam, st, pr)
+        sock.settimeout(self.timeout)
+        try:
+            bind_socket(sock, self._bind)
+            sock.connect(addr)
+        except OSError:
+            sock.close()
+            raise
+        self.sock = ssl.create_default_context().wrap_socket(sock, server_hostname=self.host)
+
+
+def lookup_isp(bind=None, timeout=10):
+    """Public IP, ISP and ASN as seen by ipinfo.io, sent through the given connection."""
+    conn = _BoundHTTPS("ipinfo.io", bind, timeout)
+    try:
+        conn.request("GET", "/json", headers={"User-Agent": f"netBae/{VERSION}", "Accept": "application/json"})
+        r = conn.getresponse()
+        if r.status != 200:
+            raise OSError(f"ipinfo.io returned HTTP {r.status}")
+        d = json.loads(r.read())
+    finally:
+        conn.close()
+    org = d.get("org") or ""
+    asn, _, name = org.partition(" ") if org.startswith("AS") else ("", "", org)
+    loc = ", ".join(x for x in (d.get("city"), d.get("country")) if x)
+    return {"ip": d.get("ip"), "isp": name or None, "asn": asn or None, "location": loc or None}
+
+
 def icmp_ping(host, timeout, bind=None):
     t = str(max(1, math.ceil(timeout)))
     if IS_WINDOWS:  # -S picks the source address; Windows ping can't bind to an interface by name
@@ -698,6 +782,220 @@ def tcp_ping(host, port, timeout, bind=None):
         return None
     finally:
         s.close()
+
+
+# --------------------------------------------------------------------------- routes (traceroute + ASNs)
+
+# Short names for well-known networks; anything else uses a cleaned-up registry name.
+AS_NAMES = {
+    174: "Cogent", 1299: "Arelion", 2907: "SINET", 4436: "GTT", 13030: "Init7", 3303: "Swisscom", 3356: "Lumen", 3257: "GTT", 2914: "NTT", 6939: "Hurricane Electric",
+    6453: "Tata", 6762: "Sparkle", 1273: "Vodafone", 3491: "PCCW", 4637: "Telstra Global", 1221: "Telstra",
+    4826: "Vocus", 7545: "TPG", 9443: "Vocus", 38195: "Superloop", 4804: "Optus", 7474: "Optus", 7473: "Singtel",
+    2516: "KDDI", 4134: "China Telecom", 4809: "China Telecom CN2", 9002: "RETN", 5511: "Orange", 3320: "Deutsche Telekom",
+    701: "Verizon", 7018: "AT&T", 6461: "Zayo", 9498: "Airtel", 4755: "Tata", 3549: "Lumen", 2828: "Verizon",
+    13335: "Cloudflare", 15169: "Google", 16509: "Amazon", 14618: "Amazon", 8075: "Microsoft", 32934: "Meta",
+    20940: "Akamai", 16625: "Akamai", 54113: "Fastly", 2906: "Netflix", 40027: "Netflix", 32590: "Valve",
+    36459: "GitHub", 714: "Apple", 6185: "Apple", 46489: "Twitch", 200325: "Bunny", 199524: "Gcore",
+    34343: "BIP (Eweka)", 34305: "Base IP", 60068: "Datacamp", 13414: "X", 4635: "HKIX", 24115: "Equinix",
+    7594: "IX Australia", 4739: "Internode", 1103: "SURF", 3209: "Vodafone DE", 8220: "Colt", 12956: "Telxius",
+    6830: "Liberty Global", 5432: "Proximus", 2856: "BT", 5400: "BT", 64050: "BGPNET", 9304: "HGC",
+}
+CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _dns_name(data, pos):
+    """Decode a (possibly compressed) DNS name starting at pos."""
+    labels, jumps = [], 0
+    while data[pos]:
+        if data[pos] & 0xC0 == 0xC0:
+            pos = ((data[pos] & 0x3F) << 8) | data[pos + 1]
+            jumps += 1
+            if jumps > 20:
+                break
+            continue
+        labels.append(data[pos + 1:pos + 1 + data[pos]].decode(errors="replace"))
+        pos += data[pos] + 1
+    return ".".join(labels)
+
+
+def dns_ask(name, qtype, timeout=2):
+    """Minimal DNS lookup over UDP (system resolver first, then 1.1.1.1): first TXT string or PTR name."""
+    code = {"TXT": 16, "PTR": 12}[qtype]
+    for server in (system_dns_servers() + ["1.1.1.1"])[:3]:
+        tid = random.randint(0, 0xFFFF)
+        q = struct.pack(">HHHHHH", tid, 0x0100, 1, 0, 0, 0)
+        q += b"".join(bytes([len(p)]) + p.encode() for p in name.strip(".").split(".")) + b"\0" + struct.pack(">HH", code, 1)
+        try:
+            sock = socket.socket(socket.AF_INET6 if ":" in server else socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(timeout)
+            try:
+                sock.sendto(q, (server, 53))
+                data = sock.recv(4096)
+            finally:
+                sock.close()
+        except OSError:
+            continue
+        if len(data) < 12 or struct.unpack(">H", data[:2])[0] != tid:
+            continue
+        an = struct.unpack(">H", data[6:8])[0]
+        pos = len(q)  # skip the echoed question
+        try:
+            for _ in range(an):
+                if data[pos] & 0xC0 == 0xC0:
+                    pos += 2
+                else:
+                    while data[pos]:
+                        pos += data[pos] + 1
+                    pos += 1
+                rtype, _, _, rdlen = struct.unpack(">HHIH", data[pos:pos + 10])
+                pos += 10
+                if rtype == code and rdlen:
+                    if code == 16:
+                        return data[pos + 1:pos + 1 + data[pos]].decode(errors="replace")
+                    return _dns_name(data, pos) or None
+                pos += rdlen
+        except (IndexError, struct.error):
+            pass
+        return None
+    return None
+
+
+def dns_txt(name, timeout=3):
+    return dns_ask(name, "TXT", timeout)
+
+
+_ptr_cache = {}
+
+
+def reverse_dns(ip):
+    """Hostname for an IP (PTR record), e.g. be3045.ccr41.lon13.atlas.cogentco.com, or None."""
+    if ip not in _ptr_cache:
+        try:
+            a = ipaddress.ip_address(ip)
+            _ptr_cache[ip] = dns_ask(a.reverse_pointer, "PTR")
+        except (ValueError, OSError):
+            _ptr_cache[ip] = None
+    return _ptr_cache[ip]
+
+
+_asn_cache = {}
+
+
+def ip_asn(ip):
+    """(asn, name) for a public IP via Team Cymru's DNS service, or (None, None)."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return None, None
+    if a.is_private or a.is_loopback or a.is_link_local or a.is_multicast or (a.version == 4 and a in CGNAT):
+        return None, None
+    if ip in _asn_cache:
+        return _asn_cache[ip]
+    if a.version == 4:
+        q = ".".join(reversed(ip.split("."))) + ".origin.asn.cymru.com"
+    else:
+        q = ".".join(reversed(a.exploded.replace(":", ""))) + ".origin6.asn.cymru.com"
+    txt = dns_txt(q)
+    asn = None
+    if txt:
+        first = txt.split("|")[0].strip().split()
+        asn = int(first[0]) if first and first[0].isdigit() else None
+    result = (asn, as_name(asn)) if asn else (None, None)
+    _asn_cache[ip] = result
+    return result
+
+
+_as_name_cache = {}
+
+
+def as_name(asn):
+    if asn in AS_NAMES:
+        return AS_NAMES[asn]
+    if asn not in _as_name_cache:
+        txt = dns_txt(f"AS{asn}.asn.cymru.com") or ""
+        raw = txt.split("|")[-1].strip() if "|" in txt else ""
+        name = raw.split(" - ", 1)[1] if " - " in raw else raw
+        name = re.sub(r",\s*[A-Z]{2}$", "", name)  # trailing country code
+        name = re.sub(r"\s+-\s+(EMEA|APAC|AMER|AMERICAS|ASIA|EUROPE|EU|US|NA|LATAM|ME)\b.*$", "", name, flags=re.I)  # "GTT - EMEA"
+        name = re.sub(r"\s+-\s+ME$", "", name)
+        name = re.sub(r"[, ]+(Pty\.?|Ltd\.?|Limited|Inc\.?|LLC|L\.L\.C\.|Corporation|Corp\.?|Co\.?|GmbH|B\.V\.|AB|AG|S\.A\.|SA|plc|"
+                      r"d\.o\.o\.|Communications|Telecommunications|Networks?|Holdings?|LTDA|S\.p\.A\.?|SAS|FZ-LLC|B\.V|"
+                      r"Private Limited|Private|Pvt|Technologies)\b\.?", "", name, flags=re.I)
+        if len(name) > 32:  # long registry names: keep the first few words
+            name = " ".join(name.split()[:3]).rstrip(",")
+        _as_name_cache[asn] = name.strip(" ,.-") or f"AS{asn}"
+    return _as_name_cache[asn]
+
+
+def is_ixp(name):
+    return bool(re.search(r"(^|[\s-])IX($|[\s-])|internet exchange|\bexchange\b|-IX\b|IXP", name or "", re.I))
+
+
+HOP_RE = re.compile(r"^\s*(\d+)[:?]*\s+(.*)$")
+
+
+def traceroute(host, max_hops=25, bind=None):
+    """[(hop, ip or None, rtt_ms or None)] using the system traceroute (or tracepath / tracert)."""
+    if IS_WINDOWS:
+        cmd = ["tracert", "-d", "-h", str(max_hops), "-w", "1000"] + (["-S", bind] if bind and is_ip(bind) and ":" in bind else [])
+    elif shutil.which("traceroute") or os.path.exists("/usr/sbin/traceroute"):
+        exe = shutil.which("traceroute") or "/usr/sbin/traceroute"
+        cmd = [exe, "-n", "-q", "1", "-w", "1", "-m", str(max_hops)]
+        if bind:
+            cmd += ["-s", bind] if is_ip(bind) else ["-i", bind]
+    elif shutil.which("tracepath"):
+        cmd = ["tracepath", "-n", "-m", str(max_hops)]
+    else:
+        raise OSError("no traceroute command found (install the 'traceroute' package)")
+    out = subprocess.run(cmd + [host], capture_output=True, text=True, errors="replace",
+                         timeout=max_hops * 6 + 10, **SUBPROCESS_FLAGS).stdout
+    hops = {}
+    for line in out.splitlines():
+        m = HOP_RE.match(line)
+        if not m:
+            continue
+        n, rest = int(m.group(1)), m.group(2)
+        ip = next((t.strip("()[]") for t in rest.split() if is_ip(t.strip("()[]"))), None)
+        rtt = re.search(r"<?([\d.]+)\s*ms", rest)
+        if n not in hops or (ip and not hops[n][0]):
+            hops[n] = (ip, float(rtt.group(1)) if rtt and ip else None)
+    hops = [(n, ip, rtt) for n, (ip, rtt) in sorted(hops.items())]
+    while hops and not hops[-1][1]:  # drop the run of timeouts at the end
+        hops.pop()
+    return hops
+
+
+def classify_route(hops, dest_ip, isp_asn=None):
+    """Annotate hops with ASNs and work out how traffic reaches the destination network."""
+    detailed, path = [], []
+    with ThreadPoolExecutor(max_workers=8) as pool:  # hostnames (PTR) for every hop, like mtr shows
+        names = list(pool.map(lambda h: reverse_dns(h[1]) if h[1] else None, hops))
+    for (n, ip, rtt), host in zip(hops, names):
+        asn, name = ip_asn(ip) if ip else (None, None)
+        m = re.search(r"(?:^|[.-])as(\d{3,6})(?:[.-]|$)", host or "", re.I)
+        if not asn and m and ip and not ipaddress.ip_address(ip).is_private:
+            asn = int(m.group(1))  # unannounced backbone address, but the hostname names its network
+            name = as_name(asn)
+        detailed.append({"hop": n, "ip": ip, "host": host, "rtt": rtt, "asn": asn, "name": name})
+        if asn and (not path or (path[-1]["asn"] != asn and path[-1]["name"] != name)):
+            path.append({"asn": asn, "name": name, "ixp": is_ixp(name)})
+    dest_asn, dest_name = ip_asn(dest_ip) if dest_ip else (None, None)
+    if dest_asn and (not path or path[-1]["asn"] != dest_asn):
+        path.append({"asn": dest_asn, "name": dest_name, "ixp": False, "unseen": True})
+    isp_asn = isp_asn or (path[0]["asn"] if path else None)
+    if not path or not dest_asn:
+        kind = "unknown"
+    elif dest_asn == isp_asn:
+        kind = "on-net"
+    else:
+        middle = [x for x in path if x["asn"] not in (isp_asn, dest_asn)]
+        if not middle:
+            kind = "peering"
+        elif all(x["ixp"] for x in middle):
+            kind = "peering (IXP)"
+        else:
+            kind = "transit"
+    return kind, path, detailed
 
 
 def dns_query(server, domain, timeout):
@@ -1080,6 +1378,7 @@ class Monitor:
         self.region_cache = {}
         self.region_lookups = set()
         self.game_cache = {}
+        self.trace_lock = threading.Lock()
         self.ipv6 = (0, None)  # (checked_at, available)
         self.started = time.time()
 
@@ -1093,6 +1392,16 @@ class Monitor:
         if c["dns"]["enabled"] and c["dns"]["servers"] and c["dns"]["domains"]:
             run_aligned("dns", c["dns"]["interval_seconds"], c["dns"]["offset_seconds"], self.collect_dns)
         run_aligned("system", c["system"]["interval_seconds"], c["system"]["offset_seconds"], self.collect_system)
+        if c["isp"]["enabled"]:
+            run_aligned("isp", c["isp"]["interval_minutes"] * 60, c["isp"]["offset_minutes"] * 60, self.collect_isp)
+            self.pool.submit(self.collect_isp)  # know the ISP straight away
+        if c["traceroute"]["enabled"]:
+            run_aligned("traceroute", c["traceroute"]["interval_hours"] * 3600,
+                        c["traceroute"]["offset_minutes"] * 60, self.collect_traceroutes)
+            # first run a couple of minutes after start, once game/region servers are resolved
+            first = threading.Timer(150, self.collect_traceroutes)
+            first.daemon = True  # don't keep the process alive on shutdown
+            first.start()
         if c["speedtest"]["enabled"]:
             run_aligned("speedtest", c["speedtest"]["interval_minutes"] * 60,
                         c["speedtest"]["offset_minutes"] * 60, self.run_speedtest)
@@ -1172,6 +1481,58 @@ class Monitor:
         self.region_cache[region["name"]] = (time.time(), servers)
         return servers
 
+    def trace_targets(self):
+        """(id, host, bind) for every ping target plus the latest main speedtest server."""
+        out = []
+        for t in self.cfg["ping"]["targets"]:
+            host = None
+            if t["method"] == "game":
+                srv = self.game_server(t)
+                host = srv and srv["host"]
+            elif t["method"] == "region":
+                srv = [c for c in (self.region_servers(t["region"], wait=False) or []) if c["host"]]
+                host = srv[0]["host"] if srv else None
+            else:
+                host = t["host"]
+            if host and host != "gateway" and not t["id"].endswith("gateway"):  # the router is one hop away
+                out.append((t["id"], host, t.get("bind")))
+        row = self.db.query("SELECT server_host FROM speedtest WHERE COALESCE(kind, 'main') = 'main'"
+                            " AND server_host IS NOT NULL ORDER BY ts DESC LIMIT 1")
+        if row:
+            out.append(("speedtest:Auto", row[0][0], None))
+        return out
+
+    def collect_traceroutes(self):
+        if not self.trace_lock.acquire(blocking=False):
+            return  # previous round still running
+        try:
+            tr = self.cfg["traceroute"]
+            isp = {c["connection"]: c["last_ok"] for c in isp_current(self)} if self.cfg["isp"]["enabled"] else {}
+            conn_of_bind = {c["bind"]: c["name"] for c in self.cfg["connections"]}
+
+            def one(item):
+                tid, host, bind = item
+                ts = time.time()
+                try:
+                    try:
+                        dest = socket.getaddrinfo(host, None, socket.AF_INET if not bind or ":" not in bind else 0)[0][4][0]
+                    except OSError:
+                        dest = None
+                    hops = traceroute(dest or host, tr["max_hops"], bind)
+                    known = isp.get(conn_of_bind.get(bind, self.cfg["isp"]["main_name"])) or {}
+                    isp_asn = int(known["asn"][2:]) if (known.get("asn") or "").startswith("AS") else None
+                    kind, path, detailed = classify_route(hops, dest, isp_asn)
+                    return (ts, tid, dest, kind, json.dumps(path), json.dumps(detailed), None, host)
+                except Exception as e:
+                    return (ts, tid, None, None, None, None, str(e)[:200], host)
+            with ThreadPoolExecutor(max_workers=int(tr["parallel"])) as pool:
+                rows = list(pool.map(one, self.trace_targets()))
+            self.db.insert_many("INSERT INTO traceroute (ts, target, dest, kind, path, hops, error, dest_host)"
+                                " VALUES (?,?,?,?,?,?,?,?)", rows)
+            log.info("traced %d routes", len(rows))
+        finally:
+            self.trace_lock.release()
+
     def collect_region_pings(self):
         ts = time.time()
         timeout = self.cfg["ping"]["timeout_seconds"]
@@ -1216,6 +1577,20 @@ class Monitor:
             self.ipv6 = (time.time(), ok)
         return self.ipv6[1]
 
+    def isp_connections(self):
+        """(name, bind) for the main connection and every secondary connection."""
+        return [(self.cfg["isp"]["main_name"], None)] + [(c["name"], c["bind"]) for c in self.cfg["connections"]]
+
+    def collect_isp(self):
+        def one(conn):
+            name, bind = conn
+            try:
+                r = lookup_isp(bind)
+                return (time.time(), name, r["ip"], r["isp"], r["asn"], r["location"], None)
+            except Exception as e:
+                return (time.time(), name, None, None, None, None, str(e)[:200])
+        self.db.insert_many("INSERT INTO isp VALUES (?,?,?,?,?,?,?)", list(self.pool.map(one, self.isp_connections())))
+
     def collect_system(self):
         s = self.sys.sample()
         self.db.insert_many("INSERT INTO system VALUES (?,?,?,?,?,?)", [(
@@ -1259,7 +1634,7 @@ class Monitor:
         minute_cutoff = max(cutoff, now - float(st["minute_retention_days"]) * 86400)
         raw_cutoff = max(minute_cutoff, now - float(st["raw_retention_days"]) * 86400)
         for tables, cut in ((("ping", "dns"), raw_cutoff), (("ping_1m", "dns_1m"), minute_cutoff),
-                            (("ping_1h", "dns_1h", "system", "speedtest"), cutoff)):
+                            (("ping_1h", "dns_1h", "system", "speedtest", "isp", "traceroute"), cutoff)):
             if cut > 0:
                 for table in tables:
                     self.db.conn().execute(f"DELETE FROM {table} WHERE ts < ?", (cut,))
@@ -1304,7 +1679,8 @@ class Monitor:
     @staticmethod
     def _error_row(msg):
         row = dict.fromkeys(["server_id", "server_name", "server_location", "isp", "ping_ms", "jitter_ms",
-                             "download_mbps", "upload_mbps", "packet_loss", "result_url", "data_bytes"])
+                             "download_mbps", "upload_mbps", "packet_loss", "result_url", "data_bytes",
+                             "server_host"])
         row["error"] = msg
         return row
 
@@ -1343,6 +1719,7 @@ class Monitor:
                     upload_mbps=result["upload"]["bandwidth"] * 8 / 1e6,
                     packet_loss=result.get("packetLoss"),
                     result_url=result.get("result", {}).get("url"),
+                    server_host=str(srv.get("host") or "").rsplit(":", 1)[0] or None,
                     data_bytes=(result["download"].get("bytes") or 0) + (result["upload"].get("bytes") or 0),
                 )
             else:
@@ -1442,6 +1819,7 @@ def api_config(m, q):
     c = m.cfg
     return {
         "version": VERSION,
+        "repo": REPO_URL,
         "info": m.static_info,
         "ping": {"interval_seconds": c["ping"]["interval_seconds"], "offset_seconds": c["ping"]["offset_seconds"],
                  "region_interval_seconds": c["ping"]["region_interval_seconds"],
@@ -1463,6 +1841,7 @@ def api_config(m, q):
                                                        c["speedtest"]["regions_offset_minutes"] * 60)
                       if c["speedtest"]["enabled"] and c["speedtest"]["regions"] else None},
         "system": {"interval_seconds": c["system"]["interval_seconds"]},
+        "isp": {"enabled": c["isp"]["enabled"], "connections": [n for n, _ in m.isp_connections()]},
         "retention_days": c["storage"]["retention_days"],
         "storage": {k: v for k, v in c["storage"].items() if k != "database"},
     }
@@ -1513,12 +1892,69 @@ def api_system_history(m, q):
     return {"from": frm, "to": to, "bucket": bucket, "series": series}
 
 
+def isp_current(m):
+    """Latest ISP check per connection, plus the last successful one if the latest failed."""
+    out = []
+    for name, _ in m.isp_connections():
+        rows = m.db.query("SELECT ts, ip, isp, asn, location, error FROM isp WHERE connection = ?"
+                          " ORDER BY ts DESC LIMIT 1", (name,))
+        good = m.db.query("SELECT ts, ip, isp, asn, location FROM isp WHERE connection = ? AND error IS NULL"
+                          " ORDER BY ts DESC LIMIT 1", (name,))
+        latest = dict(zip(["ts", "ip", "isp", "asn", "location", "error"], rows[0])) if rows else None
+        ok = dict(zip(["ts", "ip", "isp", "asn", "location"], good[0])) if good else None
+        out.append({"connection": name, "latest": latest, "last_ok": ok})
+    return out
+
+
+def latest_routes(m):
+    """Latest successful route per target: {id: {ts, kind, path}}."""
+    out = {}
+    for tid, ts, kind, path in m.db.query(
+            "SELECT target, MAX(ts), kind, path FROM traceroute WHERE error IS NULL GROUP BY target"):
+        out[tid] = {"ts": ts, "kind": kind, "path": json.loads(path or "[]")}
+    return out
+
+
+def api_traceroute(m, q):
+    """Full hop list for one target's latest route, plus its route history."""
+    tid = q.get("target") or ""
+    rows = m.db.query("SELECT ts, dest, kind, path, hops, error, dest_host FROM traceroute WHERE target = ?"
+                      " ORDER BY ts DESC LIMIT 30", (tid,))
+    hist = [{"ts": ts, "dest": dest, "dest_host": dh, "kind": kind, "path": json.loads(path or "[]"),
+             "hops": json.loads(hops or "[]") if i == 0 else None, "error": err}
+            for i, (ts, dest, kind, path, hops, err, dh) in enumerate(rows)]
+    return {"target": tid, "latest": hist[0] if hist else None, "history": hist}
+
+
+def api_isp(m, q):
+    """ISP observations in a range: every change, plus at most one sample per bucket."""
+    now = time.time()
+    to = float(q.get("to") or now)
+    frm = float(q.get("from") or to - 86400)
+    points = max(20, min(2000, int(q.get("points") or 300)))
+    gap = (to - frm) / points
+    series = {}
+    keep = {}
+    for ts, conn, ip, isp, asn, err in m.db.query(
+            "SELECT ts, connection, ip, isp, asn, error FROM isp WHERE ts >= ? AND ts <= ? ORDER BY ts", (frm, to)):
+        key = (isp, ip, bool(err))
+        last = keep.get(conn)
+        changed = last is not None and last[1] != key
+        if last is None or changed or ts - last[0] >= gap:
+            keep[conn] = (ts, key)
+            series.setdefault(conn, []).append(
+                [int(ts * 1000), isp or ("check failed" if err else None), ip, asn, changed])
+    return {"from": frm, "to": to, "series": series}
+
+
 def api_summary(m, q):
     now = time.time()
     last = {t: (rtt, ts) for t, rtt, ts in m.db.query(
         "SELECT target, rtt, MAX(ts) FROM ping WHERE ts > ? GROUP BY target", (now - 120,))}
-    agg = {t: (avg, n, ok) for t, avg, n, ok in m.db.query(
-        "SELECT target, AVG(rtt), COUNT(*), COUNT(rtt) FROM ping WHERE ts > ? GROUP BY target", (now - 300,))}
+    recent = {}
+    for t, rtt in m.db.query("SELECT target, rtt FROM ping WHERE ts > ?", (now - 300,)):
+        recent.setdefault(t, []).append(rtt)
+    agg = {t: (trimmed_mean(v), len(v), sum(x is not None for x in v)) for t, v in recent.items()}
     ping = []
     for t in m.cfg["ping"]["targets"]:
         l = last.get(t["id"], (None, None))
@@ -1529,8 +1965,11 @@ def api_summary(m, q):
                      "last": r2(l[0]), "last_ts": l[1],
                      "avg5m": r2(a[0]) if a else None,
                      "loss5m": round(100.0 * (a[1] - a[2]) / a[1], 1) if a else None})
-    dns = {s: {"avg5m": r2(avg), "fail5m": round(100.0 * (n - ok) / n, 1)} for s, avg, n, ok in m.db.query(
-        "SELECT server, AVG(ms), COUNT(*), COUNT(ms) FROM dns WHERE ts > ? GROUP BY server", (now - 300,))}
+    recent = {}
+    for sv, ms in m.db.query("SELECT server, ms FROM dns WHERE ts > ?", (now - 300,)):
+        recent.setdefault(sv, []).append(ms)
+    dns = {sv: {"avg5m": r2(trimmed_mean(v)), "fail5m": round(100.0 * sum(x is None for x in v) / len(v), 1)}
+           for sv, v in recent.items()}
     main = "COALESCE(kind, 'main') = 'main'"
     ok = m.db.query(f"SELECT {','.join(ST_COLS)} FROM speedtest WHERE {main} AND error IS NULL ORDER BY ts DESC LIMIT 1")
     latest = m.db.query(f"SELECT {','.join(ST_COLS)} FROM speedtest WHERE {main} ORDER BY ts DESC LIMIT 1")
@@ -1539,7 +1978,7 @@ def api_summary(m, q):
     conns = st_by_label(m, "connection", now)
     flags = {r["name"]: r.get("flag", "") for r in m.cfg["speedtest"]["regions"]}
     return {
-        "now": now, "ping": ping, "dns": dns,
+        "now": now, "ping": ping, "dns": dns, "isp": isp_current(m), "routes": latest_routes(m),
         "speedtest": {
             "last_ok": dict(zip(ST_COLS, ok[0])) if ok else None,
             "latest": dict(zip(ST_COLS, latest[0])) if latest else None,
@@ -1560,9 +1999,14 @@ ST_COLS = ["ts", "server_name", "server_location", "isp", "ping_ms", "jitter_ms"
 
 def st_avg(m, where, params, since):
     """Averages of successful speedtests since a time, plus total data used (failed tests included)."""
-    n, dl, ul, pg, jt, pl = m.db.query(
-        "SELECT COUNT(*), AVG(download_mbps), AVG(upload_mbps), AVG(ping_ms), AVG(jitter_ms), AVG(packet_loss)"
-        f" FROM speedtest WHERE {where} AND error IS NULL AND ts > ?", (*params, since))[0]
+    rows = m.db.query("SELECT download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss"
+                      f" FROM speedtest WHERE {where} AND error IS NULL AND ts > ?", (*params, since))
+    n = len(rows)
+
+    def avg(i):  # each metric's average without its outliers (e.g. one test that hit a congested server)
+        v = outlier_free(r[i] for r in rows) if i < 4 else [r[i] for r in rows if r[i] is not None]  # keep every loss value
+        return sum(v) / len(v) if v else None
+    dl, ul, pg, jt, pl = (avg(i) for i in range(5))
     data = m.db.scalar(f"SELECT SUM(data_bytes) FROM speedtest WHERE {where} AND ts > ?", (*params, since))
     return {"tests": n, "download_mbps": r2(dl), "upload_mbps": r2(ul), "ping_ms": r2(pg), "jitter_ms": r2(jt),
             "packet_loss": r2(pl), "data_bytes": data or 0}
@@ -1601,7 +2045,8 @@ def api_run_speedtest(m, q):
 GET_ROUTES = {
     "/api/config": api_config, "/api/ping": api_ping, "/api/dns": api_dns,
     "/api/speedtest": api_speedtest, "/api/system": api_system,
-    "/api/system/history": api_system_history, "/api/summary": api_summary,
+    "/api/system/history": api_system_history, "/api/summary": api_summary, "/api/isp": api_isp,
+    "/api/traceroute": api_traceroute,
 }
 POST_ROUTES = {"/api/speedtest/run": api_run_speedtest}
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
@@ -1633,6 +2078,8 @@ def make_handler(monitor):
                 return False
             try:
                 self.send_json(fn(monitor, q))
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the browser went away (reload, closed tab) before the reply was sent
             except ValueError as e:
                 self.send_json({"error": str(e)}, 400)
             except Exception as e:

@@ -51,12 +51,21 @@ targets = [
   { name = "Discord voice",  host = "discord:auto",     group = "Gaming" },
   { name = "Facebook",       host = "facebook.com",     group = "Social" },
   { name = "Reddit",         host = "reddit.com",       group = "Social" },
+  { name = "X",              host = "x.com",            group = "Social" },
   { name = "Microsoft",      host = "microsoft.com",    group = "Cloud & tech" },
   { name = "Apple",          host = "apple.com",        group = "Cloud & tech" },
   { name = "AWS",            host = "aws.amazon.com",   group = "Cloud & tech" },
   { name = "GitHub",         host = "github.com",       group = "Cloud & tech" },
   { name = "Akamai",         host = "akamai.com",       group = "CDN" },
   { name = "Fastly",         host = "fastly.com",       group = "CDN" },
+  { name = "Cloudflare",     host = "www.cloudflare.com", group = "CDN" },
+  { name = "CloudFront",     host = "d1.awsstatic.com", group = "CDN" },   # Amazon's CDN
+  { name = "Azure Front Door", host = "www.office.com", group = "CDN" },   # Microsoft's own edge network
+  { name = "Bunny",          host = "bunny.net",        group = "CDN" },
+  { name = "Gcore",          host = "gcore.com",        group = "CDN" },
+  # Usenet providers (Amsterdam); Highwinds/Omicron also runs Newshosting, UsenetServer and Easynews
+  { name = "Eweka",          host = "news.eweka.nl",    group = "Usenet" },
+  { name = "Highwinds",      host = "news.newshosting.com", group = "Usenet" },
   # more ideas: store.steampowered.com, x.com, instagram.com, spotify.com,
   # { name = "Amazon", host = "amazon.com", method = "tcp", port = 443, group = "Shopping" },   # blocks ping
 ]
@@ -120,6 +129,25 @@ regions_interval_minutes = 1440   # once a day
 regions_offset_minutes = 30       # e.g. 00:30 - with 1440, the offset is the time of day
 binary = "auto"       # auto = official Ookla CLI in /usr/bin, /usr/local/bin or /opt/homebrew/bin
 timeout_seconds = 300
+
+[isp]
+# Checks the public IP and ISP of the main connection and every secondary connection
+# (via ipinfo.io), shown in the header and as markers along the top of the charts, so you
+# can see when your router failed over to another connection.
+enabled = true
+interval_minutes = 10
+offset_minutes = 0
+main_name = "Main"     # what to call your main connection
+
+[traceroute]
+# Traces the route to every ping target (and the speedtest server) and looks up which network
+# owns each hop, so the dashboard can show whether traffic is on-net, peers directly with the
+# destination, or goes via transit providers like Cogent, Arelion or GTT.
+enabled = true
+interval_hours = 12
+offset_minutes = 15
+max_hops = 25
+parallel = 6           # traces at once
 
 [system]
 interval_seconds = 30

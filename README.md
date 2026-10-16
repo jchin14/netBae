@@ -2,6 +2,8 @@
 
 # netBae
 
+<sub>by <a href="https://github.com/jchin14">jchin14</a></sub>
+
 **A self-hosted dashboard for your home internet connection.**<br>
 Ping, DNS, game servers and speedtests, recorded around the clock on a Raspberry Pi, a Linux VM, a Mac or a Windows PC.
 
@@ -18,11 +20,13 @@ Ping, DNS, game servers and speedtests, recorded around the clock on a Raspberry
 
 Your ISP's status page says everything is fine, but your game lagged, the video call dropped and the evening stream buffered. netBae keeps a record of what your connection was actually doing, so you can see when it was slow, how slow and where the problem was.
 
-- **Latency to everything that matters:** your router, DNS resolvers, Google/YouTube, Netflix/Twitch, Facebook/Reddit, Microsoft/Apple/AWS/GitHub, Akamai/Fastly, and **game servers** (Steam & CS2, Fortnite, Discord voice), every 5 seconds
+- **Latency to everything that matters:** your router, DNS resolvers, Google/YouTube, Netflix/Twitch, Facebook/Reddit/X, Microsoft/Apple/AWS/GitHub, CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Usenet (Eweka, Highwinds) and **game servers** (Steam & CS2, Fortnite, Discord voice), every 5 seconds
 - **Grouped overview:** one card per category with its average ping. Click a card to see every host in it.
 - **Charts that show jitter:** the average as a solid line with a shaded P5–P95 (or min–max) band. The y-axis fits the averages, and you can zoom and drag.
 - **Speedtests** with the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages
 - **Worldwide view:** latency to 18 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them
+- **Which ISP you're on:** the public IP and ISP of each connection, checked every 10 minutes and marked on the charts, so failovers stand out
+- **Routes and transit providers:** every 12 hours netBae traces the route to each target and shows whether it's **on-net**, **peering** (your ISP connects straight to the destination) or **transit** via carriers like Cogent, Arelion, GTT or Vodafone, with every hop one click away
 - **Secondary connection monitoring:** test a second internet connection (e.g. a 5G/4G failover link) alongside your main one, at the same time
 - **DNS over IPv4 and IPv6:** response times for your router, the DNS servers DHCP gave you, and Cloudflare, Google, Quad9, OpenDNS, CleanBrowsing, AdGuard, NextDNS and Control D
 - **History kept forever,** at the right resolution: every ping for 7 days, 1-minute summaries for 90 days, hourly summaries for ever
@@ -133,13 +137,15 @@ Everything lives in one commented [config file](config.toml). The highlights:
 | Setting | Default | |
 |---|---|---|
 | `[web] port` | `80` | change it if something else (e.g. a reverse proxy) uses port 80 |
-| `[ping] targets` | 21 hosts in 9 groups | `{ name, host, group }`; `host = "gateway"` = your router; `method = "tcp"` for hosts that block ping |
+| `[ping] targets` | 32 hosts in 9 groups | `{ name, host, group }`; `host = "gateway"` = your router; `method = "tcp"` for hosts that block ping |
 | `[ping] interval_seconds` / `offset_seconds` | `5` / `0` | |
 | `[ping] regions` | 18 cities | latency to the fastest Ookla server in each city, every `region_interval_seconds` (30) |
 | `[dns] servers` / `domains` | router, DHCP DNS + 8 public resolvers over IPv4 and IPv6 / 5 domains | `host = "dhcp"` adds the DNS servers this machine got from DHCP if they differ from the router; IPv6 servers are skipped on IPv4-only networks |
 | `[speedtest] interval_minutes` / `offset_minutes` | `60` / `0` | e.g. `offset_minutes = 6` → runs at :06 every hour |
 | `[speedtest] regions` | none | cities to speedtest, e.g. `["Sydney", "Singapore", "London"]`, once a day by default |
 | `[storage]` | `7` / `90` / `0` days | raw samples / 1-minute summaries / hourly summaries (`0` = forever) |
+| `[isp] interval_minutes` | `10` | how often each connection's public IP and ISP are checked |
+| `[traceroute] interval_hours` | `12` | how often every target's route is traced |
 | `[[connections]]` | none | extra internet connections to test, see [below](#monitoring-a-secondary-connection) |
 
 All schedules follow the wall clock (local time), so `interval_minutes = 30` with `offset_minutes = 6` runs at :06 and :36 whenever the service started.
@@ -212,8 +218,17 @@ The connection gets its own group of ping tiles and its own row in the speedtest
 - **Router:** `gateway` reads the default route from the kernel (`/proc/net/route`; `route get default` on macOS, `route print` on Windows), so it follows whatever router you're using.
 - **Sites:** each name is pinged at the address it resolves to, which for big services is their nearest edge or CDN server. That's the path your real traffic takes.
 - **DNS:** one UDP A-record query per resolver and domain, timed in Python, over IPv4 and IPv6. "DHCP DNS" is read from the system's resolver settings (`/etc/resolv.conf` or systemd-resolved on Linux and macOS, the network adapter settings on Windows) at startup.
+- **ISP:** an HTTPS request to [ipinfo.io](https://ipinfo.io) through each connection (main and secondary) returns its public IP and ISP. The header shows the current one, and the charts mark every check: one colour per connection and one shape per ISP. Click a marker type above a chart to hide it. ipinfo.io sees your public IP, about 4,500 requests a month per connection at the default interval (its free tier allows 50,000).
+- **Routes:** the system `traceroute` (`tracert` on Windows) to each target every 12 hours. Each hop's network comes from [Team Cymru's IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) over DNS. A route is **on-net** if the destination is inside your ISP, **peering** if your ISP hands traffic straight to the destination's network (directly or across an internet exchange), and **transit** if other carriers sit in between. Traceroute only sees routers that answer it, so treat it as a strong hint, not proof.
 - **Speedtests:** the official Ookla CLI, auto-selecting the closest server unless you choose one.
 - **System:** the model name comes from the device tree on a Raspberry Pi (`/proc/device-tree/model`), DMI/BIOS info on PCs and VMs, `sysctl` on a Mac and the registry on Windows.
+
+## Averages
+
+Averages ignore large outliers, so one bad spike doesn't skew them. Min, max and P95 still show every spike:
+
+- **Ping and DNS:** the fastest and slowest 5% of samples are left out of each average once there are at least 10 samples.
+- **Speedtests:** download, upload, ping and jitter averages leave out results beyond 1.5× the interquartile range (e.g. one test that hit a congested server). Packet loss is never trimmed.
 
 ## Data storage
 
