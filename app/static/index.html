@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>netBae</title>
+  <title>netBae - Internet Monitor</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233b82f6' stroke-width='2.5' stroke-linecap='round'%3E%3Cpolyline points='2 12 6 12 9 4 15 20 18 12 22 12'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
   <script>try { const t = JSON.parse(localStorage.getItem('netbae:theme')); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}</script>
@@ -11,7 +11,7 @@
 <body>
   <header class="top">
     <div>
-      <h1><svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><polyline points="2 12 6 12 9 4 15 20 18 12 22 12"/></svg>netBae <span id="hostname" class="muted"></span></h1>
+      <h1><svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><polyline points="2 12 6 12 9 4 15 20 18 12 22 12"/></svg>netBae <a id="version" class="version" target="_blank" rel="noopener" title="What's new in this version"></a> <span id="hostname" class="muted"></span></h1>
       <div id="subtitle" class="muted small"></div>
       <div id="isp-now" class="muted small"></div>
       <div id="share-now" class="muted small share-now" hidden></div>
@@ -40,6 +40,7 @@
         <div class="card-head">
           <h2>Speedtest <span class="muted small">closest server · latest and averages</span></h2>
           <span class="controls">
+            <button id="run-global" class="btn ghost" title="A speedtest to a random server somewhere in the world" hidden>Run random</button>
             <button id="run-regions" class="btn ghost" hidden>Run regions</button>
             <button id="run-speedtest" class="btn">Run now</button>
           </span>
@@ -102,6 +103,17 @@
       <div class="chips"></div>
       <div class="chart-wrap"><canvas></canvas></div>
       <div class="table-wrap"><table class="stats"></table></div>
+    </section>
+
+    <section class="card panel" id="panel-cdn" hidden>
+      <div class="panel-head">
+        <h2>DNS and CDN <span class="muted small" id="cdn-note"></span></h2>
+        <span class="controls"><button id="run-cdn" class="btn ghost" hidden>Test now</button></span>
+      </div>
+      <p class="muted small cdn-intro">CDNs like Akamai send you to a server near the DNS resolver that asked, so a resolver far away,
+        or one that hides where you are, can send you to a distant server. Each resolver looks up the names below and the
+        addresses it hands out are pinged: the resolver whose answers are closest to you is first.</p>
+      <div class="table-wrap"><table class="stats" id="cdn-table"></table></div>
     </section>
 
     <section class="card panel" id="panel-speed">

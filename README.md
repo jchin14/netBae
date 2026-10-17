@@ -73,7 +73,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 
 | | |
 |---|---|
-| **Ping, every 5 seconds** | your router and your ISP's first hop (BNG), DNS resolvers, Google/YouTube, streaming (Netflix, Twitch, Disney+, HBO Max, plus Stan, ABC iview, SBS On Demand, 7plus, 9Now, 10, Foxtel, Kayo and Sky News in Australia), Facebook/Instagram/Reddit/X/TikTok, AI (ChatGPT, Claude, Grok), calls and chat (Slack, Teams, Zoom, Webex, Meet), Microsoft/Apple/AWS/GitHub/Atlassian, hosting data centres (AWS, Oracle Cloud, Azure, OVHcloud, Vultr, DigitalOcean, Linode, Hetzner), CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Chinese clouds and CDNs (Alibaba, Tencent, Huawei, Baidu, ByteDance, CDNetworks), Usenet in the US and Europe, and **game servers** (Steam & CS2, Fortnite, Discord voice, AWS GameLift, Battle.net, Minecraft) |
+| **Ping, every 5 seconds** | your router and your ISP's first hop (BNG), DNS resolvers, Google/YouTube, streaming (Netflix, Twitch, Disney+, HBO Max, Paramount+, plus Stan, ABC iview, SBS On Demand, 7plus, 9Now, 10, Foxtel, Kayo and Sky News in Australia), Facebook/Instagram/Reddit/X/TikTok, AI (ChatGPT, Claude, Grok), calls and chat (Slack, Teams, Zoom, Webex, Meet), Microsoft/Apple/AWS/GitHub/Atlassian, hosting data centres (AWS, Oracle Cloud, Azure, OVHcloud, Vultr, DigitalOcean, Linode, Hetzner), CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Chinese clouds and CDNs (Alibaba, Tencent, Huawei, Baidu, ByteDance, CDNetworks), Usenet in the US and Europe, and **game servers** (Steam & CS2, Fortnite, Discord voice, AWS GameLift, Battle.net, Minecraft) |
 | **Grouped overview** | one card per category with its average ping; click a card to see every host in it |
 | **Charts that show jitter** | the average as a line with a shaded P5-P95 (or min-max) band; zoom and drag the y-axis |
 | **Speedtests** | the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages |
@@ -82,7 +82,8 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 | **Routes** | every 12 hours, the route to each target: **on-net**, **direct**, via an **IX** (named) or **transit** through carriers like Cogent, Arelion or GTT, with each hand-over labelled **peering** or **paid transit** |
 | **Secondary connection** | test a second internet connection (e.g. a 5G failover link) alongside your main one |
 | **IPv4 and IPv6** | sites pinged and traced over both when your network has IPv6, side by side on the tiles and charts |
-| **DNS over IPv4 and IPv6** | your router, your DHCP DNS, and Cloudflare, Google, Quad9, OpenDNS, CleanBrowsing, AdGuard, NextDNS and Control D |
+| **DNS over IPv4 and IPv6** | your router, your DHCP DNS, and Cloudflare, Google, Quad9 (with and without ECS), OpenDNS, CleanBrowsing, AdGuard, NextDNS and Control D |
+| **Which DNS gets you the closest CDN** | every resolver looks up Akamai test names, google.com, microsoft.com and www.cloudflare.com; the addresses each one hands out are pinged and traced, and the resolvers are ranked by average latency |
 | **Public dashboard** | optionally share a read-only, privacy-masked copy through Cloudflare or Tailscale with one command |
 | **History forever** | every ping for 7 days, 1-minute summaries for 90 days, hourly summaries for ever |
 | **Light and dark themes** | follows your device, or pick one in the header |
@@ -218,6 +219,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | Option | Default | |
 |---|---|---|
 | `[web] host` | `"0.0.0.0"` | `0.0.0.0` = reachable from your network; `"::"` for IPv6 too |
+| `[web] chart_band` | `"none"` | the latency charts' spread band by default: `"none"`, `"p5-p95"` or `"min-max"`. Each browser remembers its own choice, and the band is drawn when 12 or fewer lines are showing |
 | `[web] port` | `80` | if it's taken when netBae starts, the next free port is used and the log says which |
 | `[storage] database` | `/var/lib/netbae/netbae.db` | the history database |
 | `[storage] raw_retention_days` | `7` | every sample |
@@ -230,11 +232,15 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[ping] targets` | not set | set it to use only your own list instead of the built-in one |
 | `[ping] regions` | 18 cities | latency to the fastest Ookla server in each city, see [Regions](#region-speedtests-and-pings) |
 | `[ping] region_interval_seconds` | `30` | |
-| `[ping] ipv6` | `true` | also ping each site over IPv6 (a separate line) when this machine and the site have IPv6. Not the router, game/region servers or secondary connections |
+| `[ping] ipv6` | `true` | also ping each site over IPv6 (a separate line) when this machine and the site have IPv6, and each region over IPv6 to a speedtest server there that has it. Not the router, game servers or secondary connections |
 | `[dns] enabled` | `true` | |
 | `[dns] interval_seconds` / `offset_seconds` / `timeout_seconds` | `30` / `0` / `2` | |
-| `[dns] servers` | router, DHCP DNS + 8 public resolvers, IPv4 and IPv6 | `host = "dhcp"` adds the DNS servers DHCP gave this machine if they differ from the router; IPv6 servers are skipped on IPv4-only networks |
+| `[dns] servers` | router, DHCP DNS + 9 public resolvers, IPv4 and IPv6 | `host = "dhcp"` adds the DNS servers DHCP gave this machine if they differ from the router; IPv6 servers are skipped on IPv4-only networks |
 | `[dns] domains` | 5 domains | the names each resolver is asked for |
+| `[cdn] enabled` | `true` | the DNS and CDN test: which CDN server each `[dns]` server sends you to |
+| `[cdn] hostnames` | `a2.w10.akamai.net`, `a10.w2.akamai.net`, `google.com`, `microsoft.com`, `www.cloudflare.com` | looked up through every DNS server |
+| `[cdn] interval_minutes` / `offset_minutes` | `30` / `20` | |
+| `[cdn] pings` / `trace_hours` | `5` / `6` | pings per address each run; trace each address at most every 6 hours (`0` = no traces) |
 
 </details>
 
@@ -449,7 +455,8 @@ If you use [Tailscale](https://tailscale.com/), run `sudo tailscale funnel --bg 
 - **Ping:** one ICMP echo per host per interval, using the system `ping`. Hosts that block ping can use a timed TCP connect instead.
 - **Router:** `gateway` reads the default route from the kernel (`/proc/net/route`; `route get default` on macOS, `route print` on Windows), so it follows whatever router you're using.
 - **Sites:** each name is pinged at the address it resolves to, which for big services is their nearest edge or CDN server. That's the path your real traffic takes.
-- **IPv4 and IPv6:** when this machine has an IPv6 route, each site is pinged at its IPv4 address and, if it has one, its IPv6 address, stored as two separate series (the public resolvers' IPv4 addresses are paired with their IPv6 ones, e.g. 1.1.1.1 with 2606:4700:4700::1111). Sites without IPv6 just have no IPv6 line, and nothing is recorded for IPv6 on an IPv4-only network. Fake "IPv6" addresses that still go over IPv4 (IPv4-mapped `::ffff:` and NAT64 `64:ff9b::`) are ignored. Routes are traced over both too.
+- **IPv4 and IPv6:** when this machine has an IPv6 route, each site is pinged at its IPv4 address and, if it has one, its IPv6 address, stored as two separate series (the public resolvers' IPv4 addresses are paired with their IPv6 ones, e.g. 1.1.1.1 with 2606:4700:4700::1111). Regions use the same speedtest server over IPv6 when it has an IPv6 address, otherwise the fastest one in that city that does. Sites without IPv6 just have no IPv6 line, and nothing is recorded for IPv6 on an IPv4-only network. Fake "IPv6" addresses that still go over IPv4 (IPv4-mapped `::ffff:` and NAT64 `64:ff9b::`) are ignored. Routes are traced over both too.
+- **DNS and CDN:** CDNs such as Akamai, Google and Microsoft answer with a server near the DNS resolver that asked (or near you, if the resolver passes on part of your address with EDNS Client Subnet, like Quad9's 9.9.9.11). Cloudflare is the exception: it uses the same anycast addresses everywhere and your ISP's routing picks the site, so it's there as a baseline. Every 30 minutes each resolver looks up the `[cdn] hostnames`; every address it hands out is pinged 5 times and traced every 6 hours. A resolver's score is the average latency to its addresses, averaged per hostname so a name with six addresses counts the same as one with one, and the dashboard lists the resolvers fastest first with a 7-day average. A resolver near the top is one whose answers send you to nearby servers.
 - **DNS:** one UDP A-record query per resolver and domain, timed in Python, over IPv4 and IPv6. "DHCP DNS" is read from the system's resolver settings (`/etc/resolv.conf` or systemd-resolved on Linux and macOS, the network adapter settings on Windows) at startup.
 - **ISP:** an HTTPS request to [ipinfo.io](https://ipinfo.io) through each connection (main and secondary) returns its public IP and ISP. The header shows the current one, and the charts mark every check: one colour per connection and one shape per ISP. Click a marker type above a chart to hide it. ipinfo.io sees your public IP, about 4,500 requests a month per connection at the default interval (its free tier allows 50,000).
 - **Routes:** the system `traceroute` (`tracert` on Windows) to each target every 12 hours, and right after netBae starts for any target that has no recent route. Each hop's network comes from [Team Cymru's IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) over DNS. A route is **on-net** if the destination is inside your ISP, **direct** if your ISP connects straight to the destination's network (a private interconnect), **IX** if your ISP hands the traffic over across an internet exchange (hops on an exchange's peering LAN, using [PeeringDB](https://www.peeringdb.com)'s prefix list, refreshed daily), even when a transit carrier follows the exchange, and **transit** if your ISP hands it straight to another carrier. Each hand-over is also labelled with the business relationship between the two networks (**peering**, **paid transit**, or **to customer**) from [CAIDA's AS relationships](https://www.caida.org/catalog/datasets/as-relationships/), inferred from public BGP data, published monthly and downloaded once a month (~10 MB on disk). Each hop also gets a **location**, from the city code most backbone routers carry in their name (`be3021.ccr41.syd01.atlas.cogentco.com` is Sydney), or else from ipinfo.io's IP geolocation, marked `~` as approximate. A geolocated city is dropped if the hop answered too fast to be that far away (light in fibre covers about 100 km per millisecond of round trip), which weeds out anycast addresses like 8.8.8.8. Geolocation results are cached for 30 days and capped at 300 lookups a day. Traceroute only sees routers that answer it, so treat it as a strong hint, not proof.
@@ -505,6 +512,15 @@ Everything on the dashboard comes from a small JSON API you can use from Home As
 **Does it run on Windows?** Yes, Windows 10 and 11, with `install.ps1` (see [Install](#install)). Windows can't run `install.sh` because it has no bash, so it has its own installer.
 
 **How much data does it use?** Pings and DNS are tiny (a few MB a day). Speedtests are what count: each uses roughly what your connection can move in about 20 seconds. On a gigabit line that's about 1 GB per test, so hourly tests add up. The dashboard shows data used per test and per day.
+
+**What do on-net, direct, IX and transit mean on a route?** They describe how traffic gets from your ISP to the network that owns the destination address:
+
+- **on-net**: the destination is inside your ISP's own network.
+- **direct**: your ISP hands traffic straight to the destination's network over a private link. ChatGPT is a good example: `chatgpt.com` is on Cloudflare's addresses, and Superloop connects straight to Cloudflare, so the route is Superloop → Cloudflare.
+- **IX**: the hand-over happens at an internet exchange (a shared switch where many networks meet, like MegaIX Melbourne), still without a carrier in between.
+- **transit**: another network sits between your ISP and the destination. Claude is an example: `claude.ai` is on Anthropic's own addresses, with Cloudflare in front of it, so the route is Superloop → Cloudflare → Anthropic and Cloudflare counts as the network in the middle. Transit isn't automatically slower: here Cloudflare picks the traffic up in Melbourne and both sites ping about the same. It matters more when the middle network is a long-haul carrier like Cogent or GTT.
+
+The destination is named only when it isn't the site itself ("direct to Cloudflare" for ChatGPT, just "direct" for Google). The grey word after a route, such as **· peering** or **· paid transit**, is the business relationship at the first hand-over (see below). It's left out when CAIDA's data doesn't know the two networks' relationship, so "direct" and "direct · peering" are the same kind of route; one just has the relationship known.
 
 **What's the difference between transit and peering?** Transit is paid access to the whole internet: your ISP pays a carrier like Cogent or GTT to deliver its traffic anywhere. Peering is two networks swapping traffic only between themselves and their own customers, usually for free (sometimes paid when the traffic is lopsided, which still counts as peering). A route that's **direct** or via an **IX** and labelled **peering** is usually the shortest and least congested way in. **Transit** adds another network in the middle. The labels come from CAIDA's data, inferred from public routing tables, so treat them as a well-informed guess.
 

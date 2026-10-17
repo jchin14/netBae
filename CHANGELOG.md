@@ -2,6 +2,25 @@
 
 What's new in each netBae release. Update with `netbae update`, by re-running the install command, or with `docker compose pull && docker compose up -d`.
 
+## 1.10.0 - 2026-10-18
+
+DNS and CDN test, IPv6 for regions and dashboard improvements.
+
+- **DNS and CDN test:** a new section shows which CDN server each DNS resolver sends you to. Every 30 minutes each resolver looks up `a2.w10.akamai.net`, `a10.w2.akamai.net`, `google.com`, `microsoft.com` and `www.cloudflare.com` (a baseline: Cloudflare's anycast addresses are the same whichever resolver asks), the addresses it hands out are pinged (and traced every 6 hours), and the resolvers are ranked by average latency, with a 7-day average and a Test now button. Settings under `[cdn]`.
+- Region pings and routes over IPv6 too: each city is also measured over IPv6, to the same speedtest server when it has IPv6, otherwise the fastest one there that does. Shown like the sites: an IPv6 line on each region tile and the chart's IPv4 / IPv6 / both switch.
+- **Run random:** a button next to Run now starts a speedtest to a random server somewhere in the world (a global speedtest) on demand.
+- New DNS resolver: Quad9 with ECS (9.9.9.11 and 2620:fe::11), which passes part of your address on so CDNs answer for where you are. If your `config.toml` has its own `[dns] servers` list, add it there.
+- New target: Paramount+ (Streaming).
+- Click anywhere on a host's tile to open its route.
+- The latency charts' spread band is off by default, with a new `[web] chart_band` option (`"none"`, `"p5-p95"` or `"min-max"`). Each browser still remembers its own choice. The band is now only drawn when 12 or fewer lines are showing, since more turn it into a smear; a note says so.
+- The dashboard header shows the version, linking to its release notes.
+- The browser tab is titled "netBae - Internet Monitor".
+- Route text leaves out the destination when it's the site itself: Netflix's route reads "IX via MegaIX Melbourne" rather than "... to Netflix", and Google's just "direct". It still names it when it differs, e.g. ChatGPT "direct to Cloudflare". Direct routes no longer say "direct direct".
+- Route details end with a note that hop locations are a best estimate, with a link to report a wrong one.
+- Tiles and tables shorten Global Secure Layer to GSL (route details keep the full name).
+- Hop locations: a city spelled out in a router's name now wins over a 3-letter code (Bundle-Ether43.lon-edge901.melbourne.telstra.net is Melbourne, not London). Routes traced before the update keep their old locations until they're traced again (every 12 hours).
+- README: what on-net, direct, IX and transit mean, with examples.
+
 ## 1.9.0 - 2026-10-18
 
 Smaller database, global speedtests and more targets. The first start after updating converts your history to the smaller format once (about 25 seconds per GB).

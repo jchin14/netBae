@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.9.0"
+VERSION = "1.10.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -63,6 +63,7 @@ PUBLIC_RESOLVERS = [
     ("Cloudflare", "1.1.1.1", "2606:4700:4700::1111"),
     ("Google", "8.8.8.8", "2001:4860:4860::8888"),
     ("Quad9", "9.9.9.9", "2620:fe::fe"),
+    ("Quad9 ECS", "9.9.9.11", "2620:fe::11"),  # passes part of your address on, so CDNs answer for where you are
     ("OpenDNS", "208.67.222.222", "2620:119:35::35"),
     ("CleanBrowsing", "185.228.168.9", "2a0d:2a00:1::2"),
     ("AdGuard", "94.140.14.14", "2a10:50c0::ad1:ff"),
@@ -99,7 +100,7 @@ def load_builtin_targets(path=TARGETS_FILE):
 BUILTIN_TARGETS = load_builtin_targets()
 
 DEFAULT_CONFIG = {
-    "web": {"host": "0.0.0.0", "port": 80},
+    "web": {"host": "0.0.0.0", "port": 80, "chart_band": "none"},
     # optional read-only copy of the dashboard for sharing (e.g. through a Cloudflare Tunnel)
     "public": {"enabled": False, "host": "0.0.0.0", "port": 8080,
                "requests_per_minute": 120, "total_requests_per_minute": 1200, "hide": [],
@@ -133,6 +134,11 @@ DEFAULT_CONFIG = {
         ] + [{"name": name, "host": ip} for name, v4, v6 in PUBLIC_RESOLVERS for ip in (v4, v6)],
         "domains": ["google.com", "microsoft.com", "facebook.com", "reddit.com", "netflix.com"],
     },
+    # which CDN server each DNS resolver sends you to: look up these names through every resolver, then ping
+    # (and trace) the addresses it hands out. CDNs pick a server near the resolver, so the best resolver is the
+    # one whose answers are closest to you.
+    "cdn": {"enabled": True, "hostnames": ["a2.w10.akamai.net", "a10.w2.akamai.net", "google.com", "microsoft.com", "www.cloudflare.com"], "interval_minutes": 30,
+            "offset_minutes": 20, "pings": 5, "trace_hours": 6},
     "speedtest": {
         "enabled": True,
         "manual": True,
@@ -564,10 +570,11 @@ def load_config(path):
         cfg["ping"]["targets"].extend(c["targets"])
     if cfg["ping"]["ipv6"]:
         # Sites on the main connection are measured over IPv4 and IPv6 separately: the IPv6 twin's id is "<id>#v6".
-        # Not the router, game/region servers or secondary connections (bound to an IPv4 source address).
+        # Regions too (an IPv6-capable Ookla server in the same city). Not the router, game servers or secondary
+        # connections (bound to an IPv4 source address).
         for t in list(cfg["ping"]["targets"]):
-            if t["method"] in ("icmp", "tcp") and not t.get("bind") and t["id"] != "gateway" and ":" not in t["host"] \
-                    and (not is_ip(t["host"]) or t["host"] in V6_TWIN):
+            if t["method"] == "region" or (t["method"] in ("icmp", "tcp") and not t.get("bind") and t["id"] != "gateway"
+                                           and ":" not in t["host"] and (not is_ip(t["host"]) or t["host"] in V6_TWIN)):
                 t["family"] = 4
                 cfg["ping"]["targets"].append(dict(t, id=t["id"] + "#v6", name=f'{t["name"]} (IPv6)', family=6,
                                                    twin=t["id"]))
@@ -604,6 +611,7 @@ def load_config(path):
     if int(cfg["speedtest"]["global_every"] or 0) < 0:
         raise SystemExit("[speedtest] global_every must be 0 (off) or more")
     for sec, key in (("ping", "interval_seconds"), ("ping", "region_interval_seconds"), ("dns", "interval_seconds"),
+                     ("cdn", "interval_minutes"),
                      ("system", "interval_seconds"), ("speedtest", "interval_minutes"),
                      ("speedtest", "regions_interval_minutes")):
         if float(cfg[sec][key]) <= 0:
@@ -664,6 +672,10 @@ CREATE TABLE IF NOT EXISTS system (ts REAL NOT NULL, cpu REAL, mem REAL, disk RE
 CREATE TABLE IF NOT EXISTS isp (ts REAL NOT NULL, connection TEXT NOT NULL, ip TEXT, isp TEXT, asn TEXT,
     location TEXT, error TEXT);
 CREATE INDEX IF NOT EXISTS isp_ts ON isp(ts);
+-- CDN mapping test: what each DNS server answered for each hostname, and the latency to that address
+CREATE TABLE IF NOT EXISTS cdn (ts REAL NOT NULL, server TEXT NOT NULL, hostname TEXT NOT NULL, ip TEXT,
+    resolve_ms REAL, rtt REAL, loss REAL, error TEXT);
+CREATE INDEX IF NOT EXISTS cdn_ts ON cdn(ts);
 CREATE TABLE IF NOT EXISTS traceroute (ts REAL NOT NULL, target TEXT NOT NULL, dest TEXT, kind TEXT,
     path TEXT, hops TEXT, error TEXT, dest_host TEXT);
 CREATE INDEX IF NOT EXISTS traceroute_target_ts ON traceroute(target, ts);
@@ -1518,13 +1530,14 @@ del _C
 def city_from_hostname(host):
     """'Sydney, AU' from a router name like be3021.ccr41.syd01.atlas.cogentco.com, or None."""
     labels = (host or "").lower().split(".")
+    found = []
     for label in labels[:-2]:  # the last two labels are the operator's domain (e.g. cogentco.com)
         words = [t.strip("0123456789") for t in re.split(r"[-_]", label)]
         pairs = [a + b for a, b in zip(words, words[1:])]  # los-angeles, new-york, san-jose
-        for word in pairs + words:
-            if len(word) >= 3 and word in CITY_CODES:
-                return CITY_CODES[word]
-    return None
+        found += [w for w in pairs + words if len(w) >= 3 and w in CITY_CODES]
+    # the longest match wins: a city spelled out beats a 3-letter code that happens to match another city
+    # (Bundle-Ether43.lon-edge901.melbourne.telstra.net is in Melbourne, not London)
+    return CITY_CODES[max(found, key=len)] if found else None
 
 
 def km_between(a, b):
@@ -1673,6 +1686,53 @@ def dns_query(server, domain, timeout):
         return None
     finally:
         s.close()
+
+
+def dns_resolve(server, name, timeout=2, qtype="A"):
+    """Ask one DNS server for name's A (or AAAA) records: ([addresses], response ms). Raises OSError on failure."""
+    code = {"A": 1, "AAAA": 28}[qtype]
+    family, _, _, _, addr = socket.getaddrinfo(server, 53, type=socket.SOCK_DGRAM)[0]
+    tid = random.randint(0, 0xFFFF)
+    q = struct.pack(">HHHHHH", tid, 0x0100, 1, 0, 0, 0)
+    q += b"".join(bytes([len(p)]) + p.encode() for p in name.strip(".").split(".")) + b"\0" + struct.pack(">HH", code, 1)
+    s = socket.socket(family, socket.SOCK_DGRAM)
+    try:
+        deadline = time.perf_counter() + timeout
+        t0 = time.perf_counter()
+        s.sendto(q, addr)
+        while True:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                raise OSError("no answer")
+            s.settimeout(remaining)
+            data, _ = s.recvfrom(4096)
+            if len(data) >= 12 and struct.unpack(">H", data[:2])[0] == tid:
+                break
+        ms = (time.perf_counter() - t0) * 1000
+    except socket.timeout:
+        raise OSError("no answer") from None
+    finally:
+        s.close()
+    rcode = data[3] & 0x0F
+    if rcode:
+        raise OSError({2: "server failure", 3: "no such name", 5: "refused"}.get(rcode, f"error code {rcode}"))
+    an = struct.unpack(">H", data[6:8])[0]
+    pos, found = len(q), []
+
+    def skip_name(i):
+        while data[i]:
+            if data[i] & 0xC0 == 0xC0:
+                return i + 2
+            i += data[i] + 1
+        return i + 1
+    for _ in range(an):  # CNAMEs come first; collect the A/AAAA records at the end of the chain
+        pos = skip_name(pos)
+        rtype, _, _, rdlen = struct.unpack(">HHIH", data[pos:pos + 10])
+        pos += 10
+        if rtype == code and rdlen in (4, 16):
+            found.append(socket.inet_ntop(socket.AF_INET if rdlen == 4 else socket.AF_INET6, data[pos:pos + rdlen]))
+        pos += rdlen
+    return found, ms
 
 
 # --------------------------------------------------------------------------- system info
@@ -2032,6 +2092,7 @@ class Monitor:
                         "network, not yours. Use network_mode: host for accurate results.")
         self.ipv6 = (0, None)  # (checked_at, available)
         self.addr_cache = {}   # (host, 4|6) -> (checked_at, address or None)
+        self.cdn_lock = threading.Lock()
         self.started = time.time()
         self.config_path = None
         # public dashboard sharing, shown on the private dashboard
@@ -2068,6 +2129,11 @@ class Monitor:
                     run_aligned(f"speedtest-{conn['name']}", conn["speedtest_interval_minutes"] * 60,
                                 conn["speedtest_offset_minutes"] * 60,
                                 lambda n=conn["name"]: self.run_speedtest(scope=f"conn:{n}"))
+        if c["cdn"]["enabled"] and c["cdn"]["hostnames"] and c["dns"]["servers"]:
+            run_aligned("cdn", c["cdn"]["interval_minutes"] * 60, c["cdn"]["offset_minutes"] * 60, self.collect_cdn)
+            t = threading.Timer(60, self.collect_cdn)  # a first result soon after starting
+            t.daemon = True
+            t.start()
         run_aligned("rollup", 60, 10, self.rollup_all)
         run_aligned("cleanup", 3600, 1800, self.cleanup)
         self.pool.submit(self.collect_system)
@@ -2098,6 +2164,8 @@ class Monitor:
         """An IPv6 twin worth showing: this machine has IPv6 and the site has an IPv6 address."""
         if not self.ipv6_available():
             return False
+        if t["method"] == "region":
+            return bool(t.get("v6addr"))
         if is_ip(t["host"]):
             return t["host"] in V6_TWIN
         return bool((self.addr_cache.get((t["host"], 6)) or (0, None))[1])
@@ -2185,8 +2253,10 @@ class Monitor:
                 srv = self.game_server(t)
                 host = srv and srv["host"]
             elif t["method"] == "region":
-                srv = [c for c in (self.region_servers(t["region"], wait=False) or []) if c["host"]]
-                host = srv[0]["host"] if srv else None
+                if t.get("family") == 6 and (not self.cfg["traceroute"]["ipv6"] or not self.ipv6_available()):
+                    continue
+                pick = self.region_server(t)
+                host = pick and (pick[1] if t.get("family") == 6 else pick[0]["host"])
             elif t.get("family") == 6:
                 if not self.cfg["traceroute"]["ipv6"] or not self.ipv6_available():
                     continue
@@ -2263,20 +2333,104 @@ class Monitor:
         finally:
             self.trace_lock.release()
 
+    def collect_cdn(self):
+        """Look up each CDN hostname through every DNS server, then ping each address handed out (and trace it
+        every few hours) to see which resolver sends you to the closest CDN server."""
+        if not self.cdn_lock.acquire(blocking=False):
+            return  # previous run still going
+        try:
+            cc, ts = self.cfg["cdn"], time.time()
+            v6 = self.ipv6_available()
+            servers = [sv for sv in self.cfg["dns"]["servers"] if sv["family"] == 4 or v6]
+            jobs = [(sv, h) for sv in servers for h in cc["hostnames"]]
+
+            def resolve(job):
+                try:
+                    return dns_resolve(job[0]["host"], job[1], self.cfg["dns"]["timeout_seconds"])
+                except (OSError, ValueError, struct.error, IndexError) as e:
+                    return None, str(e) or "no answer"
+            answers = list(self.pool.map(resolve, jobs))
+            ips = sorted({ip for a in answers if a[0] for ip in a[0]})
+
+            def ping_many(ip):  # a few pings, so one lost or slow reply doesn't decide the ranking
+                rtts = []
+                for i in range(int(cc["pings"])):
+                    rtts.append(icmp_ping(ip, self.cfg["ping"]["timeout_seconds"]))
+                    time.sleep(0.2)
+                ok = [r for r in rtts if r is not None]
+                return (trimmed_mean(ok) if ok else None), 100.0 * (len(rtts) - len(ok)) / max(1, len(rtts))
+            lat = dict(zip(ips, self.pool.map(ping_many, ips)))
+            rows = []
+            for (sv, h), (found, extra) in zip(jobs, answers):
+                if found is None:
+                    rows.append((ts, sv["id"], h, None, None, None, None, extra))
+                elif not found:
+                    rows.append((ts, sv["id"], h, None, extra, None, None, "no address in the answer"))
+                for ip in found or []:
+                    rows.append((ts, sv["id"], h, ip, extra, lat[ip][0], lat[ip][1], None))
+            self.db.insert_many("INSERT INTO cdn VALUES (?,?,?,?,?,?,?,?)", rows)
+            if self.cfg["traceroute"]["enabled"] and float(cc["trace_hours"]) > 0:
+                fresh = {r[0] for r in self.db.query("SELECT target FROM traceroute WHERE target LIKE 'cdn:%'"
+                                                     " AND error IS NULL AND ts > ?",
+                                                     (ts - float(cc["trace_hours"]) * 3600,))}
+                self.trace_ips([ip for ip in ips if f"cdn:{ip}" not in fresh])
+            log.info("CDN test: %d DNS servers, %d addresses", len(servers), len(ips))
+        finally:
+            self.cdn_lock.release()
+
+    def trace_ips(self, ips):
+        """Trace routes to addresses (stored as target "cdn:<ip>", shown like any other route)."""
+        if not ips:
+            return
+        load_ix_prefixes(os.path.join(os.path.dirname(os.path.abspath(self.db.path)), "peeringdb-ix.json"))
+        known = {c["connection"]: c["last_ok"] for c in isp_current(self)}.get(self.cfg["isp"]["main_name"]) or {} \
+            if self.cfg["isp"]["enabled"] else {}
+        isp_asn = int(known["asn"][2:]) if (known.get("asn") or "").startswith("AS") else None
+
+        def one(ip):
+            ts = time.time()
+            try:
+                kind, path, detailed = classify_route(traceroute(ip, self.cfg["traceroute"]["max_hops"]), ip, isp_asn)
+                locate_hops(detailed, self.hop_geo, known.get("ip"))
+                return (ts, f"cdn:{ip}", ip, kind, json.dumps(path), json.dumps(detailed), None, ip)
+            except Exception as e:
+                return (ts, f"cdn:{ip}", None, None, None, None, str(e)[:200], ip)
+        with ThreadPoolExecutor(max_workers=int(self.cfg["traceroute"]["parallel"])) as pool:
+            rows = list(pool.map(one, ips))
+        self.db.insert_many("INSERT INTO traceroute (ts, target, dest, kind, path, hops, error, dest_host)"
+                            " VALUES (?,?,?,?,?,?,?,?)", rows)
+
+    def region_server(self, t):
+        """(server, address) a region target measures: the fastest server in the city, or for an IPv6 twin the fastest
+        of the first five that has an IPv6 address. The address is None when the family can't be resolved."""
+        servers = [c for c in (self.region_servers(t["region"], wait=False) or []) if c["host"]]
+        fam = t.get("family")
+        if not servers:
+            return None
+        if fam == 6:
+            pick = next(((c, a) for c in servers[:5] for a in [self.address(c["host"], 6)] if a), None)
+            t["v6addr"] = pick and pick[1]
+            return pick
+        return servers[0], (self.address(servers[0]["host"], 4) if fam else servers[0]["host"])
+
     def collect_region_pings(self):
         ts = time.time()
         timeout = self.cfg["ping"]["timeout_seconds"]
         targets = [t for t in self.cfg["ping"]["targets"] if t["method"] == "region"]
 
         def probe(t):
-            servers = [c for c in (self.region_servers(t["region"], wait=False) or []) if c["host"]]
-            if not servers:
-                return None
-            t["host"] = f'{servers[0]["host"]}:{servers[0]["port"]}'
-            return tcp_ping(servers[0]["host"], servers[0]["port"], timeout)
+            if t.get("family") == 6 and not self.ipv6_available():
+                return SKIP  # no failures recorded on an IPv4-only network
+            pick = self.region_server(t)
+            if not pick:
+                return SKIP if t.get("family") == 6 else None  # no IPv6 server in that city: no IPv6 line
+            srv, addr = pick
+            t["host"] = f'{srv["host"]}:{srv["port"]}'
+            return tcp_ping(addr, srv["port"], timeout) if addr else None
         results = list(self.pool.map(probe, targets))
         self.db.insert_many("INSERT OR IGNORE INTO ping VALUES (?,?,?)",
-                            [(ts, self.db.name_id(t["id"]), r) for t, r in zip(targets, results) if t["host"] or r is not None])
+                            [(ts, self.db.name_id(t["id"]), r) for t, r in zip(targets, results)
+                             if r is not SKIP and (t["host"] or r is not None)])
 
     def collect_ping(self):
         ts = time.time()
@@ -2376,7 +2530,7 @@ class Monitor:
         cutoff = now - days * 86400 if days > 0 else 0          # 0 = keep forever
         minute_cutoff = max(cutoff, now - float(st["minute_retention_days"]) * 86400)
         raw_cutoff = max(minute_cutoff, now - float(st["raw_retention_days"]) * 86400)
-        for tables, cut in ((("ping", "dns"), raw_cutoff), (("ping_1m", "dns_1m"), minute_cutoff),
+        for tables, cut in ((("ping", "dns"), raw_cutoff), (("ping_1m", "dns_1m", "cdn"), minute_cutoff),
                             (("ping_1h", "dns_1h", "system", "speedtest", "isp", "traceroute"), cutoff)):
             if cut > 0:
                 for table in tables:
@@ -2392,6 +2546,8 @@ class Monitor:
             if scope == "regions":
                 for region in self.cfg["speedtest"]["regions"]:
                     self._region_test(region)
+            elif scope == "global":
+                self._global_test()
             elif scope.startswith("conn:"):
                 for conn in self.cfg["connections"]:
                     if conn["name"] == scope[5:]:
@@ -2627,6 +2783,7 @@ def api_config(m, q):
     return {
         "version": VERSION,
         "repo": REPO_URL,
+        "chart_band": c["web"]["chart_band"],
         "info": m.static_info,
         "ping": {"interval_seconds": c["ping"]["interval_seconds"], "offset_seconds": c["ping"]["offset_seconds"],
                  "region_interval_seconds": c["ping"]["region_interval_seconds"],
@@ -2720,12 +2877,73 @@ def latest_routes(m):
     """Latest successful route per target: {id: {ts, kind, path, cities}}."""
     out = {}
     for tid, ts, kind, path, hops in m.db.query(
-            "SELECT target, MAX(ts), kind, path, hops FROM traceroute WHERE error IS NULL GROUP BY target"):
+            "SELECT target, MAX(ts), kind, path, hops FROM traceroute WHERE error IS NULL"
+            " AND target NOT LIKE 'cdn:%' GROUP BY target"):
         detailed = locate_hops(json.loads(hops or "[]"))
         out[tid] = {"ts": ts, "kind": kind, "path": with_rels(json.loads(path or "[]")),
                     "cities": route_cities(detailed),  # the public dashboard may hide the first hops' cities
                     "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
     return out
+
+
+def cdn_scores(rows):
+    """{(ts, server): score}: the average latency to the addresses a server handed out, averaged per hostname
+    first so a name with several addresses doesn't count more than one with a single address."""
+    per_host = {}
+    for ts, server, host, rtt in rows:
+        if rtt is not None:
+            per_host.setdefault((ts, server, host), []).append(rtt)
+    per = {}
+    for (ts, server, _), rtts in per_host.items():
+        per.setdefault((ts, server), []).append(sum(rtts) / len(rtts))
+    return {k: sum(v) / len(v) for k, v in per.items()}
+
+
+def api_cdn(m, q):
+    """Latest CDN mapping test: each DNS server's answers and their latency, fastest first, plus 7-day averages."""
+    now = time.time()
+    last = m.db.scalar("SELECT MAX(ts) FROM cdn")
+    names = {s["id"]: s for s in m.cfg["dns"]["servers"]}
+    out = {"enabled": m.cfg["cdn"]["enabled"], "hostnames": m.cfg["cdn"]["hostnames"], "ts": last,
+           "interval_minutes": m.cfg["cdn"]["interval_minutes"], "servers": [], "routes": {}}
+    if not last:
+        return out
+    week = cdn_scores(m.db.query("SELECT ts, server, hostname, rtt FROM cdn WHERE ts > ?", (now - 7 * 86400,)))
+    avg7 = {}
+    for (_, server), score in week.items():
+        avg7.setdefault(server, []).append(score)
+    latest = {}
+    for server, host, ip, resolve_ms, rtt, loss, err in m.db.query(
+            "SELECT server, hostname, ip, resolve_ms, rtt, loss, error FROM cdn WHERE ts = ?", (last,)):
+        latest.setdefault(server, {}).setdefault(host, []).append(
+            {"ip": ip, "resolve_ms": r2(resolve_ms), "rtt": r2(rtt), "loss": loss, "error": err})
+    scores = cdn_scores([(last, sv, h, a["rtt"]) for sv, hs in latest.items() for h, al in hs.items() for a in al])
+    for server, hosts in latest.items():
+        sv = names.get(server, {"name": server, "host": server, "family": 6 if ":" in server else 4})
+        for al in hosts.values():
+            al.sort(key=lambda a: (a["rtt"] is None, a["rtt"] or 0))
+        a7 = avg7.get(server)
+        out["servers"].append({"id": server, "name": sv["name"], "host": sv["host"], "family": sv.get("family"),
+                               "results": hosts, "score": r2(scores.get((last, server))),
+                               "avg7d": r2(sum(a7) / len(a7)) if a7 else None})
+    out["servers"].sort(key=lambda x: (x["score"] is None, x["score"] or 0))
+    ips = {a["ip"] for x in out["servers"] for al in x["results"].values() for a in al if a["ip"]}
+    for tid, ts, kind, path, hops in m.db.query(
+            "SELECT target, MAX(ts), kind, path, hops FROM traceroute WHERE error IS NULL AND target LIKE 'cdn:%'"
+            " GROUP BY target"):
+        if tid[4:] in ips:
+            detailed = locate_hops(json.loads(hops or "[]"))
+            out["routes"][tid] = {"ts": ts, "kind": kind, "path": with_rels(json.loads(path or "[]")),
+                                  "cities": route_cities(detailed),
+                                  "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
+    return out
+
+
+def api_run_cdn(m, q):
+    if m.cdn_lock.locked():
+        return {"started": False, "reason": "a test is already running"}
+    threading.Thread(target=m.collect_cdn, daemon=True).start()
+    return {"started": True}
 
 
 def api_traceroute(m, q):
@@ -2960,7 +3178,7 @@ def api_run_speedtest(m, q):
         return {"started": False, "reason": "no regions configured"}
     if scope.startswith("conn:") and scope[5:] not in [c["name"] for c in m.cfg["connections"]]:
         return {"started": False, "reason": "unknown connection"}
-    if scope not in ("main", "regions") and not scope.startswith("conn:"):
+    if scope not in ("main", "regions", "global") and not scope.startswith("conn:"):
         return {"started": False, "reason": "unknown scope"}
     threading.Thread(target=m.run_speedtest, kwargs={"blocking": False, "scope": scope}, daemon=True).start()
     return {"started": True}
@@ -3169,9 +3387,9 @@ GET_ROUTES = {
     "/api/config": api_config, "/api/ping": api_ping, "/api/dns": api_dns,
     "/api/speedtest": api_speedtest, "/api/system": api_system,
     "/api/system/history": api_system_history, "/api/summary": api_summary, "/api/isp": api_isp,
-    "/api/traceroute": api_traceroute,
+    "/api/traceroute": api_traceroute, "/api/cdn": api_cdn,
 }
-POST_ROUTES = {"/api/speedtest/run": api_run_speedtest}
+POST_ROUTES = {"/api/speedtest/run": api_run_speedtest, "/api/cdn/run": api_run_cdn}
 PRIVATE_ROUTES = dict(GET_ROUTES, **{"/api/sharing": api_sharing})  # not on the public dashboard
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",

@@ -318,6 +318,7 @@ function groupStatus(members) {
 const mean = (xs) => { const v = xs.filter((x) => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
 let lastPing = [];
 let ROUTES = {};
+let CDN_ROUTES = {};  // routes to the CDN addresses the DNS servers hand out (from /api/cdn)
 
 // How traffic reaches a target, from the latest traceroute: on-net / peering / transit via X.
 // on-net = inside your ISP; direct = your ISP connects straight to the destination's network;
@@ -337,18 +338,31 @@ function firstRel(path) {
   const next = path.slice(1).find((p) => !p.ixp && p.asn);
   return next?.rel ? REL_TEXT[next.rel] : null;
 }
+// Shorter names for the route text on tiles and in tables (the route details keep the full names)
+const SHORT_NET = { 'Global Secure Layer': 'GSL' };
+const shortNet = (n) => SHORT_NET[n] || n;
+
+// True when the destination network is the target itself (Netflix for www.netflix.com, Amazon for aws.amazon.com),
+// so the route text doesn't repeat what the tile already says.
+function isTargetNet(net, id) {
+  const t = CONFIG.ping.targets.find((x) => x.id === id);
+  const word = (net || '').toLowerCase().match(/[a-z0-9]+/)?.[0];
+  return !!(t && word && word.length > 2 && `${t.name} ${t.host}`.toLowerCase().includes(word));
+}
+
 function routeHtml(id) {
   const r = ROUTES[id];
   if (!r) return '<span class="muted">route not traced yet</span>';
-  const names = r.path.map((p) => p.name);
-  const mid = r.path.slice(1, -1).filter((p) => !p.ixp).map((p) => p.name);
+  const names = r.path.map((p) => shortNet(p.name));
+  const mid = r.path.slice(1, -1).filter((p) => !p.ixp).map((p) => shortNet(p.name));
   const ixs = r.path.filter((p) => p.ixp).map((p) => p.name);
   const dest = names[names.length - 1];
   const kind = ROUTE_CLASS[r.kind] || r.kind;
+  const toDest = isTargetNet(dest, id) ? '' : ` to ${dest}`;
   const text = kind === 'transit' ? `via ${mid.join(', ')}${ixs.length ? ` (${ixs[0]})` : ''}`
     : kind === 'on-net' ? `inside ${names[0] || 'your ISP'}`
-      : kind === 'ix' ? `via ${ixs[0] || 'an exchange'}${mid.length ? `, then ${mid.join(', ')},` : ''} to ${dest}`
-        : kind === 'direct' ? `direct to ${dest}` : names.join(' → ');
+      : kind === 'ix' ? `via ${ixs[0] || 'an exchange'}${mid.length ? `, then ${mid.join(', ')}${toDest ? ',' : ''}` : ''}${toDest}`
+        : kind === 'direct' ? toDest.trim() : names.join(' → ');
   const rel = kind === 'on-net' ? null : firstRel(r.path);
   const cls = kind;
   return `<button class="route-link" data-route="${esc(id)}" title="${esc(names.join(' → '))}${rel ? ` · ${rel}` : ''}${r.cities?.length ? ` · through ${esc(r.cities.join(' → '))}` : ''} · traced ${fmtAgo(r.ts)} · click for hops">`
@@ -387,7 +401,9 @@ async function showRoute(id, title) {
       ${cities.length ? `<p class="small">Through ${esc(cities.join(' → '))}</p>` : ''}
       <p class="muted small">Destination ${esc(r.dest_host && r.dest_host !== r.dest ? `${r.dest_host} (${r.dest})` : (r.dest || ''))} · traced ${fmtAgo(r.ts)} · networks from Team Cymru's IP-to-ASN data, hostnames from reverse DNS, locations from router names (~ = IP geolocation, approximate)${d.rel_source ? `, who pays whom from CAIDA's AS relationships (${esc(d.rel_source)})` : ''}</p>
       <div class="table-wrap"><table class="stats"><thead><tr><th>#</th><th style="text-align:left">Hop (hostname / IP)</th><th>ms</th><th style="text-align:left">Network</th><th style="text-align:left">Location</th></tr></thead><tbody>${hops}</tbody></table></div>
-      <h3 class="small">Recent routes</h3><ul class="route-hist">${hist}</ul>` : '<p class="muted">Not traced yet. Routes are traced every 12 hours, and right after netBae starts for any target without one.</p>'}`;
+      <h3 class="small">Recent routes</h3><ul class="route-hist">${hist}</ul>
+      <p class="muted small">Locations are a best estimate, from router names or approximate IP geolocation. Spotted a wrong one?
+        <a href="${esc(CONFIG.repo || 'https://github.com/jchin14/netBae')}/issues/new" target="_blank" rel="noopener">Open a GitHub issue</a> and it'll be fixed.</p>` : '<p class="muted">Not traced yet. Routes are traced every 12 hours, and right after netBae starts for any target without one.</p>'}`;
   dlg.showModal();
 }
 
@@ -401,7 +417,7 @@ function v6Line(v) {
 function memberTile(p, color, v6) {
   const how = p.method === 'region' ? 'TCP to the fastest Ookla server' : p.method.toUpperCase();
   return `
-    <div class="tile member" title="${esc(p.host || 'looking up server…')} · ${how}">
+    <div class="tile member" data-tile-route="${esc(p.id)}" title="${esc(p.host || 'looking up server…')} · ${how} · click for the route">
       <div class="name"><span class="dot ${tileStatus(p)}"></span><span>${flag(p.flag)}${esc(p.name)}</span><i class="swatch" style="background:${color}"></i></div>
       ${p.where ? `<div class="where">${esc(p.where)}</div>` : ''}
       <div class="value">${p.last == null ? (p.last_ts ? '<span style="color:var(--bad)">timeout</span>' : '-') : fmtMs(p.last) + '<small>ms</small>'}</div>
@@ -440,7 +456,7 @@ function renderTiles() {
 async function refreshSummary() {
   const s = await api('summary');
   lastPing = s.ping;
-  ROUTES = s.routes || {};
+  ROUTES = { ...(s.routes || {}), ...CDN_ROUTES };
   $('#isp-now').innerHTML = (s.isp || []).map((c) => {
     const x = c.last_ok;
     const failing = c.latest && c.latest.error;
@@ -518,6 +534,9 @@ async function refreshSummary() {
   const rbtn = $('#run-regions');
   rbtn.hidden = !CONFIG.speedtest.manual || !CONFIG.speedtest.regions.length || !!CONFIG.public;
   rbtn.disabled = running;
+  const gbtn = $('#run-global');
+  gbtn.hidden = !CONFIG.speedtest.manual || !!CONFIG.public;
+  gbtn.disabled = running;
 }
 
 // Global speedtests: every Nth main test is followed by one to a random server somewhere in the world.
@@ -546,6 +565,39 @@ function renderGlobal(g) {
            <td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td>
            <td>${x.result_url ? `<a href="${esc(x.result_url)}" target="_blank" rel="noopener">result ↗</a>` : ''}</td></tr>`).join('')}
     </tbody>` : '<tbody><tr><td class="muted">No global speedtests yet.</td></tr></tbody>';
+}
+
+// ------------------------------------------------------------------ DNS and CDN
+// Which CDN server each DNS resolver sends you to, ranked by the latency to the addresses it handed out.
+async function refreshCdn() {
+  const d = await api('cdn');
+  const panel = $('#panel-cdn');
+  panel.hidden = !d.enabled && !d.servers.length;
+  if (panel.hidden) return;
+  CDN_ROUTES = d.routes || {};
+  Object.assign(ROUTES, CDN_ROUTES);
+  $('#run-cdn').hidden = !!CONFIG.public;
+  $('#cdn-note').textContent = d.ts ? `· tested ${fmtAgo(d.ts)}, every ${d.interval_minutes} min` : '· first test running…';
+  if (!d.servers.length) { $('#cdn-table').innerHTML = ''; return; }
+  const cell = (al) => {
+    if (!al?.length) return '<td class="muted" style="text-align:left">-</td>';
+    const a = al[0];
+    if (!a.ip) return `<td style="text-align:left"><span class="error-text">${esc(a.error || 'no answer')}</span></td>`;
+    // the average over the addresses handed out (what the ranking uses); hover for each address
+    const ok = al.filter((x) => x.ip);
+    const avg = mean(ok.map((x) => x.rtt));
+    const title = ok.map((x) => `${x.ip}: ${x.rtt == null ? 'no reply' : fmtMs(x.rtt) + ' ms'}${x.loss ? `, ${fmtPct(x.loss)} loss` : ''}`).join('\n');
+    return `<td style="text-align:left"><div title="${esc(title)}"><b>${avg == null ? '<span class="error-text">no reply</span>' : fmtMs(avg) + ' ms'}</b>
+      <span class="muted">${esc(a.ip)}${ok.length > 1 ? ` +${ok.length - 1}` : ''}</span></div>
+      <div class="route">${routeHtml(`cdn:${a.ip}`)}</div></td>`;
+  };
+  $('#cdn-table').innerHTML = `
+    <thead><tr><th>#</th><th style="text-align:left">DNS server</th>${d.hostnames.map((h) => `<th style="text-align:left">${esc(h)}</th>`).join('')}
+      <th>Avg ms</th><th>7-day avg</th></tr></thead>
+    <tbody>${d.servers.map((x, i) => `<tr><td>${x.score == null ? '' : i + 1}</td>
+      <td style="text-align:left"><b>${esc(x.name)}</b>${x.family === 6 ? ' <span class="muted">v6</span>' : ''}<div class="muted small">${esc(x.host)}</div></td>
+      ${d.hostnames.map((h) => cell(x.results[h])).join('')}
+      <td class="avg">${fmtMs(x.score)}</td><td>${fmtMs(x.avg7d)}</td></tr>`).join('')}</tbody>`;
 }
 
 // ------------------------------------------------------------------ system card
@@ -751,7 +803,14 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
   }
   metricSel.value = store.get(`metric:${id}`, 'latency');
   if (!metricSel.value) metricSel.value = 'latency';
-  bandSel.value = store.get(`band:${id}`, 'pct');
+  // default from [web] chart_band (a browser's own choice wins)
+  const bandDefault = { 'p5-p95': 'pct', 'min-max': 'minmax', none: 'none' }[CONFIG.chart_band] || 'none';
+  bandSel.value = store.get(`band:${id}`, bandDefault);
+  if (!bandSel.value) bandSel.value = bandDefault;
+  const bandNote = document.createElement('span');
+  bandNote.className = 'muted small band-note';
+  bandNote.hidden = true;
+  bandSel.after(bandNote);
   const chart = lineChart($('canvas', root), { yTitle: 'ms' });
   const zoom = yZoom(root, id, chart);
   // Only the average line gets a tooltip entry; it carries the band values with it.
@@ -789,6 +848,11 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     const [loI, hiI, bandName] = band === 'minmax' ? [2, 3, 'min–max'] : [5, 6, 'p5–p95'];
     chart.options.scales.y.title.text = metric === 'loss' ? '%' : 'ms';
 
+    // a band per line turns into a smear beyond a dozen lines, so it's only drawn up to that
+    const MAX_BANDS = 12;
+    const drawBand = band !== 'none' && metric !== 'loss' && series.length <= MAX_BANDS;
+    bandNote.hidden = band === 'none' || metric === 'loss' || drawBand;
+    bandNote.textContent = `band shows with ${MAX_BANDS} or fewer lines`;
     const datasets = [];
     for (const it of series) {
       const pts = d.series[it.key] || [];
@@ -799,7 +863,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
         });
         continue;
       }
-      if (band !== 'none') {
+      if (drawBand) {
         const edge = { role: 'band', label: it.label, borderColor: it.color + '73', borderWidth: 1, borderDash: [4, 3], spanGaps: false, pointHoverRadius: 0, pointHitRadius: 0 };
         // upper edge fills down to the lower edge (the next dataset)
         datasets.push({ ...edge, fill: '+1', backgroundColor: it.color + '1f', data: pts.map((p) => ({ x: p[0], y: p[hiI] })) });
@@ -945,7 +1009,7 @@ function systemPanel() {
 // ------------------------------------------------------------------ boot
 async function refreshAll(force = false) {
   if (document.hidden && !force) return;
-  const jobs = [refreshSummary(), refreshSystem(), refreshSharing(), ...panels.filter((p) => force || p.isLive()).map((p) => p.refresh())];
+  const jobs = [refreshSummary(), refreshSystem(), refreshSharing(), refreshCdn(), ...panels.filter((p) => force || p.isLive()).map((p) => p.refresh())];
   const res = await Promise.allSettled(jobs);
   const failed = res.find((r) => r.status === 'rejected');
   if (failed) {
@@ -1018,7 +1082,7 @@ async function main() {
 
   const startTest = async (scope) => {
     const btn = $('#run-speedtest');
-    btn.disabled = true; $('#run-regions').disabled = true; btn.textContent = 'Starting…';
+    btn.disabled = true; $('#run-regions').disabled = true; $('#run-global').disabled = true; btn.textContent = 'Starting…';
     try {
       const r = await fetch(`api/speedtest/run?scope=${scope}`, { method: 'POST' }).then((x) => x.json());
       btn.textContent = r.started ? 'Running…' : (r.reason || 'Busy');
@@ -1031,11 +1095,15 @@ async function main() {
   };
   $('#run-speedtest').addEventListener('click', () => startTest('main'));
   document.addEventListener('click', (e) => {
+    // a route link, or anywhere else on a host's tile (its IPv4 route; the IPv6 line has its own link)
     const b = e.target.closest('.route-link');
-    if (b) {
+    const tile = !b && e.target.closest('.tile.member');
+    const id = b ? b.dataset.route : tile?.dataset.tileRoute;
+    if (id) {
       e.stopPropagation();  // don't also collapse the group card
-      const t = CONFIG.ping.targets.find((x) => x.id === b.dataset.route);
-      showRoute(b.dataset.route, t ? t.name : b.dataset.route.replace(/^(region|speedtest):/, '').replace('Auto', 'speedtest server'));
+      const t = CONFIG.ping.targets.find((x) => x.id === id);
+      showRoute(id, t ? t.name : id.startsWith('cdn:') ? `CDN server ${id.slice(4)}`
+        : id.replace(/^(region|speedtest):/, '').replace('Auto', 'speedtest server'));
     }
     if (e.target.closest('[data-close]')) $('#route-dialog').close();
   }, true);
@@ -1046,6 +1114,16 @@ async function main() {
       startTest(`conn:${encodeURIComponent(b.dataset.conn)}`);
     }
   });
+  $('#run-cdn').addEventListener('click', async () => {
+    const b = $('#run-cdn');
+    b.disabled = true; b.textContent = 'Testing…';
+    const r = await fetch('api/cdn/run', { method: 'POST' }).then((x) => x.json()).catch(() => ({}));
+    if (!r.started) { b.textContent = r.reason || 'Busy'; }
+    setTimeout(async () => { await refreshCdn().catch(() => {}); b.disabled = false; b.textContent = 'Test now'; }, 20000);
+  });
+  $('#run-global').addEventListener('click', () => {
+    if (confirm('Run a speedtest to a random server somewhere in the world now? It uses a few hundred MB.')) startTest('global');
+  });
   $('#run-regions').addEventListener('click', () => {
     const n = CONFIG.speedtest.regions.length;
     if (confirm(`Run speedtests to ${n} region${n > 1 ? 's' : ''} now? Each test uses a few hundred MB.`)) startTest('regions');
@@ -1053,6 +1131,8 @@ async function main() {
 
   const sp = CONFIG.speedtest;
   if (CONFIG.repo) $('#repo-link').href = CONFIG.repo;
+  $('#version').textContent = `v${CONFIG.version}`;
+  $('#version').href = CONFIG.repo ? `${CONFIG.repo}/releases/tag/v${CONFIG.version}` : '#';
   $('#docker-note').hidden = !CONFIG.docker_bridge || !!CONFIG.public;
   $('#public-badge').hidden = !CONFIG.public;
   $('#footer').innerHTML = `<a href="${esc(CONFIG.repo || '#')}" target="_blank" rel="noopener">netBae ${esc(CONFIG.version)}</a> by `

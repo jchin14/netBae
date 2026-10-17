@@ -26,6 +26,7 @@ targets = [
   { name = "Twitch",         host = "twitch.tv",        group = "Streaming" },
   { name = "Disney+",        host = "www.disneyplus.com", group = "Streaming" },
   { name = "HBO Max",        host = "www.hbomax.com",   group = "Streaming" },
+  { name = "Paramount+",     host = "www.paramountplus.com", group = "Streaming" },   # paramountplus.com itself blocks ping
   # Australian streaming: switch off with disable = ["Streaming AU"] if you're elsewhere
   { name = "Stan",           host = "www.stan.com.au",  group = "Streaming AU" },
   { name = "ABC iview",      host = "iview.abc.net.au", group = "Streaming AU" },

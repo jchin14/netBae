@@ -11,6 +11,8 @@
 [web]
 host = "0.0.0.0"       # 0.0.0.0 = reachable from other machines on your network
 port = 80             # dashboard at http://<this-machine>/ ; if it's taken, the next free port is used
+chart_band = "none"   # spread band on the latency charts by default: "none", "p5-p95" or "min-max"
+                      # (each browser remembers its own choice; drawn with 12 or fewer lines)
 
 # Read-only copy of the dashboard on a second port, for sharing (best through a Cloudflare
 # Tunnel or Tailscale Funnel - see the README; don't port-forward it on your router).
@@ -65,7 +67,8 @@ regions = ["Sydney", "Perth", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Gu
 region_interval_seconds = 30
 # Also ping each site over IPv6, as a separate line, when this machine and the site have IPv6.
 # IPv4 sites keep their IPv4 history; the dashboard's tiles show both and the chart can switch
-# between IPv4, IPv6 or both. (Not the router, game/region servers or secondary connections.)
+# between IPv4, IPv6 or both. Regions use an IPv6-capable speedtest server in the same city.
+# (Not the router, game servers or secondary connections.)
 ipv6 = true
 
 [dns]
@@ -87,6 +90,8 @@ servers = [
   { name = "Google",        host = "2001:4860:4860::8888" },
   { name = "Quad9",         host = "9.9.9.9" },
   { name = "Quad9",         host = "2620:fe::fe" },
+  { name = "Quad9 ECS",     host = "9.9.9.11" },      # with EDNS Client Subnet: CDNs see roughly where you are
+  { name = "Quad9 ECS",     host = "2620:fe::11" },
   { name = "OpenDNS",       host = "208.67.222.222" },
   { name = "OpenDNS",       host = "2620:119:35::35" },
   { name = "CleanBrowsing", host = "185.228.168.9" },        # security filter
@@ -99,6 +104,19 @@ servers = [
   { name = "Control D",     host = "2606:1a40::" },
 ]
 domains = ["google.com", "microsoft.com", "facebook.com", "reddit.com", "netflix.com"]
+
+[cdn]
+# Which CDN server each DNS resolver sends you to. CDNs pick a server near the resolver that asks,
+# so every [dns] server looks up these names, the addresses it hands out are pinged (and traced
+# every few hours), and the dashboard ranks the resolvers by the average latency to them.
+enabled = true
+# (Cloudflare uses the same anycast addresses everywhere, so it's a baseline: your ISP's routing, not the
+# resolver, decides which Cloudflare site answers)
+hostnames = ["a2.w10.akamai.net", "a10.w2.akamai.net", "google.com", "microsoft.com", "www.cloudflare.com"]
+interval_minutes = 30
+offset_minutes = 20
+pings = 5              # pings per address each run
+trace_hours = 6        # trace each address at most this often (0 = don't trace)
 
 [speedtest]
 enabled = true         # scheduled speedtests (main, regions and secondary connections)
