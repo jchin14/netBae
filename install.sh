@@ -29,6 +29,8 @@ SPEEDTEST_VERSION=1.2.0
 OOKLA_REPO=https://packagecloud.io/ookla/speedtest-cli
 CHARTJS_URL=https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js
 ADAPTER_URL=https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js
+CHARTJS_SHA256=d2af8974e95271638772e9e9524db5b9a6f58d6ec2d5d781400447b4a31c681e   # a download that doesn't match is thrown away
+ADAPTER_SHA256=ea7ab30d26c38dcf1f2d26bb43e73a94537b58f1906f55e1a546dd09321b5615
 
 c_info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 c_warn() { printf '\033[1;33m!!\033[0m %s\n' "$*"; }
@@ -295,12 +297,14 @@ if [[ -n "$VENDOR_BACKUP" ]]; then cp -a "$VENDOR_BACKUP/." "$APP_DIR/static/ven
 
 # Chart.js is served from the box itself so the dashboard still works when the internet is down.
 c_info "Downloading Chart.js for offline use"
-curl -fsSL "$CHARTJS_URL" -o "$APP_DIR/static/vendor/chart.umd.min.js.new" \
-  && mv "$APP_DIR/static/vendor/chart.umd.min.js.new" "$APP_DIR/static/vendor/chart.umd.min.js" \
-  || c_warn "Chart.js download failed - browsers will fall back to the CDN"
-curl -fsSL "$ADAPTER_URL" -o "$APP_DIR/static/vendor/chartjs-adapter-date-fns.bundle.min.js.new" \
-  && mv "$APP_DIR/static/vendor/chartjs-adapter-date-fns.bundle.min.js.new" "$APP_DIR/static/vendor/chartjs-adapter-date-fns.bundle.min.js" \
-  || c_warn "date adapter download failed - browsers will fall back to the CDN"
+sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+fetch_pinned() {  # fetch_pinned url sha256 dest
+  curl -fsSL "$1" -o "$3.new" && [[ $(sha256 "$3.new") == "$2" ]] && mv "$3.new" "$3"
+}
+fetch_pinned "$CHARTJS_URL" "$CHARTJS_SHA256" "$APP_DIR/static/vendor/chart.umd.min.js" \
+  || c_warn "Chart.js download failed or didn't match its checksum - browsers will fall back to the CDN"
+fetch_pinned "$ADAPTER_URL" "$ADAPTER_SHA256" "$APP_DIR/static/vendor/chartjs-adapter-date-fns.bundle.min.js" \
+  || c_warn "date adapter download failed or didn't match its checksum - browsers will fall back to the CDN"
 rm -f "$APP_DIR"/static/vendor/*.new
 chmod -R a+rX "$APP_DIR"
 

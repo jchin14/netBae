@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -2068,13 +2068,34 @@ NICE_BUCKETS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 1
                 2 * 86400, 7 * 86400]
 
 
+def q_time(q, key, default):
+    """A Unix time from the query string: a finite number, kept between 1970 and tomorrow."""
+    v = q.get(key)
+    if v in (None, ""):
+        return default
+    try:
+        t = float(v)
+    except ValueError:
+        t = math.nan
+    if not math.isfinite(t):
+        raise ValueError(f"'{key}' must be a Unix time in seconds")
+    return min(max(t, 0.0), time.time() + 86400)
+
+
+def q_int(q, key, default, lo, hi):
+    try:
+        return max(lo, min(hi, int(q.get(key) or default)))
+    except ValueError:
+        raise ValueError(f"'{key}' must be a whole number") from None
+
+
 def parse_range(q, base_interval):
     now = time.time()
-    to = float(q.get("to") or now)
-    frm = float(q.get("from") or to - 3600)
+    to = q_time(q, "to", now)
+    frm = q_time(q, "from", to - 3600)
     if frm >= to:
         raise ValueError("'from' must be before 'to'")
-    points = max(20, min(2000, int(q.get("points") or 500)))
+    points = q_int(q, "points", 500, 20, 2000)
     raw = max(base_interval, (to - frm) / points)
     bucket = next((b for b in NICE_BUCKETS if b >= raw), raw)
     return frm, to, bucket
@@ -2179,8 +2200,8 @@ def api_dns(m, q):
 
 def api_speedtest(m, q):
     now = time.time()
-    to = float(q.get("to") or now)
-    frm = float(q.get("from") or to - 7 * 86400)
+    to = q_time(q, "to", now)
+    frm = q_time(q, "from", to - 7 * 86400)
     cols = ["ts", "kind", "label", "server_id", "server_name", "server_location", "isp", "ping_ms", "jitter_ms",
             "download_mbps", "upload_mbps", "packet_loss", "data_bytes", "result_url", "error"]
     rows = m.db.query(f"SELECT ts, COALESCE(kind, 'main'), COALESCE(label, 'Auto'), {','.join(cols[3:])}"
@@ -2245,9 +2266,9 @@ def api_traceroute(m, q):
 def api_isp(m, q):
     """ISP observations in a range: every change, plus at most one sample per bucket."""
     now = time.time()
-    to = float(q.get("to") or now)
-    frm = float(q.get("from") or to - 86400)
-    points = max(20, min(2000, int(q.get("points") or 300)))
+    to = q_time(q, "to", now)
+    frm = q_time(q, "from", to - 86400)
+    points = q_int(q, "points", 300, 20, 2000)
     gap = (to - frm) / points
     series = {}
     keep = {}
@@ -2749,7 +2770,8 @@ def make_handler(monitor, public=False):
                 self.send_json({"error": str(e)}, 400)
             except Exception as e:
                 log.exception("API error on %s", self.path)
-                self.send_json({"error": str(e)}, 500)
+                # the public port never shows internal details (paths, addresses) in an error
+                self.send_json({"error": "server error" if public else str(e)}, 500)
             return True
 
         def do_GET(self):
@@ -2782,9 +2804,24 @@ def make_handler(monitor, public=False):
             self.end_headers()
             self.wfile.write(body)
 
+        def same_origin(self):
+            """Blocks other websites from making your browser start things here (CSRF). Browsers label
+            cross-site requests with Sec-Fetch-Site (or Origin); scripts and curl send neither."""
+            site = self.headers.get("Sec-Fetch-Site")
+            if site:
+                return site in ("same-origin", "none")
+            origin = self.headers.get("Origin")
+            if not origin:
+                return True
+            hosts = {h.strip().lower() for h in (self.headers.get("Host"), self.headers.get("X-Forwarded-Host")) if h}
+            return urlparse(origin).netloc.lower() in hosts
+
         def do_POST(self):
             if public:  # nothing can be started or changed from the public dashboard
                 return self.send_json({"error": "this is a read-only public dashboard"}, 403)
+            if not self.same_origin():
+                log.warning("refused %s from another website (Origin %s)", self.path, self.headers.get("Origin"))
+                return self.send_json({"error": "requests from other websites aren't allowed"}, 403)
             if not self.dispatch(POST_ROUTES):
                 self.send_json({"error": "not found"}, 404)
 

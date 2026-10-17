@@ -238,10 +238,12 @@ function Install-NetBae {
 
         # Chart.js is served from the machine itself so the dashboard still works when the internet is down.
         Info 'Downloading Chart.js for offline use'
+        $pins = @{ $ChartJsUrl = 'd2af8974e95271638772e9e9524db5b9a6f58d6ec2d5d781400447b4a31c681e'; $AdapterUrl = 'ea7ab30d26c38dcf1f2d26bb43e73a94537b58f1906f55e1a546dd09321b5615' }   # a download that doesn't match is thrown away
         foreach ($u in $ChartJsUrl, $AdapterUrl) {
             $dest = Join-Path "$AppDir\static\vendor" ($u -split '/')[-1]
             try {
                 Invoke-WebRequest -UseBasicParsing $u -OutFile "$dest.new"
+                if ((Get-FileHash "$dest.new" -Algorithm SHA256).Hash -ne $pins[$u]) { throw 'checksum mismatch' }
                 Move-Item "$dest.new" $dest -Force
             } catch {
                 Remove-Item "$dest.new" -Force -ErrorAction SilentlyContinue

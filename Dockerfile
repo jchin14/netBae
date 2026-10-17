@@ -7,6 +7,8 @@ ARG TARGETVARIANT
 ARG SPEEDTEST_VERSION=1.2.0
 ARG CHARTJS_URL=https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js
 ARG ADAPTER_URL=https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js
+ARG CHARTJS_SHA256=d2af8974e95271638772e9e9524db5b9a6f58d6ec2d5d781400447b4a31c681e
+ARG ADAPTER_SHA256=ea7ab30d26c38dcf1f2d26bb43e73a94537b58f1906f55e1a546dd09321b5615
 
 # ping, traceroute, tzdata (schedules follow local time) and the official Ookla Speedtest CLI
 RUN set -eux; \
@@ -27,6 +29,8 @@ RUN set -eux; \
     mkdir -p /opt/netbae/static/vendor; \
     curl -fsSL "$CHARTJS_URL" -o /opt/netbae/static/vendor/chart.umd.min.js; \
     curl -fsSL "$ADAPTER_URL" -o /opt/netbae/static/vendor/chartjs-adapter-date-fns.bundle.min.js; \
+    printf '%s  %s\n' "$CHARTJS_SHA256" /opt/netbae/static/vendor/chart.umd.min.js \
+      "$ADAPTER_SHA256" /opt/netbae/static/vendor/chartjs-adapter-date-fns.bundle.min.js | sha256sum -c -; \
     chmod +x /usr/local/bin/netbae-entrypoint; \
     python3 -m py_compile /opt/netbae/netbae.py
 
