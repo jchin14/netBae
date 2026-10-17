@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.6.1"
+VERSION = "1.7.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -145,6 +145,7 @@ DEFAULT_CONFIG = {
     },
     "speedtest": {
         "enabled": True,
+        "manual": True,
         "interval_minutes": 60,
         "offset_minutes": 0,
         "servers": [],
@@ -2165,7 +2166,7 @@ def api_config(m, q):
                 "ipv6_available": m.ipv6_available()},
         "connections": [{"name": x["name"], "bind": x["bind"], "speedtest": x["speedtest"],
                          "speedtest_interval_minutes": x["speedtest_interval_minutes"]} for x in c["connections"]],
-        "speedtest": {"enabled": c["speedtest"]["enabled"], "interval_minutes": c["speedtest"]["interval_minutes"],
+        "speedtest": {"enabled": c["speedtest"]["enabled"], "manual": c["speedtest"]["manual"], "interval_minutes": c["speedtest"]["interval_minutes"],
                       "offset_minutes": c["speedtest"]["offset_minutes"], "servers": c["speedtest"]["servers"],
                       "next_run": next_aligned(c["speedtest"]["interval_minutes"] * 60,
                                                c["speedtest"]["offset_minutes"] * 60)
@@ -2462,8 +2463,8 @@ def api_sharing(m, q):
 
 
 def api_run_speedtest(m, q):
-    if not m.cfg["speedtest"]["enabled"]:
-        return {"started": False, "reason": "speedtest is disabled in config"}
+    if not m.cfg["speedtest"]["manual"]:
+        return {"started": False, "reason": "manual speedtests are turned off in the config ([speedtest] manual)"}
     if m.st_lock.locked():
         return {"started": False, "reason": "a speedtest is already running"}
     scope = q.get("scope") or "main"

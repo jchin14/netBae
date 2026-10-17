@@ -11,6 +11,7 @@ Ping, DNS, game servers and speedtests, recorded around the clock on a Raspberry
 ![Python](https://img.shields.io/badge/python-3.8%2B-2f6fe4)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-1a9e5c)
 ![License](https://img.shields.io/badge/license-personal%20use-d48806)
+[![Buy me a coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-jchin14-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/jchin14)
 
 <img src="docs/screenshot.png" alt="netBae dashboard" width="900">
 
@@ -20,37 +21,40 @@ Ping, DNS, game servers and speedtests, recorded around the clock on a Raspberry
 
 **Install** (or update: run it again, your config and history are kept):
 
+Raspberry Pi, any Linux, or a Mac:
+
 ```bash
-# Raspberry Pi, any Linux, or a Mac
 curl -fsSL https://raw.githubusercontent.com/jchin14/netBae/main/install.sh | sudo bash
 ```
 
+Windows 10/11, in PowerShell as Administrator:
+
 ```powershell
-# Windows 10/11, in PowerShell as Administrator
 irm https://raw.githubusercontent.com/jchin14/netBae/main/install.ps1 | iex
 ```
 
+Docker on a Linux host (set `TZ` to your timezone; the config and history go in a `netbae-data` folder where you run it):
+
 ```bash
-# Docker (Linux host)
 docker run -d --name netbae --network host --restart unless-stopped \
-  -e TZ=Australia/Melbourne -v netbae-data:/data ghcr.io/jchin14/netbae:latest
+  -e TZ=Australia/Melbourne -v "$PWD/netbae-data:/data" ghcr.io/jchin14/netbae:latest
 ```
 
 **Open** `http://<that-machine>/` from any device on your network.
 
 **Useful commands:**
 
-```bash
-netbae status          # is it running, and on which port?
-netbae logs            # follow the log
-netbae config          # edit the config, check it and restart
-netbae check           # check the config and show when the next speedtests run
-netbae update          # update to the latest version
-netbae restart         # also: start, stop
-netbae tunnel          # share a read-only dashboard publicly (no port forwarding)
-netbae tunnel status   # what's shared, where, and how many visitors (also: off)
-netbae uninstall       # remove it (--purge also deletes config and history; -Purge on Windows)
-```
+| Command | What it does |
+|---|---|
+| `netbae status` | is it running, and on which port? |
+| `netbae logs` | follow the log |
+| `netbae config` | edit the config, check it and restart |
+| `netbae check` | check the config and show when the next speedtests run |
+| `netbae update` | update to the latest version |
+| `netbae restart` | restart it (also: `start`, `stop`) |
+| `netbae tunnel` | share a read-only dashboard publicly (no port forwarding) |
+| `netbae tunnel status` | what's shared, where, and how many visitors (also: `off`) |
+| `netbae uninstall` | remove it (`--purge` also deletes config and history; `-Purge` on Windows) |
 
 ## Contents
 
@@ -61,7 +65,7 @@ netbae uninstall       # remove it (--purge also deletes config and history; -Pu
 - [Sharing a public dashboard](#sharing-a-public-dashboard): [netbae tunnel](#the-easy-way-netbae-tunnel) · [What visitors see](#what-visitors-see) · [By hand](#by-hand)
 - [How it measures](#how-it-measures)
 - [Averages and storage](#averages-and-storage)
-- [Behind a reverse proxy](#behind-a-reverse-proxy) · [API](#api) · [FAQ](#faq) · [Contributing](#contributing) · [Licence](#licence)
+- [Behind a reverse proxy](#behind-a-reverse-proxy) · [API](#api) · [FAQ](#faq) · [Contributing](#contributing) · [Support](#support) · [Licence](#licence)
 
 ## Why netBae
 
@@ -144,11 +148,17 @@ Tips: turn off sleep (Settings → System → Power). Load average and temperatu
 <details>
 <summary><b>Running it with Docker</b></summary>
 
-Use the [docker-compose.yml](docker-compose.yml) in this repo (`docker compose up -d`), or the `docker run` command above. Images: `ghcr.io/jchin14/netbae` for amd64, arm64 (Pi 3/4/5 on 64-bit) and arm/v7 (32-bit Pi OS).
+Use the `docker run` command above, or [docker-compose.yml](docker-compose.yml): download it into an empty folder, set `TZ` in it, then start it with `docker compose up -d`.
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/jchin14/netBae/main/docker-compose.yml
+```
+
+Images: `ghcr.io/jchin14/netbae` for amd64, arm64 (Pi 3/4/5 on 64-bit) and arm/v7 (32-bit Pi OS).
 
 - **Use host networking** (`network_mode: host` / `--network host`). In Docker's default bridge network every test goes through Docker's NAT, so "Router" would be Docker's gateway, routes would start inside Docker, DHCP DNS would show Docker's resolver, and secondary connections couldn't bind to the host's IPs. netBae detects this and shows a warning on the dashboard.
 - **Set `TZ`** to your timezone: speedtest times and offsets follow it.
-- **`/data`** holds `config.toml` (created from the defaults on first start; edit it and `docker restart netbae`) and the history database. Back up that volume to keep your history.
+- **Config and history:** `/data` in the container is the `netbae-data` folder on the host (with the commands above). It holds `config.toml`, created from the defaults on first start, and the history database. To change settings, edit `netbae-data/config.toml` on the host (it's owned by root, so use `sudo nano netbae-data/config.toml` or similar) and run `docker restart netbae` (or `docker compose restart`); no need to open a shell in the container. `config.toml.default` next to it always has the latest defaults and comments. Back up the folder to keep your history.
 - **Disk usage:** add `-v /:/host:ro` to show the host's disk instead of the container's.
 - **Port:** host networking uses port 80 on the host; set `-e NETBAE_PORT=8080` before the first start (or change `[web] port` in `/data/config.toml`) if something else uses 80.
 - **Update:** `docker pull ghcr.io/jchin14/netbae:latest` and recreate the container (`docker compose pull && docker compose up -d`).
@@ -205,7 +215,8 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 
 | Option | Default | |
 |---|---|---|
-| `[speedtest] enabled` | `true` | |
+| `[speedtest] enabled` | `true` | scheduled speedtests (main, regions and secondary connections). `false` stops them all |
+| `[speedtest] manual` | `true` | the dashboard's Run buttons, even when `enabled = false`. Set both to `false` to turn speedtests off completely |
 | `[speedtest] interval_minutes` / `offset_minutes` | `60` / `0` | e.g. `offset_minutes = 6` runs at :06 every hour |
 | `[speedtest] servers` | `[]` | empty = Ookla picks the closest; or server IDs from `speedtest -L`, each tested in turn |
 | `[speedtest] regions` | `[]` | cities to speedtest, e.g. `["Sydney", "Singapore", "London"]` |
@@ -268,21 +279,24 @@ If you have a second internet connection (for example a 5G/4G link your router f
 
 **1. Give the machine a second IP address** on your LAN, outside your router's DHCP range:
 
+Raspberry Pi OS (bookworm) / NetworkManager:
+
 ```bash
-# Raspberry Pi OS (bookworm) / NetworkManager
 sudo nmcli con mod "Wired connection 1" +ipv4.addresses 192.168.1.51/24 && sudo nmcli con up "Wired connection 1"
 ```
 
 (netplan: add it under `addresses:`; ifupdown: `up ip addr add 192.168.1.51/24 dev eth0`.)
 
+macOS: a second "service" on the same port, with a manual IP (survives reboots):
+
 ```bash
-# macOS: a second "service" on the same port, with a manual IP (survives reboots)
 sudo networksetup -duplicatenetworkservice "Ethernet" "netBae secondary"
 sudo networksetup -setmanual "netBae secondary" 192.168.1.51 255.255.255.0 192.168.1.1
 ```
 
+Windows (admin PowerShell). The adapter must have a static IP: Windows can't add an address to a DHCP adapter.
+
 ```powershell
-# Windows (admin PowerShell). The adapter must have a static IP: Windows can't add an address to a DHCP adapter.
 New-NetIPAddress -InterfaceAlias "Ethernet" -IPAddress 192.168.1.51 -PrefixLength 24 -SkipAsSource $true
 ```
 
@@ -438,6 +452,10 @@ Everything on the dashboard comes from a small JSON API you can use from Home As
 ## Contributing
 
 Pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). netBae has no build step: edit, run `python3 app/netbae.py -c <your config>`, refresh. It needs Python 3.8+ with `tomli`, or 3.11+ (the installers set this up; on a Mac, use Homebrew's `python3`).
+
+## Support
+
+netBae is free for personal use. If it's useful to you, you can [buy me a coffee](https://buymeacoffee.com/jchin14). Thank you!
 
 ## Licence
 

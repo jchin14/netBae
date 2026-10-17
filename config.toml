@@ -139,7 +139,8 @@ servers = [
 domains = ["google.com", "microsoft.com", "facebook.com", "reddit.com", "netflix.com"]
 
 [speedtest]
-enabled = true
+enabled = true         # scheduled speedtests (main, regions and secondary connections)
+manual = true          # the dashboard's Run buttons; works even when enabled = false
 interval_minutes = 60
 offset_minutes = 0     # e.g. 6 -> runs at hh:06 instead of hh:00
 # Empty = Ookla picks the best server automatically.

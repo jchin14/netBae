@@ -65,6 +65,7 @@ h1 .logo { width: 24px; height: 24px; fill: none; stroke: var(--accent); stroke-
 .repo:hover { color: var(--text); border-color: var(--muted); }
 .repo svg { width: 14px; height: 14px; fill: currentColor; }
 button.repo { font: inherit; background: none; cursor: pointer; }
+.repo.coffee svg .steam { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
 .theme-toggle svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .tile.group { cursor: pointer; }
 .tile.member { cursor: default; }
@@ -235,5 +236,6 @@ footer a { color: var(--muted); text-decoration: underline; text-decoration-colo
   .tile .value { font-size: 22px; }
   .speed-summary .big { font-size: 22px; }
   #updated { display: none; }
+  .repo.coffee span { display: none; }  /* icon only on phones */
 }
 .rel { color: var(--muted); font-size: 12px; white-space: nowrap; cursor: help; }

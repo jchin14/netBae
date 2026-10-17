@@ -451,7 +451,7 @@ async function refreshSummary() {
   if (st.latest && st.latest.error) meta += `<div class="error-text">Last run failed (${fmtAgo(st.latest.ts)}): ${esc(st.latest.error)}</div>`;
   const hm = (ts) => new Date(ts * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
   if (CONFIG.speedtest.enabled && CONFIG.speedtest.next_run) meta += `<div>Next scheduled run: ${hm(CONFIG.speedtest.next_run)}${CONFIG.speedtest.next_regions_run ? ` · regions: ${hm(CONFIG.speedtest.next_regions_run)}` : ''}</div>`;
-  if (!CONFIG.speedtest.enabled) meta += '<div>Speedtests are disabled in the config.</div>';
+  if (!CONFIG.speedtest.enabled) meta += `<div>Scheduled speedtests are off in the config${CONFIG.speedtest.manual ? '; Run now still works' : ''}.</div>`;
   $('#speed-meta').innerHTML = meta;
 
   const regions = st.regions || [];
@@ -474,7 +474,7 @@ async function refreshSummary() {
       <tbody>
         ${row('<b>Closest server</b>', ok, st.averages?.['7d'], 'strong', '', 'speedtest:Auto')}
         ${conns.map((x) => row(`<b>${esc(x.name)}</b>`, x.ts != null && x.error && x.last_ok ? x.last_ok : x, x.avg7d, 'strong',
-          CONFIG.speedtest.enabled && !CONFIG.public ? `<button class="link run-conn" data-conn="${esc(x.name)}">Run</button>` : '')).join('')}
+          CONFIG.speedtest.manual && !CONFIG.public ? `<button class="link run-conn" data-conn="${esc(x.name)}">Run</button>` : '')).join('')}
         ${regions.map((x) => row(`${flag(x.flag)}${esc(x.name)}`, x, x.avg7d, '', '', `region:${x.name}`)).join('')}
         ${regions.length ? `<tr class="strong total"><td><b>All regions</b></td><td colspan="6" class="muted" style="text-align:left">${st.regions_avg?.['7d']?.tests ?? 0} tests in 7 days</td>${avgCells(st.regions_avg?.['7d'])}<td></td><td></td><td></td></tr>` : ''}
       </tbody>`;
@@ -482,11 +482,11 @@ async function refreshSummary() {
 
   const running = st.status.running;
   const btn = $('#run-speedtest');
-  btn.hidden = !!CONFIG.public;  // the public dashboard is read-only
-  btn.disabled = !CONFIG.speedtest.enabled || running;
+  btn.hidden = !!CONFIG.public || !CONFIG.speedtest.manual;  // the public dashboard is read-only
+  btn.disabled = running;
   btn.textContent = running ? `Running ${st.status.label && st.status.label !== 'Auto' ? st.status.label : ''}…`.replace(' …', '…') : 'Run now';
   const rbtn = $('#run-regions');
-  rbtn.hidden = !CONFIG.speedtest.enabled || !CONFIG.speedtest.regions.length || !!CONFIG.public;
+  rbtn.hidden = !CONFIG.speedtest.manual || !CONFIG.speedtest.regions.length || !!CONFIG.public;
   rbtn.disabled = running;
 }
 
@@ -972,6 +972,7 @@ async function main() {
   $('#public-badge').hidden = !CONFIG.public;
   $('#footer').innerHTML = `<a href="${esc(CONFIG.repo || '#')}" target="_blank" rel="noopener">netBae ${esc(CONFIG.version)}</a> by `
     + '<a href="https://github.com/jchin14" target="_blank" rel="noopener">jchin14</a> · '
+    + '<a href="https://buymeacoffee.com/jchin14" target="_blank" rel="noopener">buy me a coffee</a> · '
     + `ping every ${CONFIG.ping.interval_seconds}s · `
     + (sp.enabled ? `speedtest every ${sp.interval_minutes} min${sp.offset_minutes ? ` (+${sp.offset_minutes} min offset)` : ''} · ` : '')
     + 'tip: double-click a chip to show only that series';
