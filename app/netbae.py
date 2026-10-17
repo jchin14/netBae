@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -142,6 +142,7 @@ DEFAULT_CONFIG = {
         "regions": [],
         "regions_interval_minutes": 1440,
         "regions_offset_minutes": 30,
+        "global_every": 5,  # after every 5th main test, one to a random server somewhere in the world (0 = off)
         "binary": "auto",
         "timeout_seconds": 300,
     },
@@ -281,7 +282,16 @@ def normalize_target(t, default_port=443):
 #   valve   - Steam Datagram Relay POPs (Steam, CS2, Dota 2 traffic goes through these relays)
 #   epic    - Epic's regional ping beacons (Fortnite region selection)
 #   discord - Discord's RTC latency service, which lists the nearest voice servers
-GAME_PROVIDERS = {"valve": "Steam & CS2", "epic": "Fortnite", "discord": "Discord voice"}
+# Targets found at runtime, written provider:pref (e.g. valve:auto, epic:oce, isp:first-hop).
+GAME_PROVIDERS = {"valve": "Steam & CS2", "epic": "Fortnite", "discord": "Discord voice",
+                  "gamelift": "AWS GameLift", "isp": "ISP first hop"}
+# AWS GameLift UDP ping beacons (gamelift-ping.<region>.api.aws:7770), where many games host their servers
+GAMELIFT_REGIONS = {"us-east-1": "N. Virginia", "us-east-2": "Ohio", "us-west-1": "N. California",
+                    "us-west-2": "Oregon", "ca-central-1": "Canada", "sa-east-1": "São Paulo",
+                    "eu-west-1": "Ireland", "eu-west-2": "London", "eu-west-3": "Paris", "eu-central-1": "Frankfurt",
+                    "eu-north-1": "Stockholm", "ap-southeast-1": "Singapore", "ap-southeast-2": "Sydney",
+                    "ap-northeast-1": "Tokyo", "ap-northeast-2": "Seoul", "ap-south-1": "Mumbai",
+                    "ap-east-1": "Hong Kong", "me-south-1": "Bahrain", "af-south-1": "Cape Town"}
 EPIC_REGIONS = {"oce": "Oceania", "naw": "NA West", "nac": "NA Central", "nae": "NA East", "eu": "Europe",
                 "asia": "Asia", "me": "Middle East", "br": "Brazil"}
 
@@ -317,6 +327,21 @@ def resolve_game_server(provider, pref="auto", bind=None):
             return None
         return {"host": pops[code]["relays"][0]["ipv4"], "port": None, "method": "icmp",
                 "label": pops[code].get("desc") or code}
+    if provider == "gamelift":
+        host = lambda k: f"gamelift-ping.{k}.api.aws"
+        code = pref if pref in GAMELIFT_REGIONS else nearest(
+            sorted(GAMELIFT_REGIONS), lambda k: udp_ping(host(k), 7770, 2, bind))
+        if not code:
+            return None
+        return {"host": host(code), "port": 7770, "method": "udp", "label": GAMELIFT_REGIONS[code]}
+    if provider == "isp":  # the first router past yours: usually your ISP's BNG/BRAS, where your connection lands
+        hops = [(n, ip) for n, ip, _ in traceroute("1.1.1.1", 5, bind) if ip]
+        gw = default_gateway() if not bind else None
+        first = next(((n, ip) for n, ip in hops if n > 1 and ip != gw), None)
+        if not first:
+            return None
+        name = reverse_dns(first[1])
+        return {"host": first[1], "port": None, "method": "icmp", "label": f"hop {first[0]}" + (f" ({name})" if name else "")}
     if provider == "epic":
         code = pref if pref in EPIC_REGIONS else nearest(
             list(EPIC_REGIONS), lambda k: icmp_ping(f"ping-{k}.ds.on.epicgames.com", 2, bind))
@@ -382,6 +407,30 @@ REGION_FLAGS = {"London": "GB", "New York": "US", "Tokyo": "JP", "Amsterdam": "N
 REGION_ALIASES = {"sao paulo": "São Paulo", "new delhi": "Delhi", "muscat": "Oman", "milano": "Milan",
                   "nyc": "New York", "la": "Los Angeles", "hk": "Hong Kong"}
 OOKLA_SEARCH = "https://www.speedtest.net/api/js/servers?engine=js&limit=100&https_functional=true&search="
+# Global speedtests pick a random city from the regions above plus these: (search, Ookla city name, country, flag)
+WORLD_CITIES = {
+    "Frankfurt": ("Frankfurt", "Frankfurt", "Germany", "DE"), "Stockholm": ("Stockholm", "Stockholm", "Sweden", "SE"),
+    "Madrid": ("Madrid", "Madrid", "Spain", "ES"), "Warsaw": ("Warsaw", "Warsaw", "Poland", "PL"),
+    "Dubai": ("Dubai", "Dubai", "United Arab Emirates", "AE"), "Johannesburg": ("Johannesburg", "Johannesburg", "South Africa", "ZA"),
+    "Nairobi": ("Nairobi", "Nairobi", "Kenya", "KE"), "Lagos": ("Lagos", "Lagos", "Nigeria", "NG"),
+    "Cairo": ("Cairo", "Cairo", "Egypt", "EG"), "Mumbai": ("Mumbai", "Mumbai", "India", "IN"),
+    "Bangkok": ("Bangkok", "Bangkok", "Thailand", "TH"), "Jakarta": ("Jakarta", "Jakarta", "Indonesia", "ID"),
+    "Manila": ("Manila", "Manila", "Philippines", "PH"), "Kuala Lumpur": ("Kuala Lumpur", "Kuala Lumpur", "Malaysia", "MY"),
+    "Seoul": ("Seoul", "Seoul", "South Korea", "KR"), "Taipei": ("Taipei", "Taipei", "Taiwan", "TW"),
+    "Osaka": ("Osaka", "Osaka", "Japan", "JP"), "Chicago": ("Chicago", "Chicago, IL", "United States", "US"),
+    "Dallas": ("Dallas", "Dallas, TX", "United States", "US"), "Miami": ("Miami", "Miami, FL", "United States", "US"),
+    "Seattle": ("Seattle", "Seattle, WA", "United States", "US"), "Honolulu": ("Honolulu", "Honolulu, HI", "United States", "US"),
+    "Vancouver": ("Vancouver", "Vancouver, BC", "Canada", "CA"), "Mexico City": ("Mexico City", "Mexico City", "Mexico", "MX"),
+    "Buenos Aires": ("Buenos Aires", "Buenos Aires", "Argentina", "AR"), "Santiago": ("Santiago", "Santiago", "Chile", "CL"),
+    "Lima": ("Lima", "Lima", "Peru", "PE"),
+}
+
+
+def global_cities():
+    """Every city a global speedtest can pick, as regions."""
+    cities = [normalize_region(n) for n in REGIONS if REGIONS[n][1]]  # (Guam has no city to match)
+    cities += [{"name": n, "search": se, "city": c, "country": co, "flag": f} for n, (se, c, co, f) in WORLD_CITIES.items()]
+    return cities
 
 
 def normalize_region(r):
@@ -552,6 +601,8 @@ def load_config(path):
     ids = [t["id"] for t in cfg["ping"]["targets"]]
     if len(ids) != len(set(ids)):
         raise SystemExit("duplicate ping targets in config")
+    if int(cfg["speedtest"]["global_every"] or 0) < 0:
+        raise SystemExit("[speedtest] global_every must be 0 (off) or more")
     for sec, key in (("ping", "interval_seconds"), ("ping", "region_interval_seconds"), ("dns", "interval_seconds"),
                      ("system", "interval_seconds"), ("speedtest", "interval_minutes"),
                      ("speedtest", "regions_interval_minutes")):
@@ -595,11 +646,14 @@ def run_aligned(name, interval, offset, fn):
 # --------------------------------------------------------------------------- database
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS ping (ts REAL NOT NULL, target TEXT NOT NULL, rtt REAL);
-CREATE INDEX IF NOT EXISTS ping_target_ts ON ping(target, ts);
+-- ping targets, DNS servers and domains are stored once in names, and the tables below hold their ids
+CREATE TABLE IF NOT EXISTS names (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+-- raw samples are stored in (name, time) order, so that's the only index they need besides time
+CREATE TABLE IF NOT EXISTS ping (ts REAL NOT NULL, target INTEGER NOT NULL, rtt REAL,
+    PRIMARY KEY (target, ts)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS ping_ts ON ping(ts);
-CREATE TABLE IF NOT EXISTS dns (ts REAL NOT NULL, server TEXT NOT NULL, domain TEXT NOT NULL, ms REAL);
-CREATE INDEX IF NOT EXISTS dns_server_ts ON dns(server, ts);
+CREATE TABLE IF NOT EXISTS dns (ts REAL NOT NULL, server INTEGER NOT NULL, domain INTEGER NOT NULL, ms REAL,
+    PRIMARY KEY (server, domain, ts)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS dns_ts ON dns(ts);
 CREATE TABLE IF NOT EXISTS speedtest (
     ts REAL NOT NULL, server_id INTEGER, server_name TEXT, server_location TEXT, isp TEXT,
@@ -617,24 +671,24 @@ CREATE TABLE IF NOT EXISTS own_prefix (prefix TEXT PRIMARY KEY, first_seen REAL,
 CREATE TABLE IF NOT EXISTS hop_geo (ip TEXT PRIMARY KEY, ts REAL, city TEXT, lat REAL, lon REAL);
 CREATE INDEX IF NOT EXISTS system_ts ON system(ts);
 CREATE TABLE IF NOT EXISTS ping_1m (
-    target TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
+    target INTEGER NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
     avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL,
     h0 INTEGER, h1 INTEGER, h2 INTEGER, h3 INTEGER, h4 INTEGER, h5 INTEGER, h6 INTEGER, h7 INTEGER,
     h8 INTEGER, h9 INTEGER, h10 INTEGER, h11 INTEGER, PRIMARY KEY (target, ts)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS ping_1m_ts ON ping_1m(ts);
 CREATE TABLE IF NOT EXISTS dns_1m (
-    server TEXT NOT NULL, domain TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
+    server INTEGER NOT NULL, domain INTEGER NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
     avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL,
     h0 INTEGER, h1 INTEGER, h2 INTEGER, h3 INTEGER, h4 INTEGER, h5 INTEGER, h6 INTEGER, h7 INTEGER,
     h8 INTEGER, h9 INTEGER, h10 INTEGER, h11 INTEGER, PRIMARY KEY (server, domain, ts)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS dns_1m_ts ON dns_1m(ts);
 CREATE TABLE IF NOT EXISTS ping_1h (
-    target TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
+    target INTEGER NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
     avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL,
     h0 INTEGER, h1 INTEGER, h2 INTEGER, h3 INTEGER, h4 INTEGER, h5 INTEGER, h6 INTEGER, h7 INTEGER,
     h8 INTEGER, h9 INTEGER, h10 INTEGER, h11 INTEGER, PRIMARY KEY (target, ts)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS dns_1h (
-    server TEXT NOT NULL, domain TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
+    server INTEGER NOT NULL, domain INTEGER NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
     avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL,
     h0 INTEGER, h1 INTEGER, h2 INTEGER, h3 INTEGER, h4 INTEGER, h5 INTEGER, h6 INTEGER, h7 INTEGER,
     h8 INTEGER, h9 INTEGER, h10 INTEGER, h11 INTEGER, PRIMARY KEY (server, domain, ts)) WITHOUT ROWID;
@@ -706,13 +760,13 @@ def outlier_free(values):
 
 
 def pct_select(val, bucket_expr, keys, table, where, hist=False):
-    """Per-bucket count/ok/avg/min/max/p5/p95 from raw samples (nearest-rank percentiles), plus the
-    packed histogram columns if hist."""
+    """Per-bucket count/ok/avg/min/max/p5/p95 from raw samples (nearest-rank percentiles); with hist,
+    the packed histogram columns instead of p5/p95 (for 1-minute summaries)."""
     part = ", ".join(keys + [bucket_expr])
     return (
         f"SELECT {', '.join(keys)}, b, COUNT(*), COUNT(v), {TRIMMED_AVG}, MIN(v), MAX(v),"
-        f" MIN(CASE WHEN rn >= 0.05 * cnt THEN v END), MIN(CASE WHEN rn >= 0.95 * cnt THEN v END)"
-        + (f", {HIST_FROM_RAW}" if hist else "") +
+        + (f" NULL, NULL, {HIST_FROM_RAW}" if hist else
+           " MIN(CASE WHEN rn >= 0.05 * cnt THEN v END), MIN(CASE WHEN rn >= 0.95 * cnt THEN v END)") +
         f" FROM (SELECT {', '.join(keys)}, b, v, rn, cnt"
         + (f", {HIST_BIN_SQL} AS hb" if hist else "") +
         f" FROM (SELECT {', '.join(keys)}, {bucket_expr} AS b, {val} AS v,"
@@ -722,8 +776,10 @@ def pct_select(val, bucket_expr, keys, table, where, hist=False):
         f" GROUP BY {', '.join(keys)}, b")
 
 
+# p5/p95 of a summary row from before histograms; 1-minute rows from 1.8 on leave them out, since with
+# ~12 samples a minute they're just the minute's min and max
 COMBINE = ("SUM(n), SUM(ok), SUM(avg * ok) / NULLIF(SUM(ok), 0), MIN(mn), MAX(mx),"
-           " SUM(p5 * ok) / NULLIF(SUM(ok), 0), SUM(p95 * ok) / NULLIF(SUM(ok), 0)")
+           " SUM(COALESCE(p5, mn) * ok) / NULLIF(SUM(ok), 0), SUM(COALESCE(p95, mx) * ok) / NULLIF(SUM(ok), 0)")
 
 
 def rollup_hourly(db, spec, frm, to):
@@ -750,6 +806,7 @@ class DB:
         if d:
             os.makedirs(d, exist_ok=True)
         self.local = threading.local()
+        self._ids, self._names, self._names_lock = {}, {}, threading.Lock()
         self.conn().executescript(SCHEMA)
         cols = {r[1] for r in self.query("PRAGMA table_info(speedtest)")}
         for col, typ in (("kind", "TEXT"), ("label", "TEXT"), ("data_bytes", "INTEGER"),
@@ -761,6 +818,7 @@ class DB:
             for col in HIST_COLS:
                 if col not in have:
                     self.conn().execute(f"ALTER TABLE {t} ADD COLUMN {col} INTEGER")
+        self.migrate_to_name_ids()
         if "dest_host" not in {r[1] for r in self.query("PRAGMA table_info(traceroute)")}:  # added in 1.4
             self.conn().execute("ALTER TABLE traceroute ADD COLUMN dest_host TEXT")
         # since 1.4.2 a route whose first hand-over is at an exchange counts as IX, even if transit follows
@@ -769,6 +827,85 @@ class DB:
             hops = json.loads(path or "[]")
             if len(hops) > 1 and hops[1].get("ixp"):
                 self.conn().execute("UPDATE traceroute SET kind = 'ix' WHERE rowid = ?", (rid,))
+
+    # Ping targets, DNS servers and domains are stored as ids into the names table (1.8): writing
+    # '2606:4700:4700::1111' and 'microsoft.com' on every row (and again in every index) took about
+    # half of each row.
+    def name_id(self, name):
+        """The id for a name, adding it if it's new."""
+        i = self._ids.get(name)
+        if i is None:
+            with self._names_lock:
+                c = self.conn()
+                c.execute("INSERT OR IGNORE INTO names (name) VALUES (?)", (name,))
+                i = c.execute("SELECT id FROM names WHERE name = ?", (name,)).fetchone()[0]
+                self._ids[name], self._names[i] = i, name
+        return i
+
+    def known_id(self, name):
+        """The id for a name, or None if nothing was ever recorded under it."""
+        if name not in self._ids:
+            row = self.conn().execute("SELECT id FROM names WHERE name = ?", (name,)).fetchone()
+            if not row:
+                return None
+            self._ids[name], self._names[row[0]] = row[0], name
+        return self._ids[name]
+
+    def name_of(self, i):
+        if i not in self._names:
+            row = self.conn().execute("SELECT name FROM names WHERE id = ?", (i,)).fetchone()
+            self._names[i] = row[0] if row else str(i)
+        return self._names[i]
+
+    def migrate_to_name_ids(self):
+        """One-time rewrite of databases from before 1.8, whose ping and DNS tables store names as text."""
+        tables = [("ping", ["target"]), ("dns", ["server", "domain"]), ("ping_1m", ["target"]),
+                  ("dns_1m", ["server", "domain"]), ("ping_1h", ["target"]), ("dns_1h", ["server", "domain"])]
+        def outdated(t, keys):
+            text = any(r[1] == keys[0] and r[2].upper() == "TEXT" for r in self.query(f"PRAGMA table_info({t})"))
+            sql = self.scalar("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (t,)) or ""
+            return text or "WITHOUT ROWID" not in sql.upper()  # raw tables used rowids before 1.8
+        todo = [(t, keys) for t, keys in tables if outdated(t, keys)]
+        if not todo:
+            return
+        log.info("upgrading the database to a smaller format (one-time, can take a few minutes)...")
+        started, c = time.time(), self.conn()
+        creates = {name: sql for name, sql in re.findall(r"CREATE TABLE IF NOT EXISTS (\w+) (\(.*?\)[^;]*);", SCHEMA, re.S)}
+        for t, keys in todo:
+            info = self.query(f"PRAGMA table_info({t})")
+            cols, text = [r[1] for r in info], any(r[1] == keys[0] and r[2].upper() == "TEXT" for r in info)
+            c.execute("BEGIN")
+            try:
+                c.execute(f"DROP TABLE IF EXISTS {t}_new")
+                c.execute(f"CREATE TABLE {t}_new {creates[t]}")
+                if text:  # names as text: store each once and copy their ids
+                    for k in keys:
+                        c.execute(f"INSERT OR IGNORE INTO names (name) SELECT DISTINCT {k} FROM {t}")
+                    joins = " ".join(f"JOIN names n{i} ON n{i}.name = o.{k}" for i, k in enumerate(keys))
+                    select = ", ".join(f"n{keys.index(col)}.id" if col in keys else f"o.{col}" for col in cols)
+                else:
+                    joins, select = "", ", ".join(f"o.{col}" for col in cols)
+                if t in ("ping_1m", "dns_1m"):  # rows with histograms don't need their (min = p5, max = p95) copies
+                    select = ", ".join(f"CASE WHEN COALESCE(o.{', o.'.join(HIST_COLS)}) IS NULL THEN o.{col} END"
+                                       if col in ("p5", "p95") else x for col, x in zip(cols, select.split(", ")))
+                c.execute(f"INSERT OR IGNORE INTO {t}_new ({', '.join(cols)}) SELECT {select} FROM {t} o {joins}"
+                          f" ORDER BY {', '.join('o.' + k for k in keys)}, o.ts")
+                c.execute(f"DROP TABLE {t}")
+                c.execute(f"ALTER TABLE {t}_new RENAME TO {t}")
+                c.execute("COMMIT")
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
+            log.info("  %s done (%.0f s)", t, time.time() - started)
+        c.executescript(SCHEMA)  # the indexes went with the old tables
+        size = os.path.getsize(self.path)
+        if shutil.disk_usage(os.path.dirname(os.path.abspath(self.path))).free > 2 * size:
+            c.execute("VACUUM")  # give the freed space back to the disk
+            log.info("database upgraded in %.0f s: %.0f MB -> %.0f MB", time.time() - started, size / 1e6,
+                     os.path.getsize(self.path) / 1e6)
+        else:
+            log.info("database upgraded in %.0f s (not enough free disk to compact it; the space it freed is"
+                     " reused for new data)", time.time() - started)
 
     def conn(self):
         c = getattr(self.local, "c", None)
@@ -888,6 +1025,29 @@ def icmp_ping(host, timeout, bind=None):
         return None
     m = (WIN_PING_RE if IS_WINDOWS else PING_RE).search(out)
     return float(m.group(1)) if m else None
+
+
+def udp_ping(host, port, timeout, bind=None):
+    """Round trip of a small UDP packet to a server that answers it (e.g. AWS GameLift ping beacons). The
+    socket is connected and new for every ping, so any reply is from that server and for this packet."""
+    family = socket.AF_INET if bind and is_ip(bind) and ":" not in bind else 0
+    try:
+        family, stype, proto, _, addr = socket.getaddrinfo(host, port, family, socket.SOCK_DGRAM)[0]
+    except OSError:
+        return None
+    s = socket.socket(family, stype, proto)
+    s.settimeout(timeout)
+    try:
+        bind_socket(s, bind)
+        s.connect(addr)
+        t0 = time.perf_counter()
+        s.send(b"netbae-ping")
+        s.recv(512)
+        return (time.perf_counter() - t0) * 1000
+    except OSError:
+        return None
+    finally:
+        s.close()
 
 
 def tcp_ping(host, port, timeout, bind=None):
@@ -1960,6 +2120,8 @@ class Monitor:
                 return SKIP
             if srv["method"] == "tcp":
                 return tcp_ping(srv["host"], srv["port"], timeout, bind)
+            if srv["method"] == "udp":
+                return udp_ping(srv["host"], srv["port"], timeout, bind)
             return icmp_ping(srv["host"], timeout, bind)
         if t["method"] == "tcp":
             return tcp_ping(t["host"], t["port"], timeout, bind)
@@ -1969,7 +2131,8 @@ class Monitor:
         """Resolved game/voice server for a target (cached daily, looked up in the background)."""
         key = (t["id"], t.get("bind"))
         cached = self.game_cache.get(key)
-        if cached and cached[0] > 0 and time.time() - cached[0] < (86400 if cached[1] else 600):
+        ttl = 3600 if t["provider"] == "isp" else 86400  # the first hop can change when the connection fails over
+        if cached and cached[0] > 0 and time.time() - cached[0] < (ttl if cached[1] else 600):
             return cached[1]
         if not cached or cached[0] > 0:
             self.game_cache[key] = (-1, cached[1] if cached else None)  # lookup in progress
@@ -2112,15 +2275,15 @@ class Monitor:
             t["host"] = f'{servers[0]["host"]}:{servers[0]["port"]}'
             return tcp_ping(servers[0]["host"], servers[0]["port"], timeout)
         results = list(self.pool.map(probe, targets))
-        self.db.insert_many("INSERT INTO ping VALUES (?,?,?)",
-                            [(ts, t["id"], r) for t, r in zip(targets, results) if t["host"] or r is not None])
+        self.db.insert_many("INSERT OR IGNORE INTO ping VALUES (?,?,?)",
+                            [(ts, self.db.name_id(t["id"]), r) for t, r in zip(targets, results) if t["host"] or r is not None])
 
     def collect_ping(self):
         ts = time.time()
         targets = [t for t in self.cfg["ping"]["targets"] if t["method"] != "region"]
         results = list(self.pool.map(self.ping_one, targets))
-        self.db.insert_many("INSERT INTO ping VALUES (?,?,?)",
-                            [(ts, t["id"], r) for t, r in zip(targets, results) if r is not SKIP])
+        self.db.insert_many("INSERT OR IGNORE INTO ping VALUES (?,?,?)",
+                            [(ts, self.db.name_id(t["id"]), r) for t, r in zip(targets, results) if r is not SKIP])
 
     def collect_dns(self):
         ts = time.time()
@@ -2129,8 +2292,8 @@ class Monitor:
         jobs = [(s, d) for s in self.cfg["dns"]["servers"] for d in self.cfg["dns"]["domains"]
                 if s["family"] == 4 or v6]
         results = list(self.pool.map(lambda j: dns_query(j[0]["host"], j[1], timeout), jobs))
-        self.db.insert_many("INSERT INTO dns VALUES (?,?,?,?)",
-                            [(ts, s["id"], d, r) for (s, d), r in zip(jobs, results)])
+        self.db.insert_many("INSERT OR IGNORE INTO dns VALUES (?,?,?,?)",
+                            [(ts, self.db.name_id(s["id"]), self.db.name_id(d), r) for (s, d), r in zip(jobs, results)])
 
     def ipv6_available(self):
         if time.time() - self.ipv6[0] > 600:
@@ -2238,10 +2401,41 @@ class Monitor:
                 for sid in (self.cfg["speedtest"]["servers"] or [None]):
                     self._save_speedtest(time.time(), "main", "Auto" if sid is None else f"Server {sid}",
                                          self._run_cli(sid, "Auto" if sid is None else f"Server {sid}"))
+                if self.global_due() == 0:
+                    self._global_test()
         finally:
             self.st_status = {"running": False}
             self.st_lock.release()
         return True
+
+    def global_due(self):
+        """Main speedtests still to go before the next global one (0 = now), or None if they're off."""
+        every = int(self.cfg["speedtest"]["global_every"] or 0)
+        if every <= 0:
+            return None
+        last = self.db.scalar("SELECT MAX(ts) FROM speedtest WHERE kind = 'global'") or 0
+        done = self.db.scalar("SELECT COUNT(*) FROM speedtest WHERE COALESCE(kind, 'main') = 'main'"
+                              " AND error IS NULL AND ts > ?", (last,))
+        return max(0, every - done)
+
+    def _global_test(self):
+        """One speedtest to a random server in a random city (not one of the last five used)."""
+        recent = {r[0] for r in self.db.query("SELECT label FROM speedtest WHERE kind = 'global' ORDER BY ts DESC LIMIT 5")}
+        cities = global_cities()
+        random.shuffle(cities)
+        cities.sort(key=lambda c: c["name"] in recent)  # unused cities first, in random order
+        ts = time.time()
+        for city in cities[:4]:  # a city whose servers can't be found or reached: try another
+            try:
+                servers = find_region_servers(city)
+            except Exception as e:
+                log.warning("global speedtest: server lookup for %s failed: %s", city["name"], e)
+                continue
+            pick = [c for c in servers if c["ms"] is not None] or servers
+            if pick:
+                return self._save_speedtest(ts, "global", city["name"], self._run_cli(random.choice(pick)["id"],
+                                                                                      f"Global: {city['name']}"))
+        self._save_speedtest(ts, "global", "-", self._error_row("no reachable Ookla server in the random cities tried"))
 
     def _region_test(self, region):
         name = region["name"]
@@ -2388,13 +2582,17 @@ def aggregate(m, name, frm, to, bucket, keys=None, extra=("", ())):
     bexpr = "0" if bucket is None else f"CAST(ts / {float(bucket)!r} AS INTEGER)"
     where, params = "ts >= ? AND ts <= ?", [frm, to]
     if keys:
-        where += f" AND {key} IN ({','.join('?' * len(keys))})"
-        params += keys
+        ids = [i for i in map(m.db.known_id, keys) if i is not None]
+        if not ids:
+            return []
+        where += f" AND {key} IN ({','.join('?' * len(ids))})"
+        params += ids
     if extra[0]:
         where += " AND " + extra[0]
         params += list(extra[1])
     if level == "raw":
-        return m.db.query(pct_select(spec["val"], bexpr, [key], spec["raw"], where) + " ORDER BY b", params)
+        rows = m.db.query(pct_select(spec["val"], bexpr, [key], spec["raw"], where) + " ORDER BY b", params)
+        return [(m.db.name_of(r[0]),) + tuple(r[1:]) for r in rows]
     # Combine summary rows: exact count/min/max, sample-weighted avg, and P5/P95 from the added-up
     # histograms. Rows from before histograms existed fall back to weighted per-row percentiles.
     sql = (f"SELECT {key}, {bexpr} AS b, {COMBINE}, {HIST_SUMS} FROM {spec[level]} WHERE {where}"
@@ -2405,7 +2603,7 @@ def aggregate(m, name, frm, to, bucket, keys=None, extra=("", ())):
         counts = [c or 0 for c in row[9:]]
         if ok and sum(counts) == ok:
             p5, p95 = hist_percentile(counts, 0.05, mn, mx), hist_percentile(counts, 0.95, mn, mx)
-        out.append((k, b, n, ok, avg, mn, mx, p5, p95))
+        out.append((m.db.name_of(k), b, n, ok, avg, mn, mx, p5, p95))
     return out
 
 
@@ -2468,7 +2666,7 @@ def api_ping(m, q):
 def api_dns(m, q):
     frm, to, bucket = parse_range(q, m.cfg["dns"]["interval_seconds"])
     domain = q.get("domain")
-    extra = ("domain = ?", (domain,)) if domain else ("", ())
+    extra = ("domain = ?", (m.db.known_id(domain),)) if domain else ("", ())
     series, stats = latency_series(m, "dns", frm, to, bucket, split_list(q.get("servers")), extra)
     return {"from": frm, "to": to, "bucket": bucket, "series": series, "stats": stats}
 
@@ -2564,11 +2762,11 @@ def api_isp(m, q):
 
 def api_summary(m, q):
     now = time.time()
-    last = {t: (rtt, ts) for t, rtt, ts in m.db.query(
+    last = {m.db.name_of(t): (rtt, ts) for t, rtt, ts in m.db.query(
         "SELECT target, rtt, MAX(ts) FROM ping WHERE ts > ? GROUP BY target", (now - 120,))}
     recent = {}
     for t, rtt in m.db.query("SELECT target, rtt FROM ping WHERE ts > ?", (now - 300,)):
-        recent.setdefault(t, []).append(rtt)
+        recent.setdefault(m.db.name_of(t), []).append(rtt)
     agg = {t: (trimmed_mean(v), len(v), sum(x is not None for x in v)) for t, v in recent.items()}
     ping = []
     for t in m.cfg["ping"]["targets"]:
@@ -2585,7 +2783,7 @@ def api_summary(m, q):
                      "loss5m": round(100.0 * (a[1] - a[2]) / a[1], 1) if a else None})
     recent = {}
     for sv, ms in m.db.query("SELECT server, ms FROM dns WHERE ts > ?", (now - 300,)):
-        recent.setdefault(sv, []).append(ms)
+        recent.setdefault(m.db.name_of(sv), []).append(ms)
     dns = {sv: {"avg5m": r2(trimmed_mean(v)), "fail5m": round(100.0 * sum(x is None for x in v) / len(v), 1)}
            for sv, v in recent.items()}
     main = "COALESCE(kind, 'main') = 'main'"
@@ -2606,6 +2804,7 @@ def api_summary(m, q):
             "regions_avg": {label: st_avg(m, "kind = 'region'", (), now - span)
                             for label, span in (("24h", 86400), ("7d", 7 * 86400))},
             "connections": [dict(conns.get(c["name"], {}), name=c["name"]) for c in m.cfg["connections"]],
+            "global": global_summary(m, now),
             "status": m.st_status,
         },
     }
@@ -2613,6 +2812,15 @@ def api_summary(m, q):
 
 ST_COLS = ["ts", "server_name", "server_location", "isp", "ping_ms", "jitter_ms", "download_mbps", "upload_mbps",
            "packet_loss", "data_bytes", "result_url", "error"]
+
+
+def global_summary(m, now):
+    """Recent global speedtests (random servers around the world), kept apart from your own averages."""
+    flags = {c["name"]: c.get("flag", "") for c in global_cities()}
+    recent = [dict(zip(["label"] + ST_COLS, r), flag=flags.get(r[0], "")) for r in m.db.query(
+        f"SELECT label, {','.join(ST_COLS)} FROM speedtest WHERE kind = 'global' ORDER BY ts DESC LIMIT 12")]
+    return {"every": int(m.cfg["speedtest"]["global_every"] or 0), "due_in": m.global_due(), "recent": recent,
+            "avg30d": st_avg(m, "kind = 'global'", (), now - 30 * 86400)}
 
 
 def st_avg(m, where, params, since):

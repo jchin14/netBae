@@ -42,7 +42,7 @@ retention_days = 0           # hourly summaries, speedtests and system history
 interval_seconds = 5
 offset_seconds = 0     # e.g. 2 -> pings at :02, :07, :12 ...
 timeout_seconds = 2
-# Ping targets: netBae's built-in list (65 hosts: DNS, streaming, gaming, social, AI, cloud, CDNs, hosting,
+# Ping targets: netBae's built-in list (74 hosts: DNS, streaming, gaming, social, AI, calls, cloud, CDNs, hosting,
 # Usenet ...) is in targets.toml next to netbae.py (/opt/netbae on Linux and in Docker, /usr/local/lib/netbae on macOS,
 # C:\Program Files\netBae on Windows) and is updated with netBae, so new defaults arrive by themselves.
 # Change it here:
@@ -119,6 +119,10 @@ servers = []
 regions = []           # e.g. ["Sydney", "Singapore", "Los Angeles", "London"]
 regions_interval_minutes = 1440   # once a day
 regions_offset_minutes = 30       # e.g. 00:30 - with 1440, the offset is the time of day
+# Global speedtests: after every N successful main tests (scheduled or Run now), one more to a random server
+# in a random city around the world (~45 cities). Shown in their own section and not counted in your averages.
+# Each uses about as much data as a normal test. 0 = off.
+global_every = 5
 binary = "auto"       # auto = official Ookla CLI in /usr/bin, /usr/local/bin or /opt/homebrew/bin
 timeout_seconds = 300
 

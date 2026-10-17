@@ -10,6 +10,8 @@
 
 targets = [
   { name = "Router",         host = "gateway",          group = "Network" },
+  # the first router past yours (usually your ISP's BNG/BRAS), found with a short traceroute, rechecked hourly
+  { name = "ISP first hop",  host = "isp:first-hop",    group = "Network" },
   { name = "Cloudflare DNS", host = "1.1.1.1",          group = "DNS" },
   { name = "Google DNS",     host = "8.8.8.8",          group = "DNS" },
   { name = "Quad9",          host = "9.9.9.9",          group = "DNS" },
@@ -29,16 +31,25 @@ targets = [
   { name = "ABC iview",      host = "iview.abc.net.au", group = "Streaming AU" },
   { name = "7plus",          host = "7plus.com.au",     group = "Streaming AU" },
   { name = "9Now",           host = "www.9now.com.au",  group = "Streaming AU" },
+  { name = "SBS On Demand",  host = "www.sbs.com.au",   group = "Streaming AU" },
+  { name = "10",             host = "10play.com.au",    group = "Streaming AU" },
   { name = "Foxtel",         host = "www.foxtel.com.au", group = "Streaming AU" },
   { name = "Kayo",           host = "kayosports.com.au", group = "Streaming AU" },
+  { name = "Sky News",       host = "www.skynews.com.au", group = "Streaming AU" },
   # Game/voice servers, found automatically (nearest to you, refreshed daily):
   #   valve:auto   = nearest Steam Datagram Relay (Steam, CS2, Dota 2), or a site code like valve:syd, valve:lax
   #   epic:auto    = nearest Fortnite ping beacon, or epic:oce / naw / nac / nae / eu / asia / me / br
   #   discord:auto = nearest Discord voice server, or discord:sydney / singapore / ...
-  # Riot (Valorant, LoL) and Activision (Warzone) block ping and connection tests, so they can't be measured.
+  #   gamelift:auto = nearest AWS GameLift region (UDP ping beacon), where many games host servers,
+  #                   or gamelift:ap-southeast-2 / us-west-2 / eu-central-1 / ...
+  # Riot (Valorant, LoL) and Activision (Warzone) block ping and connection tests, and Blizzard (Overwatch),
+  # EA (Apex) and Ubisoft (Siege) don't publish fixed game server addresses, so those can't be measured.
   { name = "Steam & CS2",    host = "valve:auto",       group = "Gaming" },
   { name = "Fortnite",       host = "epic:auto",        group = "Gaming" },
   { name = "Discord voice",  host = "discord:auto",     group = "Gaming" },
+  { name = "AWS GameLift",   host = "gamelift:auto",    group = "Gaming" },
+  { name = "Battle.net",     host = "us.actual.battle.net", method = "tcp", port = 1119, group = "Gaming" },   # Blizzard login (Americas and Oceania)
+  { name = "Minecraft (Hypixel)", host = "mc.hypixel.net", method = "tcp", port = 25565, group = "Gaming" },
   { name = "Facebook",       host = "facebook.com",     group = "Social" },
   { name = "Reddit",         host = "reddit.com",       group = "Social" },
   { name = "X",              host = "x.com",            group = "Social" },
@@ -47,6 +58,12 @@ targets = [
   { name = "OpenAI (ChatGPT)", host = "chatgpt.com",    group = "AI" },
   { name = "Anthropic (Claude)", host = "claude.ai",    group = "AI" },
   { name = "Grok",           host = "grok.com",         group = "AI" },
+  # Chat and video calls: the apps' own front doors (calls themselves go to media servers near you)
+  { name = "Slack",          host = "slack.com",        method = "tcp", port = 443, group = "Calls & chat" },
+  { name = "Microsoft Teams", host = "teams.microsoft.com", group = "Calls & chat" },
+  { name = "Zoom",           host = "zoom.us",          method = "tcp", port = 443, group = "Calls & chat" },
+  { name = "Webex",          host = "www.webex.com",    method = "tcp", port = 443, group = "Calls & chat" },
+  { name = "Google Meet",    host = "meet.google.com",  group = "Calls & chat" },
   { name = "Microsoft",      host = "microsoft.com",    group = "Cloud & tech" },
   { name = "Apple",          host = "apple.com",        group = "Cloud & tech" },
   { name = "AWS",            host = "aws.amazon.com",   group = "Cloud & tech" },

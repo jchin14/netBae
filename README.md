@@ -73,7 +73,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 
 | | |
 |---|---|
-| **Ping, every 5 seconds** | your router, DNS resolvers, Google/YouTube, streaming (Netflix, Twitch, Disney+, HBO Max, plus Stan, ABC iview, 7plus, 9Now, Foxtel and Kayo in Australia), Facebook/Instagram/Reddit/X/TikTok, AI (ChatGPT, Claude, Grok), Microsoft/Apple/AWS/GitHub/Atlassian, hosting data centres (AWS, Oracle Cloud, Azure, OVHcloud, Vultr, DigitalOcean, Linode, Hetzner), CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Chinese clouds and CDNs (Alibaba, Tencent, Huawei, Baidu, ByteDance, CDNetworks), Usenet in the US and Europe, and **game servers** (Steam & CS2, Fortnite, Discord voice) |
+| **Ping, every 5 seconds** | your router and your ISP's first hop (BNG), DNS resolvers, Google/YouTube, streaming (Netflix, Twitch, Disney+, HBO Max, plus Stan, ABC iview, SBS On Demand, 7plus, 9Now, 10, Foxtel, Kayo and Sky News in Australia), Facebook/Instagram/Reddit/X/TikTok, AI (ChatGPT, Claude, Grok), calls and chat (Slack, Teams, Zoom, Webex, Meet), Microsoft/Apple/AWS/GitHub/Atlassian, hosting data centres (AWS, Oracle Cloud, Azure, OVHcloud, Vultr, DigitalOcean, Linode, Hetzner), CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Chinese clouds and CDNs (Alibaba, Tencent, Huawei, Baidu, ByteDance, CDNetworks), Usenet in the US and Europe, and **game servers** (Steam & CS2, Fortnite, Discord voice, AWS GameLift, Battle.net, Minecraft) |
 | **Grouped overview** | one card per category with its average ping; click a card to see every host in it |
 | **Charts that show jitter** | the average as a line with a shaded P5-P95 (or min-max) band; zoom and drag the y-axis |
 | **Speedtests** | the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages |
@@ -248,6 +248,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[speedtest] interval_minutes` / `offset_minutes` | `60` / `0` | e.g. `offset_minutes = 6` runs at :06 every hour |
 | `[speedtest] servers` | `[]` | empty = Ookla picks the closest; or server IDs from `speedtest -L`, each tested in turn |
 | `[speedtest] regions` | `[]` | cities to speedtest, e.g. `["Sydney", "Singapore", "London"]` |
+| `[speedtest] global_every` | `5` | after every 5 main speedtests, one more to a random server somewhere in the world, see [Global speedtests](#global-speedtests) (`0` = off) |
 | `[speedtest] regions_interval_minutes` / `regions_offset_minutes` | `1440` / `30` | once a day, at 00:30 |
 | `[speedtest] binary` | `"auto"` | path to the Ookla CLI, or `auto` to find it |
 | `[speedtest] timeout_seconds` | `300` | |
@@ -284,7 +285,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 
 ### Ping targets
 
-netBae's built-in list (65 hosts in 14 groups) lives in its own file, [`app/targets.toml`](app/targets.toml), installed next to `netbae.py` (`/opt/netbae/targets.toml` on Linux and in Docker, `/usr/local/lib/netbae` on macOS, `C:\Program Files\netBae` on Windows). It's replaced on every update, so new default targets show up by themselves. Don't edit it: add your own hosts with `extra_targets` and switch built-in ones off with `disable` in `config.toml`:
+netBae's built-in list (74 hosts in 15 groups) lives in its own file, [`app/targets.toml`](app/targets.toml), installed next to `netbae.py` (`/opt/netbae/targets.toml` on Linux and in Docker, `/usr/local/lib/netbae` on macOS, `C:\Program Files\netBae` on Windows). It's replaced on every update, so new default targets show up by themselves. Don't edit it: add your own hosts with `extra_targets` and switch built-in ones off with `disable` in `config.toml`:
 
 ```toml
 [ping]
@@ -306,8 +307,11 @@ Game companies don't publish servers you can ping, so netBae measures what their
 | `valve:auto` (Steam & CS2) | the nearest [Steam Datagram Relay](https://partner.steamgames.com/doc/features/multiplayer/steamdatagramrelay); CS2 and Dota 2 traffic runs through these | `valve:syd`, `valve:sgp`, `valve:lax`, `valve:fra` … |
 | `epic:auto` (Fortnite) | Epic's regional ping beacons, which Fortnite uses to choose a region | `epic:oce`, `naw`, `nac`, `nae`, `eu`, `asia`, `me`, `br` |
 | `discord:auto` (Discord voice) | the nearest Discord voice server, from Discord's own latency service | `discord:sydney`, `discord:singapore` … |
+| `gamelift:auto` (AWS GameLift) | the nearest [AWS GameLift UDP ping beacon](https://docs.aws.amazon.com/gamelift/latest/developerguide/reference-udp-ping-beacons.html); many games host their servers on GameLift | `gamelift:ap-southeast-2`, `us-west-2`, `eu-central-1` … |
 
-**Not possible:** Riot (Valorant, League of Legends) and Activision (Warzone) block ping and connection tests to their game servers, so no tool can measure them from outside the game. Guessed IPs would only give misleading numbers.
+Battle.net (Blizzard's login service, TCP 1119) and Minecraft (the Hypixel server, TCP 25565) are fixed hosts.
+
+**Not possible:** Riot (Valorant, League of Legends) and Activision (Warzone) block ping and connection tests to their game servers, and Blizzard (Overwatch), EA (Apex Legends) and Ubisoft (Rainbow Six Siege) change their game server addresses (partly to resist DDoS attacks), so no tool can measure them from outside the game. Guessed IPs would only give misleading numbers.
 
 ### Region speedtests and pings
 
@@ -316,6 +320,10 @@ Built-in cities: 🇦🇺 Sydney, Perth · 🇳🇿 Auckland · 🇸🇬 Singapo
 netBae looks up the Ookla servers in each city, measures them and uses the fastest. It retries the next one if a server fails and refreshes the list daily. Add your own with `{ name = "Frankfurt", city = "Frankfurt", country = "Germany", flag = "DE" }` or `{ name = "Work", server_id = 12345 }`. Ookla has no public servers in mainland China, so Hong Kong is the closest.
 
 Each speedtest can use 0.5–1 GB on a fast connection, so region speedtests are off by default and run daily once enabled. Tests never overlap.
+
+### Global speedtests
+
+After every 5 successful main speedtests (scheduled or **Run now**), netBae runs one more to a random Ookla server in a random city: the region cities above plus Frankfurt, Stockholm, Madrid, Warsaw, Dubai, Johannesburg, Nairobi, Lagos, Cairo, Mumbai, Bangkok, Jakarta, Manila, Kuala Lumpur, Seoul, Taipei, Osaka, Chicago, Dallas, Miami, Seattle, Honolulu, Vancouver, Mexico City, Buenos Aires, Santiago and Lima. It avoids the last five cities it used. The results show how your connection copes with long distances, and they have their own **Global speedtests** section with a 30-day average; they're never counted in your own speedtest averages or history. Change how often with `global_every` under `[speedtest]` (`0` turns them off). With hourly speedtests that's about 5 extra tests a day, each using up to as much data as a normal test.
 
 ### Monitoring a secondary connection
 
@@ -463,7 +471,17 @@ History is kept in SQLite at three resolutions:
 - 1-minute summaries (count, average, min, max and a latency histogram) for `minute_retention_days` (90)
 - hourly summaries, speedtests and system history for `retention_days` (0 = forever)
 
-Charts automatically use the right one, so a whole year loads instantly even on a Pi. P5 and P95 are exact for ranges up to 6 hours (worked out from every sample) and within a few percent beyond that: percentiles of 1-minute summaries can't be combined, so each summary also counts its samples in 48 latency bins (0.3 ms to 1 s, each 18% wider than the last), and those counts add up exactly over any range. History from before 1.8 has no histograms and shows the older, rougher P5/P95 (the average of each minute's lowest and highest). Two reference files sit next to the database and refresh themselves: PeeringDB's internet-exchange prefixes (`peeringdb-ix.json`, daily) and CAIDA's AS relationships (`as-rel-YYYYMM.db`, about 10 MB, monthly). With the defaults, expect a few hundred MB of recent detail plus roughly 30–50 MB per year of long-term history.
+Charts automatically use the right one, so a whole year loads instantly even on a Pi. P5 and P95 are exact for ranges up to 6 hours (worked out from every sample) and within a few percent beyond that: percentiles of 1-minute summaries can't be combined, so each summary also counts its samples in 48 latency bins (0.3 ms to 1 s, each 18% wider than the last), and those counts add up exactly over any range. History from before 1.8 has no histograms and shows the older, rougher P5/P95 (the average of each minute's lowest and highest). Two reference files sit next to the database and refresh themselves: PeeringDB's internet-exchange prefixes (`peeringdb-ix.json`, daily) and CAIDA's AS relationships (`as-rel-YYYYMM.db`, about 10 MB, monthly). With the defaults (74 hosts, 18 regions, 18 DNS servers × 5 domains), the database levels off at about 2.3 GB once it holds 90 days, then grows by about 300 MB a year (about 2.6 GB after the first year):
+
+| What | Kept | Size |
+|---|---|---|
+| Every ping and DNS lookup | 7 days | ~455 MB (ping 375, DNS 80) |
+| 1-minute summaries | 90 days | ~1.85 GB (ping 0.95, DNS 0.9) |
+| Hourly summaries, speedtests, system, ISP checks, routes | forever | ~300 MB a year |
+
+Host names, DNS servers and domains are stored once and referred to by number, and each table is stored in (host, time) order so it needs only one extra index (by time).
+
+To use less: `minute_retention_days = 30` saves about 1.2 GB, fewer DNS `domains` or servers shrink the DNS share (IPv6 servers are skipped on networks without IPv6), and `disable` drops ping targets you don't care about.
 
 ## Behind a reverse proxy
 

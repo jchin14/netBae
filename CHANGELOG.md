@@ -2,6 +2,15 @@
 
 What's new in each netBae release. Update with `netbae update`, by re-running the install command, or with `docker compose pull && docker compose up -d`.
 
+## 1.9.0 - 2026-10-18
+
+Smaller database, global speedtests and more targets. The first start after updating converts your history to the smaller format once (about 25 seconds per GB).
+
+- **Global speedtests:** after every 5 main speedtests, netBae runs one to a random server in a random city around the world (about 45 cities), shown in a new Global speedtests section and kept out of your own averages. Set how often with `[speedtest] global_every` (`0` = off).
+- **Smaller database.** Host names, DNS servers and domains are stored once instead of on every row, raw samples are stored in (host, time) order with one index instead of two, and 1-minute summaries drop two columns the new histograms replace. The ping and DNS history is about 40% smaller: a year with the defaults takes about 2.5 GB instead of 4.2 GB. Existing databases are converted once when netBae starts after the update; on a Pi with months of history this can take a few minutes, and the file is compacted afterwards if there's enough free disk space.
+- More default ping targets: your ISP's first hop (the router your connection lands on, usually the BNG, found automatically and rechecked hourly, in Network); a **Calls & chat** group (Slack, Microsoft Teams, Zoom, Webex, Google Meet); and more games (AWS GameLift's nearest region over UDP, Battle.net, Minecraft's Hypixel server).
+- Streaming AU: SBS On Demand, 10 and Sky News join ABC iview, 7plus, 9Now, Stan, Foxtel and Kayo.
+
 ## 1.8.0 - 2026-10-18
 
 IPv6, more targets and route locations.

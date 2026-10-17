@@ -508,6 +508,8 @@ async function refreshSummary() {
       </tbody>`;
   }
 
+  renderGlobal(st.global);
+
   const running = st.status.running;
   const btn = $('#run-speedtest');
   btn.hidden = !!CONFIG.public || !CONFIG.speedtest.manual;  // the public dashboard is read-only
@@ -516,6 +518,34 @@ async function refreshSummary() {
   const rbtn = $('#run-regions');
   rbtn.hidden = !CONFIG.speedtest.manual || !CONFIG.speedtest.regions.length || !!CONFIG.public;
   rbtn.disabled = running;
+}
+
+// Global speedtests: every Nth main test is followed by one to a random server somewhere in the world.
+// They show how your connection does over long distances and aren't part of your own averages.
+function renderGlobal(g) {
+  const panel = $('#panel-global');
+  panel.hidden = !g || (!g.every && !g.recent.length);
+  if (panel.hidden) return;
+  $('#global-note').textContent = !g.every ? '· turned off ([speedtest] global_every = 0)'
+    : `· a random server somewhere in the world after every ${g.every === 1 ? '' : g.every + ' '}speedtest${g.every === 1 ? '' : 's'}`
+      + (g.due_in != null ? ` · next one ${g.due_in === 0 ? 'with the next speedtest' : `after ${g.due_in} more`}` : '')
+      + ' · not counted in your averages';
+  const a = g.avg30d;
+  $('#global-table').innerHTML = g.recent.length ? `
+    <thead><tr><th>Time</th><th style="text-align:left">City</th><th style="text-align:left">Server</th><th>Down Mbps</th><th>Up Mbps</th>
+      <th>Ping ms</th><th>Jitter ms</th><th>Loss</th><th>Data</th><th></th></tr></thead>
+    <tbody>
+      <tr class="strong"><td><b>Average (30 days)</b></td><td style="text-align:left" class="muted">${a.tests} test${a.tests === 1 ? '' : 's'}</td><td></td>
+        <td>${fmtMbps(a.download_mbps)}</td><td>${fmtMbps(a.upload_mbps)}</td><td>${fmtMs(a.ping_ms)}</td><td>${fmtMs(a.jitter_ms)}</td>
+        <td>${a.packet_loss == null ? '-' : fmtPct(a.packet_loss)}</td><td>${fmtBytes(a.data_bytes)}</td><td></td></tr>
+      ${g.recent.map((x) => x.error
+        ? `<tr><td>${fmtTime(x.ts)}</td><td style="text-align:left">${flag(x.flag)}${esc(x.label)}</td><td colspan="8" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
+        : `<tr><td>${fmtTime(x.ts)}</td><td style="text-align:left">${flag(x.flag)}${esc(x.label)}</td>
+           <td style="text-align:left">${esc(x.server_name || '')}${x.server_location ? ', ' + esc(x.server_location) : ''}</td>
+           <td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td><td>${fmtMs(x.jitter_ms)}</td>
+           <td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td>
+           <td>${x.result_url ? `<a href="${esc(x.result_url)}" target="_blank" rel="noopener">result ↗</a>` : ''}</td></tr>`).join('')}
+    </tbody>` : '<tbody><tr><td class="muted">No global speedtests yet.</td></tr></tbody>';
 }
 
 // ------------------------------------------------------------------ system card
@@ -822,6 +852,7 @@ function speedPanel() {
     const r = range.get();
     if (!r) return;
     const d = await api('speedtest', { from: r.from.toFixed(0), to: r.to.toFixed(0) });
+    d.results = d.results.filter((x) => x.kind !== 'global');  // random servers worldwide have their own section
     // views: the main test, each region (configured or seen in range), or all regions side by side
     const labels = [...new Set(['Auto', ...CONFIG.speedtest.regions, ...d.results.map((x) => x.label)])]
       .filter((l) => l === 'Auto' || d.results.some((x) => x.label === l) || CONFIG.speedtest.regions.includes(l));
