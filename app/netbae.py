@@ -46,15 +46,17 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
 # Windows keeps config, database and log together in %ProgramData%\netBae.
 WIN_DATA_DIR = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "netBae")
 DEFAULT_CONFIG_PATH = os.path.join(WIN_DATA_DIR, "config.toml") if IS_WINDOWS else "/etc/netbae/config.toml"
-# Don't flash a console window for each ping when running outside a console.
-SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if IS_WINDOWS else {}
+# Don't flash a console window for each ping when running outside a console. Children start in the Windows
+# folder, not the data folder: a tracert still running after netBae is stopped would block deleting it.
+SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW,
+                    "cwd": os.environ.get("SystemRoot", r"C:\Windows")} if IS_WINDOWS else {}
 
 # Popular public resolvers: (name, IPv4, IPv6). NextDNS and Control D answer without an account.
 PUBLIC_RESOLVERS = [
@@ -97,6 +99,10 @@ DEFAULT_CONFIG = {
             {"name": "Facebook", "host": "facebook.com", "group": "Social"},
             {"name": "Reddit", "host": "reddit.com", "group": "Social"},
             {"name": "X", "host": "x.com", "group": "Social"},
+            {"name": "Instagram", "host": "instagram.com", "group": "Social"},
+            {"name": "OpenAI (ChatGPT)", "host": "chatgpt.com", "group": "AI"},
+            {"name": "Anthropic (Claude)", "host": "claude.ai", "group": "AI"},
+            {"name": "Grok", "host": "grok.com", "group": "AI"},
             {"name": "Microsoft", "host": "microsoft.com", "group": "Cloud & tech"},
             {"name": "Apple", "host": "apple.com", "group": "Cloud & tech"},
             {"name": "AWS", "host": "aws.amazon.com", "group": "Cloud & tech"},
@@ -108,8 +114,13 @@ DEFAULT_CONFIG = {
             {"name": "Azure Front Door", "host": "www.office.com", "group": "CDN"},
             {"name": "Bunny", "host": "bunny.net", "group": "CDN"},
             {"name": "Gcore", "host": "gcore.com", "group": "CDN"},
-            {"name": "Eweka", "host": "news.eweka.nl", "group": "Usenet"},
-            {"name": "Highwinds", "host": "news.newshosting.com", "group": "Usenet"},
+            {"name": "Omicron (Newshosting)", "host": "news.newshosting.com", "group": "Usenet US"},
+            {"name": "Easynews", "host": "news.easynews.com", "group": "Usenet US"},
+            {"name": "Giganews", "host": "news.giganews.com", "group": "Usenet US"},
+            {"name": "UsenetExpress", "host": "usnews.usenetexpress.com", "group": "Usenet US"},
+            {"name": "Frugal Usenet", "host": "news.frugalusenet.com", "group": "Usenet US"},
+            {"name": "Eweka", "host": "news.eweka.nl", "group": "Usenet EU"},
+            {"name": "Usenet.Farm", "host": "news.usenet.farm", "group": "Usenet EU"},
         ],
         # Latency to the fastest Ookla speedtest server in each region (TCP connect), shown as a "Regions" group.
         "regions": ["Sydney", "Perth", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Guam", "Delhi", "Oman",
@@ -173,6 +184,23 @@ def default_gateway():
         return str(ipaddress.IPv4Address(m.group(1)))
     except ValueError:  # "link#12" and the like
         return None
+
+
+def docker_bridge():
+    """True when running in a container on Docker's bridge network (not network_mode: host)."""
+    if not os.environ.get("NETBAE_DOCKER"):
+        return False
+    try:
+        ifaces = [i for i in os.listdir("/sys/class/net") if i != "lo"]
+    except OSError:
+        return False
+    for i in ifaces:
+        # a real NIC links to itself (iflink == ifindex); a bridged container only has a veth (linked to
+        # an interface outside) and the kernel's placeholder tunnel devices (iflink 0)
+        idx, link = read_file(f"/sys/class/net/{i}/ifindex"), read_file(f"/sys/class/net/{i}/iflink")
+        if idx and idx == link:
+            return False
+    return True
 
 
 def system_dns_servers():
@@ -650,6 +678,12 @@ class DB:
                 self.conn().execute(f"ALTER TABLE speedtest ADD COLUMN {col} {typ}")
         if "dest_host" not in {r[1] for r in self.query("PRAGMA table_info(traceroute)")}:  # added in 1.4
             self.conn().execute("ALTER TABLE traceroute ADD COLUMN dest_host TEXT")
+        # since 1.4.2 a route whose first hand-over is at an exchange counts as IX, even if transit follows
+        for rid, path in self.query("SELECT rowid, path FROM traceroute WHERE kind = 'transit'"
+                                    " AND path LIKE '%\"ixp\": true%'"):
+            hops = json.loads(path or "[]")
+            if len(hops) > 1 and hops[1].get("ixp"):
+                self.conn().execute("UPDATE traceroute SET kind = 'ix' WHERE rowid = ?", (rid,))
 
     def conn(self):
         c = getattr(self.local, "c", None)
@@ -801,7 +835,7 @@ AS_NAMES = {
     13335: "Cloudflare", 15169: "Google", 16509: "Amazon", 14618: "Amazon", 8075: "Microsoft", 32934: "Meta",
     20940: "Akamai", 16625: "Akamai", 54113: "Fastly", 2906: "Netflix", 40027: "Netflix", 32590: "Valve",
     36459: "GitHub", 714: "Apple", 6185: "Apple", 46489: "Twitch", 200325: "Bunny", 199524: "Gcore",
-    34343: "BIP (Eweka)", 34305: "Base IP", 60068: "Datacamp", 13414: "X", 4635: "HKIX", 24115: "Equinix",
+    34343: "BIP (Eweka)", 34305: "Base IP", 12989: "Omicron (Highwinds)", 30094: "Giganews", 60068: "Datacamp", 13414: "X", 4635: "HKIX", 24115: "Equinix",
     7594: "IX Australia", 4739: "Internode", 1103: "SURF", 3209: "Vodafone DE", 8220: "Colt", 12956: "Telxius",
     6830: "Liberty Global", 5432: "Proximus", 2856: "BT", 5400: "BT", 64050: "BGPNET", 9304: "HGC",
 }
@@ -983,6 +1017,108 @@ def is_ixp(name):
     return bool(re.search(r"(^|[\s-])IX($|[\s-])|internet exchange|\bexchange\b|-IX\b|IXP", name or "", re.I))
 
 
+# Business relationships between networks, inferred by CAIDA from public BGP data and published monthly:
+# "provider|customer|-1" (the customer pays for transit) or "peer|peer|0". Kept in its own small SQLite
+# file next to the database (as-rel-YYYYMM.db, ~10 MB), so a refresh never locks the main database.
+AS_REL_URL = "https://publicdata.caida.org/datasets/as-relationships/serial-1/{}01.as-rel.txt.bz2"
+_REL = {"checked": 0, "dir": None, "path": None, "gen": 0, "local": threading.local(), "cache": {}}
+
+
+def use_as_rel_dir(directory):
+    """Use the newest as-rel-YYYYMM.db already downloaded into this directory, if any."""
+    _REL["dir"] = directory
+    found = sorted(glob.glob(os.path.join(directory, "as-rel-[0-9]*.db")))
+    if found and found[-1] != _REL["path"]:
+        _REL.update(path=found[-1], gen=_REL["gen"] + 1, cache={})
+
+
+def as_rel_serial():
+    """Month of the relationship data in use, e.g. '2026-09', or None."""
+    m = re.search(r"as-rel-(\d{4})(\d{2})\.db$", _REL["path"] or "")
+    return f"{m.group(1)}-{m.group(2)}" if m else None
+
+
+def load_as_relationships():
+    """Fetch the newest CAIDA relationship file once it's published (checked daily, fetched monthly)."""
+    if not _REL["dir"] or time.time() - _REL["checked"] < 86400:
+        return
+    _REL["checked"] = time.time()
+    have = (as_rel_serial() or "").replace("-", "")
+    y, mo = time.gmtime()[:2]
+    for back in range(4):  # CAIDA publishes a few weeks after the month starts: try this month and earlier
+        serial = "%04d%02d" % (y + (mo - 1 - back) // 12, (mo - 1 - back) % 12 + 1)
+        if serial <= have:
+            break
+        path = os.path.join(_REL["dir"], f"as-rel-{serial}.db")
+        try:
+            import bz2
+            req = urllib.request.Request(AS_REL_URL.format(serial), headers={"User-Agent": f"netBae/{VERSION}"})
+            tmp = path + ".tmp"
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            c = sqlite3.connect(tmp)
+            try:
+                c.execute("CREATE TABLE rel (a INTEGER, b INTEGER, rel INTEGER, PRIMARY KEY (a, b)) WITHOUT ROWID")
+                with urllib.request.urlopen(req, timeout=120) as r, bz2.open(r, "rt") as f:
+                    rows = (line.split("|")[:3] for line in f if line[:1].isdigit())
+                    c.executemany("INSERT OR REPLACE INTO rel VALUES (?,?,?)",
+                                  ((int(a), int(b), int(rel)) for a, b, rel in rows))
+                c.commit()
+            finally:
+                c.close()
+            os.replace(tmp, path)
+            log.info("loaded CAIDA AS relationships for %s", serial)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                log.warning("couldn't fetch CAIDA AS relationships (%s)", e)
+                return
+        except Exception as e:
+            log.warning("couldn't fetch CAIDA AS relationships (%s)", e)
+            return
+    use_as_rel_dir(_REL["dir"])
+    for old in glob.glob(os.path.join(_REL["dir"], "as-rel-*.db*")):
+        if old != _REL["path"]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass  # still open somewhere (Windows): removed on a later refresh
+
+
+def as_rel(a, b):
+    """How network b relates to network a: 'peer', 'provider' (a buys transit from b),
+    'customer' (b buys transit from a), or None if unknown."""
+    if not a or not b or a == b or not _REL["path"]:
+        return None
+    if (a, b) in _REL["cache"]:
+        return _REL["cache"][(a, b)]
+    loc = _REL["local"]
+    if getattr(loc, "gen", None) != _REL["gen"]:
+        if getattr(loc, "c", None):
+            loc.c.close()
+        loc.c = sqlite3.connect(_REL["path"]) if os.path.exists(_REL["path"]) else None
+        loc.gen = _REL["gen"]
+    rel = None
+    if loc.c:
+        row = loc.c.execute("SELECT a, rel FROM rel WHERE (a = ? AND b = ?) OR (a = ? AND b = ?)", (a, b, b, a)).fetchone()
+        if row:
+            rel = "peer" if row[1] == 0 else ("customer" if row[0] == a else "provider")
+    _REL["cache"][(a, b)] = rel
+    return rel
+
+
+def with_rels(path):
+    """Mark each network on a route with its relationship to the network before it (exchanges skipped)."""
+    prev = None
+    for x in path:
+        if x.get("ixp") or not x.get("asn"):
+            continue
+        if prev:
+            x["rel"] = as_rel(prev["asn"], x["asn"])
+        prev = x
+    return path
+
+
 HOP_RE = re.compile(r"^\s*(\d+)[:?]*\s+(.*)$")
 
 
@@ -1045,10 +1181,10 @@ def classify_route(hops, dest_ip, isp_asn=None):
         kind = "on-net"
     else:
         middle = [x for x in path if x["asn"] not in (isp_asn, dest_asn) or x["ixp"]]
-        if any(not x["ixp"] for x in middle):
-            kind = "transit"          # another carrier sits between your ISP and the destination
+        if middle and middle[0]["ixp"]:
+            kind = "ix"               # your ISP hands over at an internet exchange (even if a carrier follows)
         elif middle:
-            kind = "ix"               # handed over across an internet exchange
+            kind = "transit"          # another carrier sits between your ISP and the destination
         else:
             kind = "direct"           # your ISP connects straight to the destination's network
     return kind, path, detailed
@@ -1426,6 +1562,7 @@ class Monitor:
     def __init__(self, cfg):
         self.cfg = cfg
         self.db = DB(cfg["storage"]["database"])
+        use_as_rel_dir(os.path.dirname(os.path.abspath(self.db.path)))
         self.sys = SystemStats(cfg["system"]["disk_path"])
         self.static_info = self.sys.static_info()
         self.pool = ThreadPoolExecutor(max_workers=32, thread_name_prefix="probe")
@@ -1435,6 +1572,10 @@ class Monitor:
         self.region_lookups = set()
         self.game_cache = {}
         self.trace_lock = threading.Lock()
+        self.docker_bridge = docker_bridge()
+        if self.docker_bridge:
+            log.warning("running on Docker's bridge network: the router, DHCP DNS and routes will show Docker's "
+                        "network, not yours. Use network_mode: host for accurate results.")
         self.ipv6 = (0, None)  # (checked_at, available)
         self.started = time.time()
 
@@ -1454,10 +1595,7 @@ class Monitor:
         if c["traceroute"]["enabled"]:
             run_aligned("traceroute", c["traceroute"]["interval_hours"] * 3600,
                         c["traceroute"]["offset_minutes"] * 60, self.collect_traceroutes)
-            # first run a couple of minutes after start, once game/region servers are resolved
-            first = threading.Timer(150, self.collect_traceroutes)
-            first.daemon = True  # don't keep the process alive on shutdown
-            first.start()
+            threading.Thread(target=self.first_traces, name="traceroute-first", daemon=True).start()
         if c["speedtest"]["enabled"]:
             run_aligned("speedtest", c["speedtest"]["interval_minutes"] * 60,
                         c["speedtest"]["offset_minutes"] * 60, self.run_speedtest)
@@ -1558,7 +1696,34 @@ class Monitor:
             out.append(("speedtest:Auto", row[0][0], None))
         return out
 
-    def collect_traceroutes(self):
+    def lookups_done(self):
+        """True once every game and region target has had its server looked up."""
+        for t in self.cfg["ping"]["targets"]:
+            if t["method"] == "game" and (self.game_cache.get((t["id"], t.get("bind"))) or (0,))[0] <= 0:
+                return False
+            if t["method"] == "region" and t["region"]["name"] not in self.region_cache:
+                return False
+        return True
+
+    def first_traces(self):
+        """Right after start, trace every target with no recent route (new installs, newly added targets,
+        or a machine that was off), as soon as game/region servers are known (at most ~90 s)."""
+        deadline = time.time() + 90
+        time.sleep(5)  # let the first ping round kick off the server lookups
+        while time.time() < deadline and not self.lookups_done():
+            time.sleep(5)
+        cutoff = time.time() - self.cfg["traceroute"]["interval_hours"] * 3600
+        fresh = {r[0] for r in self.db.query("SELECT target FROM traceroute WHERE error IS NULL"
+                                             " GROUP BY target HAVING MAX(ts) > ?", (cutoff,))}
+        try:
+            self.collect_traceroutes(skip=fresh)
+        except Exception:
+            log.exception("traceroute collector failed")
+
+    def collect_traceroutes(self, skip=()):
+        targets = [x for x in self.trace_targets() if x[0] not in skip]
+        if not targets:
+            return
         if not self.trace_lock.acquire(blocking=False):
             return  # previous round still running
         try:
@@ -1583,10 +1748,11 @@ class Monitor:
                 except Exception as e:
                     return (ts, tid, None, None, None, None, str(e)[:200], host)
             with ThreadPoolExecutor(max_workers=int(tr["parallel"])) as pool:
-                rows = list(pool.map(one, self.trace_targets()))
+                rows = list(pool.map(one, targets))
             self.db.insert_many("INSERT INTO traceroute (ts, target, dest, kind, path, hops, error, dest_host)"
                                 " VALUES (?,?,?,?,?,?,?,?)", rows)
             log.info("traced %d routes", len(rows))
+            load_as_relationships()  # used when routes are shown, so fetching it after tracing is fine
         finally:
             self.trace_lock.release()
 
@@ -1899,6 +2065,7 @@ def api_config(m, q):
                       if c["speedtest"]["enabled"] and c["speedtest"]["regions"] else None},
         "system": {"interval_seconds": c["system"]["interval_seconds"]},
         "isp": {"enabled": c["isp"]["enabled"], "connections": [n for n, _ in m.isp_connections()]},
+        "docker_bridge": m.docker_bridge,
         "retention_days": c["storage"]["retention_days"],
         "storage": {k: v for k, v in c["storage"].items() if k != "database"},
     }
@@ -1968,7 +2135,7 @@ def latest_routes(m):
     out = {}
     for tid, ts, kind, path in m.db.query(
             "SELECT target, MAX(ts), kind, path FROM traceroute WHERE error IS NULL GROUP BY target"):
-        out[tid] = {"ts": ts, "kind": kind, "path": json.loads(path or "[]")}
+        out[tid] = {"ts": ts, "kind": kind, "path": with_rels(json.loads(path or "[]"))}
     return out
 
 
@@ -1977,10 +2144,10 @@ def api_traceroute(m, q):
     tid = q.get("target") or ""
     rows = m.db.query("SELECT ts, dest, kind, path, hops, error, dest_host FROM traceroute WHERE target = ?"
                       " ORDER BY ts DESC LIMIT 30", (tid,))
-    hist = [{"ts": ts, "dest": dest, "dest_host": dh, "kind": kind, "path": json.loads(path or "[]"),
+    hist = [{"ts": ts, "dest": dest, "dest_host": dh, "kind": kind, "path": with_rels(json.loads(path or "[]")),
              "hops": json.loads(hops or "[]") if i == 0 else None, "error": err}
             for i, (ts, dest, kind, path, hops, err, dh) in enumerate(rows)]
-    return {"target": tid, "latest": hist[0] if hist else None, "history": hist}
+    return {"target": tid, "latest": hist[0] if hist else None, "history": hist, "rel_source": as_rel_serial()}
 
 
 def api_isp(m, q):
@@ -2172,6 +2339,36 @@ def make_handler(monitor):
 
 # --------------------------------------------------------------------------- main
 
+def is_netbae(host, port):
+    """True if a netBae dashboard already answers on this port."""
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1" if host in ("", "0.0.0.0", "::") else host, port, timeout=3)
+        conn.request("GET", "/api/config")
+        return "version" in json.loads(conn.getresponse().read())
+    except Exception:
+        return False
+
+
+def bind_web(host, port, handler, tries=20):
+    """The dashboard's server on the configured port, or the next free one if something else holds it."""
+    # On Windows SO_REUSEADDR would let a second copy bind the same port instead of failing.
+    ThreadingHTTPServer.allow_reuse_address = not IS_WINDOWS
+    ThreadingHTTPServer.request_queue_size = 128  # default of 5 drops parallel dashboard requests
+    for p in range(port, min(port + tries, 65536)):
+        try:
+            httpd = ThreadingHTTPServer((host, p), handler)
+        except OSError as e:
+            if is_netbae(host, p):
+                sys.exit(f"netBae is already running on port {p}")
+            log.warning("port %d is in use (%s)%s", p, e.strerror or e, ", trying the next one" if p + 1 < port + tries else "")
+            continue
+        if p != port:
+            log.warning("serving on port %d instead of %d; set [web] port = %d in the config to keep it", p, port, p)
+        httpd.daemon_threads = True
+        return httpd
+    sys.exit(f"no free port between {port} and {port + tries - 1}; set a different [web] port in the config")
+
+
 def main():
     ap = argparse.ArgumentParser(description="netBae internet connection monitor")
     ap.add_argument("-c", "--config", default=os.environ.get("NETBAE_CONFIG", DEFAULT_CONFIG_PATH))
@@ -2204,14 +2401,10 @@ def main():
         return
 
     monitor = Monitor(cfg)
-    monitor.start()
     host, port = cfg["web"]["host"], int(cfg["web"]["port"])
-    # On Windows SO_REUSEADDR would let a second copy bind the same port instead of failing.
-    ThreadingHTTPServer.allow_reuse_address = not IS_WINDOWS
-    ThreadingHTTPServer.request_queue_size = 128  # default of 5 drops parallel dashboard requests
-    httpd = ThreadingHTTPServer((host, port), make_handler(monitor))
-    httpd.daemon_threads = True
-    log.info("netBae %s dashboard listening on http://%s:%d", VERSION, host, port)
+    httpd = bind_web(host, port, make_handler(monitor))
+    monitor.start()  # only once the port is ours, so a second copy never collects alongside the first
+    log.info("netBae %s dashboard listening on http://%s:%d", VERSION, host, httpd.server_address[1])
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

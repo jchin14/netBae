@@ -7,7 +7,7 @@
 **A self-hosted dashboard for your home internet connection.**<br>
 Ping, DNS, game servers and speedtests, recorded around the clock on a Raspberry Pi, a Linux VM, a Mac or a Windows PC.
 
-![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-2f6fe4)
+![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20Docker-2f6fe4)
 ![Python](https://img.shields.io/badge/python-3.8%2B-2f6fe4)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-1a9e5c)
 ![License](https://img.shields.io/badge/license-personal%20use-d48806)
@@ -20,17 +20,18 @@ Ping, DNS, game servers and speedtests, recorded around the clock on a Raspberry
 
 Your ISP's status page says everything is fine, but your game lagged, the video call dropped and the evening stream buffered. netBae keeps a record of what your connection was actually doing, so you can see when it was slow, how slow and where the problem was.
 
-- **Latency to everything that matters:** your router, DNS resolvers, Google/YouTube, Netflix/Twitch, Facebook/Reddit/X, Microsoft/Apple/AWS/GitHub, CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Usenet (Eweka, Highwinds) and **game servers** (Steam & CS2, Fortnite, Discord voice), every 5 seconds
+- **Latency to everything that matters:** your router, DNS resolvers, Google/YouTube, Netflix/Twitch, Facebook/Instagram/Reddit/X, AI (ChatGPT, Claude, Grok), Microsoft/Apple/AWS/GitHub, CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Usenet in the US and Europe (Omicron/Newshosting, Easynews, Giganews, UsenetExpress, Frugal, Eweka, Usenet.Farm) and **game servers** (Steam & CS2, Fortnite, Discord voice), every 5 seconds
 - **Grouped overview:** one card per category with its average ping. Click a card to see every host in it.
-- **Charts that show jitter:** the average as a solid line with a shaded P5–P95 (or min–max) band. The y-axis fits the averages, and you can zoom and drag.
+- **Charts that show jitter:** the average as a solid line with a shaded P5–P95 (or min–max) band. The y-axis fits the averages, and you can zoom and drag. When there's only a little data (a new install or a newly added host), the time axis zooms in to it.
 - **Speedtests** with the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages
 - **Worldwide view:** latency to 18 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them
 - **Which ISP you're on:** the public IP and ISP of each connection, checked every 10 minutes and marked on the charts, so failovers stand out
-- **Routes and transit providers:** every 12 hours netBae traces the route to each target and shows whether it's **on-net**, a **direct** connection to the destination's network, handed over at an **IX** (internet exchange, named) or **transit** via carriers like Cogent, Arelion, GTT or Vodafone, with every hop and hostname one click away
+- **Routes and transit providers:** every 12 hours (and right after netBae starts, for anything without a recent route) netBae traces the route to each target and shows whether it's **on-net**, a **direct** connection to the destination's network, handed over at an **IX** (internet exchange, named) or **transit** via carriers like Cogent, Arelion, GTT or Vodafone. Each hand-over is labelled **peering** or **paid transit**, and every hop and hostname is one click away
 - **Secondary connection monitoring:** test a second internet connection (e.g. a 5G/4G failover link) alongside your main one, at the same time
 - **DNS over IPv4 and IPv6:** response times for your router, the DNS servers DHCP gave you, and Cloudflare, Google, Quad9, OpenDNS, CleanBrowsing, AdGuard, NextDNS and Control D
 - **History kept forever,** at the right resolution: every ping for 7 days, 1-minute summaries for 90 days, hourly summaries for ever
 - **Works from any device** on your network, including when the internet is down
+- **Light and dark themes:** follows your device, or pick one with the switch in the header (remembered per browser)
 - **No Docker, no dependencies:** Python's standard library and SQLite. One command installs or updates it.
 
 ## Quick start
@@ -47,6 +48,13 @@ On Windows 10/11, in **PowerShell as Administrator**:
 irm https://raw.githubusercontent.com/jchin14/netBae/main/install.ps1 | iex
 ```
 
+Or with **Docker** (Linux):
+
+```bash
+docker run -d --name netbae --network host --restart unless-stopped \
+  -e TZ=Australia/Melbourne -v netbae-data:/data ghcr.io/jchin14/netbae:latest
+```
+
 Then open **`http://<that-machine>/`** on your phone or laptop. Run the same command again any time to update; your config and history are kept.
 
 | | Supported |
@@ -54,6 +62,7 @@ Then open **`http://<that-machine>/`** on your phone or laptop. Run the same com
 | **Linux** | Raspberry Pi OS, Debian, Ubuntu, Fedora, RHEL/Rocky/Alma, Arch, openSUSE (systemd) on x86_64, arm64, armhf, armv6, i386 |
 | **macOS** | 12 Monterey or later, Apple silicon or Intel (uses Homebrew) |
 | **Windows** | 10 and 11 (and Server 2019+), x64 or arm64, with its own PowerShell installer (`install.ps1`) |
+| **Docker** | Linux hosts (Pi, NAS, Proxmox, servers) on amd64, arm64 and arm/v7, with host networking |
 
 <details>
 <summary><b>What the installer does on Linux</b></summary>
@@ -62,7 +71,7 @@ Then open **`http://<that-machine>/`** on your phone or laptop. Run the same com
 2. installs the official Ookla Speedtest CLI from Ookla's package repository (Debian/Ubuntu/Pi OS, Fedora/RHEL), so it updates with your system, or from Ookla's release tarball elsewhere. The unofficial Python `speedtest-cli` is removed, since it conflicts.
 3. creates an unprivileged `netbae` user and installs the app to `/opt/netbae`
 4. writes `/etc/netbae/config.toml` (an existing config is never overwritten)
-5. starts the `netbae` systemd service on port 80 without running as root (via `CAP_NET_BIND_SERVICE`)
+5. starts the `netbae` systemd service on port 80 without running as root (via `CAP_NET_BIND_SERVICE`). If something else already uses the port, it takes the next free one (81, 82 …), saves it in the config and tells you
 6. opens the port in `ufw`/`firewalld` if either is active, and installs the `netbae` command
 
 On Proxmox, use a VM or a *privileged* LXC container; unprivileged LXC can block ping.
@@ -77,7 +86,7 @@ Install [Homebrew](https://brew.sh) first, then run the Quick start command in T
 2. installs the Ookla CLI from Ookla's Homebrew tap (`teamookla/speedtest`). Homebrew always runs as your user, never as root.
 3. creates a hidden `_netbae` user and installs the app to `/usr/local/lib/netbae`
 4. writes `/usr/local/etc/netbae/config.toml`
-5. starts a launchd LaunchDaemon (`com.github.netbae`) on port 80, so it runs from boot with nobody logged in, still as an unprivileged user
+5. starts a launchd LaunchDaemon (`com.github.netbae`) on port 80 (or the next free port, saved in the config), so it runs from boot with nobody logged in, still as an unprivileged user
 6. allows Python through the macOS firewall if it's on
 
 Tips: stop the Mac from sleeping (System Settings → Energy), and use Ethernet so the charts measure your internet rather than your Wi-Fi. If you turn the macOS firewall on later, re-run the install command so other devices can still reach the dashboard. Temperature isn't available on macOS without root. `netbae uninstall` leaves the speedtest CLI installed; `brew uninstall speedtest` removes it.
@@ -93,13 +102,27 @@ Tips: stop the Mac from sleeping (System Settings → Energy), and use Ethernet 
 3. installs the app to `C:\Program Files\netBae` and puts the `netbae` command on the PATH (works in cmd and PowerShell)
 4. writes `C:\ProgramData\netBae\config.toml` (an existing config is never overwritten)
 5. registers a scheduled task (`netBae`) that starts at boot with nobody logged in, as the unprivileged built-in *LOCAL SERVICE* account, and comes back within 5 minutes if it ever stops. A real Windows service would need pywin32 or a wrapper exe; a task needs nothing extra.
-6. allows the port in Windows Firewall from your local network only. Port 80 is often taken on Windows (IIS, http.sys); on a first install the installer then moves to 8080 and tells you.
+6. allows the port in Windows Firewall from your local network only. Port 80 is often taken on Windows (IIS, http.sys); the installer then moves to the next free port (81, 82 …), saves it in the config and tells you.
 
 `netbae uninstall -Purge` removes everything, including the task, firewall rule and PATH entry; Python and a winget-installed speedtest CLI are left alone.
 
 Tips: turn off sleep (Settings → System → Power). Load average and temperature aren't available on Windows; CPU, RAM, page file, storage and uptime are. For a [secondary connection](#monitoring-a-secondary-connection), `bind` must be an IP address (Windows `ping` can't pick an interface by name).
 
 **WSL2?** You could run the Linux installer inside WSL2, but it makes a poor monitor: WSL2 sits behind its own NAT, so `gateway` is the WSL virtual switch rather than your router and every ping has an extra hop; other devices can't reach the dashboard without port forwarding or mirrored networking; and WSL only runs while something keeps it alive. Use the native installer instead.
+</details>
+
+<details>
+<summary><b>Running it with Docker</b></summary>
+
+Use the [docker-compose.yml](docker-compose.yml) in this repo (`docker compose up -d`), or the `docker run` command above. Images: `ghcr.io/jchin14/netbae` for amd64, arm64 (Pi 3/4/5 on 64-bit) and arm/v7 (32-bit Pi OS).
+
+- **Use host networking** (`network_mode: host` / `--network host`). In Docker's default bridge network every test goes through Docker's NAT, so "Router" would be Docker's gateway, routes would start inside Docker, DHCP DNS would show Docker's resolver, and secondary connections couldn't bind to the host's IPs. netBae detects this and shows a warning on the dashboard.
+- **Set `TZ`** to your timezone: speedtest times and offsets follow it.
+- **`/data`** holds `config.toml` (created from the defaults on first start; edit it and `docker restart netbae`) and the history database. Back up that volume to keep your history.
+- **Disk usage:** add `-v /:/host:ro` to show the host's disk instead of the container's.
+- **Port:** host networking uses port 80 on the host; set `-e NETBAE_PORT=8080` before the first start (or change `[web] port` in `/data/config.toml`) if something else uses 80.
+- **Update:** `docker pull ghcr.io/jchin14/netbae:latest` and recreate the container (`docker compose pull && docker compose up -d`).
+- **Docker Desktop on Mac/Windows** runs containers in a hidden VM, so host networking there means the VM's network. It works, but the native installers above measure your connection more accurately.
 </details>
 
 <details>
@@ -136,8 +159,8 @@ Everything lives in one commented [config file](config.toml). The highlights:
 
 | Setting | Default | |
 |---|---|---|
-| `[web] port` | `80` | change it if something else (e.g. a reverse proxy) uses port 80 |
-| `[ping] targets` | 32 hosts in 9 groups | `{ name, host, group }`; `host = "gateway"` = your router; `method = "tcp"` for hosts that block ping |
+| `[web] port` | `80` | if it's taken when netBae starts, the next free port is used and the log says which (`netbae logs`) |
+| `[ping] targets` | 41 hosts in 11 groups | `{ name, host, group }`; `host = "gateway"` = your router; `method = "tcp"` for hosts that block ping |
 | `[ping] interval_seconds` / `offset_seconds` | `5` / `0` | |
 | `[ping] regions` | 18 cities | latency to the fastest Ookla server in each city, every `region_interval_seconds` (30) |
 | `[dns] servers` / `domains` | router, DHCP DNS + 8 public resolvers over IPv4 and IPv6 / 5 domains | `host = "dhcp"` adds the DNS servers this machine got from DHCP if they differ from the router; IPv6 servers are skipped on IPv4-only networks |
@@ -219,7 +242,7 @@ The connection gets its own group of ping tiles and its own row in the speedtest
 - **Sites:** each name is pinged at the address it resolves to, which for big services is their nearest edge or CDN server. That's the path your real traffic takes.
 - **DNS:** one UDP A-record query per resolver and domain, timed in Python, over IPv4 and IPv6. "DHCP DNS" is read from the system's resolver settings (`/etc/resolv.conf` or systemd-resolved on Linux and macOS, the network adapter settings on Windows) at startup.
 - **ISP:** an HTTPS request to [ipinfo.io](https://ipinfo.io) through each connection (main and secondary) returns its public IP and ISP. The header shows the current one, and the charts mark every check: one colour per connection and one shape per ISP. Click a marker type above a chart to hide it. ipinfo.io sees your public IP, about 4,500 requests a month per connection at the default interval (its free tier allows 50,000).
-- **Routes:** the system `traceroute` (`tracert` on Windows) to each target every 12 hours. Each hop's network comes from [Team Cymru's IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) over DNS. A route is **on-net** if the destination is inside your ISP, **direct** if your ISP connects straight to the destination's network (a private interconnect), **IX** if the hand-over happens across an internet exchange (hops on an exchange's peering LAN, using [PeeringDB](https://www.peeringdb.com)'s prefix list, refreshed daily), and **transit** if another carrier sits in between. Traceroute only sees routers that answer it, so treat it as a strong hint, not proof.
+- **Routes:** the system `traceroute` (`tracert` on Windows) to each target every 12 hours, and right after netBae starts for any target that has no recent route. Each hop's network comes from [Team Cymru's IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) over DNS. A route is **on-net** if the destination is inside your ISP, **direct** if your ISP connects straight to the destination's network (a private interconnect), **IX** if your ISP hands the traffic over across an internet exchange (hops on an exchange's peering LAN, using [PeeringDB](https://www.peeringdb.com)'s prefix list, refreshed daily), even when a transit carrier follows the exchange, and **transit** if your ISP hands it straight to another carrier. Each hand-over is also labelled with the business relationship between the two networks (**peering**, **paid transit**, or **to customer**) from [CAIDA's AS relationships](https://www.caida.org/catalog/datasets/as-relationships/), inferred from public BGP data, published monthly and downloaded once a month (~10 MB on disk). Traceroute only sees routers that answer it, so treat it as a strong hint, not proof.
 - **Speedtests:** the official Ookla CLI, auto-selecting the closest server unless you choose one.
 - **System:** the model name comes from the device tree on a Raspberry Pi (`/proc/device-tree/model`), DMI/BIOS info on PCs and VMs, `sysctl` on a Mac and the registry on Windows.
 
@@ -238,7 +261,7 @@ History is kept in SQLite at three resolutions:
 - 1-minute summaries (count, average, min, max, 5th and 95th percentile) for `minute_retention_days` (90)
 - hourly summaries, speedtests and system history for `retention_days` (0 = forever)
 
-Charts automatically use the right one, so a whole year loads instantly even on a Pi. With the defaults, expect a few hundred MB of recent detail plus roughly 30–50 MB per year of long-term history.
+Charts automatically use the right one, so a whole year loads instantly even on a Pi. Two reference files sit next to the database and refresh themselves: PeeringDB's internet-exchange prefixes (`peeringdb-ix.json`, daily) and CAIDA's AS relationships (`as-rel-YYYYMM.db`, about 10 MB, monthly). With the defaults, expect a few hundred MB of recent detail plus roughly 30–50 MB per year of long-term history.
 
 ## Behind a reverse proxy
 
@@ -255,13 +278,15 @@ There's no login, so keep it on your LAN. If you need auth, add it at the proxy.
 ## API
 
 Everything on the dashboard comes from a small JSON API you can use from Home Assistant, Grafana or scripts:
-`/api/summary`, `/api/config`, `/api/system`, `/api/system/history`, `/api/ping`, `/api/dns`, `/api/speedtest` (query: `from`, `to` in Unix seconds, plus `targets` / `servers` / `domain`), and `POST /api/speedtest/run?scope=main|regions|conn:<name>`.
+`/api/summary`, `/api/config`, `/api/system`, `/api/system/history`, `/api/ping`, `/api/dns`, `/api/speedtest`, `/api/isp` (query: `from`, `to` in Unix seconds, plus `targets` / `servers` / `domain`), `/api/traceroute?target=<id>` (hops and route history, with each network's relationship to the one before it), and `POST /api/speedtest/run?scope=main|regions|conn:<name>`.
 
 ## FAQ
 
 **Does it run on Windows?** Yes, Windows 10 and 11, with `install.ps1` (see [Quick start](#quick-start)). Windows can't run `install.sh` because it has no bash, so it has its own installer.
 
 **How much data does it use?** Pings and DNS are tiny (a few MB a day). Speedtests are what count: each uses roughly what your connection can move in about 20 seconds. On a gigabit line that's about 1 GB per test, so hourly tests add up. The dashboard shows data used per test and per day.
+
+**What's the difference between transit and peering?** Transit is paid access to the whole internet: your ISP pays a carrier like Cogent or GTT to deliver its traffic anywhere. Peering is two networks swapping traffic only between themselves and their own customers, usually for free (sometimes paid when the traffic is lopsided, which still counts as peering). A route that's **direct** or via an **IX** and labelled **peering** is usually the shortest and least congested way in. **Transit** adds another network in the middle. The labels come from CAIDA's data, inferred from public routing tables, so treat them as a well-informed guess.
 
 **Can I show certain groups expanded, e.g. on a wall display?** Open `http://<machine>/?expand=Gaming,DNS`.
 

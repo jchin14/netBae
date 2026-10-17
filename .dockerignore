@@ -1,0 +1,10 @@
+.git
+.github
+.claude
+dist
+scripts
+**/__pycache__
+*.db*
+local.toml
+peeringdb-ix.json
+app/static/vendor

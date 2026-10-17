@@ -256,9 +256,22 @@ function lineChart(canvas, { yTitle, y1Title, yMax } = {}) {
   });
 }
 
+// The x-axis spans the chosen range, but when the data only fills a small part of it (a new install,
+// a target added recently) it zooms to the data, padded a little, so the points aren't squashed at one edge.
 function setXRange(chart, r) {
-  chart.options.scales.x.min = r.from * 1000;
-  chart.options.scales.x.max = r.to * 1000;
+  let min = r.from * 1000, max = r.to * 1000;
+  let lo = Infinity, hi = -Infinity;
+  for (const ds of chart.data.datasets) {
+    if (ds.role === 'isp') continue;
+    for (const p of ds.data) if (p.y != null) { lo = Math.min(lo, p.x); hi = Math.max(hi, p.x); }
+  }
+  if (lo <= hi && hi - lo < (max - min) / 2) {
+    const pad = Math.max((hi - lo) * 0.05, 5 * 60e3);  // at least 5 minutes either side
+    min = Math.max(min, lo - pad);
+    max = Math.min(max, hi + pad);
+  }
+  chart.options.scales.x.min = min;
+  chart.options.scales.x.max = max;
 }
 
 // ------------------------------------------------------------------ app state
@@ -301,6 +314,18 @@ let ROUTES = {};
 const ROUTE_BADGE = { 'on-net': 'on-net', direct: 'direct', ix: 'IX', transit: 'transit', unknown: 'route ?',
   peering: 'direct', 'peering (IXP)': 'IX' };  // (older names)
 const ROUTE_CLASS = { peering: 'direct', 'peering (IXP)': 'ix' };
+// Business relationship of each network to the one before it (CAIDA): who pays whom at each hand-over.
+const REL_TEXT = { peer: 'peering', provider: 'paid transit', customer: 'to customer' };
+function relTitle(rel, a, b) {
+  return rel === 'peer' ? `${a} and ${b} peer: they swap traffic between their own networks and customers`
+    : rel === 'provider' ? `${a} pays ${b} for transit (a route to the rest of the internet)`
+      : rel === 'customer' ? `${b} is a customer of ${a} (it pays ${a} for transit)` : '';
+}
+// the first hand-over out of your ISP, e.g. "peering" or "paid transit"
+function firstRel(path) {
+  const next = path.slice(1).find((p) => !p.ixp && p.asn);
+  return next?.rel ? REL_TEXT[next.rel] : null;
+}
 function routeHtml(id) {
   const r = ROUTES[id];
   if (!r) return '<span class="muted">route not traced yet</span>';
@@ -311,11 +336,26 @@ function routeHtml(id) {
   const kind = ROUTE_CLASS[r.kind] || r.kind;
   const text = kind === 'transit' ? `via ${mid.join(', ')}${ixs.length ? ` (${ixs[0]})` : ''}`
     : kind === 'on-net' ? `inside ${names[0] || 'your ISP'}`
-      : kind === 'ix' ? `via ${ixs[0] || 'an exchange'} to ${dest}`
+      : kind === 'ix' ? `via ${ixs[0] || 'an exchange'}${mid.length ? `, then ${mid.join(', ')},` : ''} to ${dest}`
         : kind === 'direct' ? `direct to ${dest}` : names.join(' → ');
+  const rel = kind === 'on-net' ? null : firstRel(r.path);
   const cls = kind;
-  return `<button class="route-link" data-route="${esc(id)}" title="${esc(names.join(' → '))} · traced ${fmtAgo(r.ts)} · click for hops">`
-    + `<span class="route-badge route-${cls}">${ROUTE_BADGE[r.kind] || r.kind}</span> ${esc(text)}</button>`;
+  return `<button class="route-link" data-route="${esc(id)}" title="${esc(names.join(' → '))}${rel ? ` · ${rel}` : ''} · traced ${fmtAgo(r.ts)} · click for hops">`
+    + `<span class="route-badge route-${cls}">${ROUTE_BADGE[r.kind] || r.kind}</span> ${esc(text)}${rel ? ` <span class="muted">· ${rel}</span>` : ''}</button>`;
+}
+
+// "ISP (AS1) → paid transit → Cogent (AS174) → peering → Netflix (AS2906)", exchanges in between
+function pathHtml(path) {
+  let prev = null;
+  return path.map((p, i) => {
+    const name = esc(p.asn ? `${p.name} (AS${p.asn})` : `${p.name} [internet exchange]`);
+    let arrow = i ? ' → ' : '';
+    if (!p.ixp && p.asn) {
+      if (p.rel && prev) arrow = ` <span class="rel" title="${esc(relTitle(p.rel, prev.name, p.name))}">→ ${REL_TEXT[p.rel]} →</span> `;
+      prev = p;
+    }
+    return arrow + name;
+  }).join('');
 }
 
 async function showRoute(id, title) {
@@ -329,10 +369,10 @@ async function showRoute(id, title) {
     : `<b>${esc(ROUTE_BADGE[x.kind] || x.kind)}</b> ${esc(x.path.map((p) => p.name).join(' → '))}`}</li>`).join('');
   dlg.innerHTML = `<div class="dlg-head"><h2>Route to ${esc(title)}</h2><button class="link" data-close>Close</button></div>
     ${r ? `<p><span class="route-badge route-${ROUTE_CLASS[r.kind] || r.kind}">${esc(ROUTE_BADGE[r.kind] || r.kind || '?')}</span>
-      ${esc(r.path.map((p) => (p.asn ? `${p.name} (AS${p.asn})` : `${p.name} [internet exchange]`)).join(' → '))}</p>
-      <p class="muted small">Destination ${esc(r.dest_host && r.dest_host !== r.dest ? `${r.dest_host} (${r.dest})` : (r.dest || ''))} · traced ${fmtAgo(r.ts)} · networks from Team Cymru's IP-to-ASN data, hostnames from reverse DNS</p>
+      ${pathHtml(r.path)}</p>
+      <p class="muted small">Destination ${esc(r.dest_host && r.dest_host !== r.dest ? `${r.dest_host} (${r.dest})` : (r.dest || ''))} · traced ${fmtAgo(r.ts)} · networks from Team Cymru's IP-to-ASN data, hostnames from reverse DNS${d.rel_source ? `, who pays whom from CAIDA's AS relationships (${esc(d.rel_source)})` : ''}</p>
       <div class="table-wrap"><table class="stats"><thead><tr><th>#</th><th style="text-align:left">Hop (hostname / IP)</th><th>ms</th><th style="text-align:left">Network</th></tr></thead><tbody>${hops}</tbody></table></div>
-      <h3 class="small">Recent routes</h3><ul class="route-hist">${hist}</ul>` : '<p class="muted">Not traced yet. Routes are traced every 12 hours (the first a few minutes after netBae starts).</p>'}`;
+      <h3 class="small">Recent routes</h3><ul class="route-hist">${hist}</ul>` : '<p class="muted">Not traced yet. Routes are traced every 12 hours, and right after netBae starts for any target without one.</p>'}`;
   dlg.showModal();
 }
 
@@ -900,6 +940,7 @@ async function main() {
 
   const sp = CONFIG.speedtest;
   if (CONFIG.repo) $('#repo-link').href = CONFIG.repo;
+  $('#docker-note').hidden = !CONFIG.docker_bridge;
   $('#footer').innerHTML = `<a href="${esc(CONFIG.repo || '#')}" target="_blank" rel="noopener">netBae ${esc(CONFIG.version)}</a> by `
     + '<a href="https://github.com/jchin14" target="_blank" rel="noopener">jchin14</a> · '
     + `ping every ${CONFIG.ping.interval_seconds}s · `
@@ -909,7 +950,27 @@ async function main() {
   await refreshAll(true);
   setInterval(refreshAll, REFRESH_MS);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(); });
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => location.reload());
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (store.get('theme', 'auto') === 'auto') location.reload(); });
 }
+
+// ------------------------------------------------------------------ theme switch
+// Auto (follow the device) -> Light -> Dark. index.html applies the saved choice before the page paints.
+const THEMES = {
+  auto: ['Auto', '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>'],
+  light: ['Light', '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'],
+  dark: ['Dark', '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'],
+};
+function themeToggle() {
+  const btn = $('#theme-toggle');
+  const cur = THEMES[store.get('theme', 'auto')] ? store.get('theme', 'auto') : 'auto';
+  btn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${THEMES[cur][1]}</svg><span>${THEMES[cur][0]}</span>`;
+  btn.title = 'Theme: ' + THEMES[cur][0].toLowerCase() + ' (click to change)';
+  btn.addEventListener('click', () => {
+    const keys = Object.keys(THEMES);
+    store.set('theme', keys[(keys.indexOf(cur) + 1) % keys.length]);
+    location.reload();  // charts take their colours from the theme when they're created
+  });
+}
+themeToggle();
 
 main();

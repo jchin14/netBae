@@ -6,6 +6,7 @@ if [[ $EUID -ne 0 ]]; then exec sudo bash "$0" "$@"; fi
 if [[ $(uname -s) == Darwin ]]; then
   LABEL=com.github.netbae
   launchctl bootout "system/$LABEL" 2>/dev/null || true
+  pkill -f /usr/local/lib/netbae/netbae.py 2>/dev/null || true  # also any copy started by hand
   rm -f "/Library/LaunchDaemons/$LABEL.plist" /etc/newsyslog.d/netbae.conf
   rm -rf /usr/local/lib/netbae
   rm -f /usr/local/bin/netbae
@@ -23,6 +24,7 @@ if [[ $(uname -s) == Darwin ]]; then
 fi
 
 systemctl disable --now netbae 2>/dev/null || true
+pkill -f /opt/netbae/netbae.py 2>/dev/null || true  # also any copy started by hand
 rm -f /etc/systemd/system/netbae.service
 systemctl daemon-reload
 rm -rf /opt/netbae

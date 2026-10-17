@@ -10,7 +10,7 @@
 
 [web]
 host = "0.0.0.0"       # 0.0.0.0 = reachable from other machines on your network
-port = 80             # dashboard at http://<this-machine>/ ; change if something else uses 80
+port = 80             # dashboard at http://<this-machine>/ ; if it's taken, the next free port is used
 
 [storage]
 database = "/var/lib/netbae/netbae.db"
@@ -52,6 +52,10 @@ targets = [
   { name = "Facebook",       host = "facebook.com",     group = "Social" },
   { name = "Reddit",         host = "reddit.com",       group = "Social" },
   { name = "X",              host = "x.com",            group = "Social" },
+  { name = "Instagram",      host = "instagram.com",    group = "Social" },
+  { name = "OpenAI (ChatGPT)", host = "chatgpt.com",    group = "AI" },
+  { name = "Anthropic (Claude)", host = "claude.ai",    group = "AI" },
+  { name = "Grok",           host = "grok.com",         group = "AI" },
   { name = "Microsoft",      host = "microsoft.com",    group = "Cloud & tech" },
   { name = "Apple",          host = "apple.com",        group = "Cloud & tech" },
   { name = "AWS",            host = "aws.amazon.com",   group = "Cloud & tech" },
@@ -63,10 +67,16 @@ targets = [
   { name = "Azure Front Door", host = "www.office.com", group = "CDN" },   # Microsoft's own edge network
   { name = "Bunny",          host = "bunny.net",        group = "CDN" },
   { name = "Gcore",          host = "gcore.com",        group = "CDN" },
-  # Usenet providers (Amsterdam); Highwinds/Omicron also runs Newshosting, UsenetServer and Easynews
-  { name = "Eweka",          host = "news.eweka.nl",    group = "Usenet" },
-  { name = "Highwinds",      host = "news.newshosting.com", group = "Usenet" },
-  # more ideas: store.steampowered.com, x.com, instagram.com, spotify.com,
+  # Usenet providers. Omicron (formerly Highwinds) also runs UsenetServer, Easynews and Newsgroup Ninja;
+  # NewsDemon resells UsenetExpress; Tweaknews and Pure Usenet share Eweka's network.
+  { name = "Omicron (Newshosting)", host = "news.newshosting.com", group = "Usenet US" },
+  { name = "Easynews",       host = "news.easynews.com",       group = "Usenet US" },   # Phoenix
+  { name = "Giganews",       host = "news.giganews.com",       group = "Usenet US" },
+  { name = "UsenetExpress",  host = "usnews.usenetexpress.com", group = "Usenet US" },
+  { name = "Frugal Usenet",  host = "news.frugalusenet.com",   group = "Usenet US" },
+  { name = "Eweka",          host = "news.eweka.nl",           group = "Usenet EU" },   # Amsterdam
+  { name = "Usenet.Farm",    host = "news.usenet.farm",        group = "Usenet EU" },   # Netherlands
+  # more ideas: store.steampowered.com, spotify.com, gemini.google.com,
   # { name = "Amazon", host = "amazon.com", method = "tcp", port = 443, group = "Shopping" },   # blocks ping
 ]
 

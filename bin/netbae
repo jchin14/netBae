@@ -19,7 +19,7 @@ fi
 
 as_root() { if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi; }
 as_svc() {
-  if [[ $(uname -s) == Darwin ]]; then as_root sudo -u _netbae "$@"; else as_root runuser -u netbae -- "$@"; fi
+  if [[ $(uname -s) == Darwin ]]; then as_root sudo -u _netbae "$@"; elif command -v runuser >/dev/null; then as_root runuser -u netbae -- "$@"; else as_root sudo -u netbae "$@"; fi
 }
 version() { "$PY" -c "import sys; sys.path.insert(0, '$APP'); import netbae; print(netbae.VERSION)" 2>/dev/null || echo unknown; }
 
@@ -39,7 +39,7 @@ svc() {
         | grep -E $'^\t(state|pid|last exit code|runs) =' | sed $'s/^\t/  /' \
         || { echo "netBae is not running (not loaded in launchd)"; return 3; }
       ;;
-    logs) tail -n 50 -f "$LOG" ;;
+    logs) as_root tail -n 50 -f "$LOG" ;;  # the log is only readable by the service user and root
     start) as_root launchctl bootstrap system "$PLIST" 2>/dev/null || as_root launchctl kickstart "system/$LABEL" ;;
     stop) as_root launchctl bootout "system/$LABEL" ;;
     restart)

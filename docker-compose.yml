@@ -1,0 +1,17 @@
+# netBae with Docker Compose:   docker compose up -d     then open http://<this-machine>/
+# Update:                        docker compose pull && docker compose up -d
+services:
+  netbae:
+    image: ghcr.io/jchin14/netbae:latest
+    container_name: netbae
+    restart: unless-stopped
+    # Host networking (Linux) gives accurate results: netBae sees your real router, DHCP DNS and
+    # interfaces, traceroutes start at your router, and secondary connections can bind to the host's IPs.
+    # In Docker's default bridge network every test goes through Docker's NAT first.
+    network_mode: host
+    environment:
+      TZ: Australia/Melbourne     # schedules (speedtests at :00, offsets) follow this timezone
+      NETBAE_PORT: "80"           # web port, used when the config is first created
+    volumes:
+      - ./netbae-data:/data       # config.toml + history (netbae.db) live here
+      - /:/host:ro                # optional: lets the dashboard show the host's disk usage

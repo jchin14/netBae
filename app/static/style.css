@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   --bg: #f4f6f9;
   --card: #ffffff;
   --text: #17202c;
@@ -12,8 +13,10 @@
   --chip-off: #eef1f5;
   --radius: 12px;
 }
+/* dark: follows the device unless the header switch picks light or dark (html[data-theme]) */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #0f1419;
     --card: #182029;
     --text: #e6ebf1;
@@ -26,6 +29,20 @@
     --bad: #f06565;
     --chip-off: #212b36;
   }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f1419;
+  --card: #182029;
+  --text: #e6ebf1;
+  --muted: #8d99a8;
+  --border: #26313d;
+  --grid: rgba(230, 235, 241, 0.07);
+  --accent: #5b93f5;
+  --good: #34c27a;
+  --warn: #f0a92e;
+  --bad: #f06565;
+  --chip-off: #212b36;
 }
 
 * { box-sizing: border-box; }
@@ -42,6 +59,8 @@ h1 .logo { width: 24px; height: 24px; fill: none; stroke: var(--accent); stroke-
   border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
 .repo:hover { color: var(--text); border-color: var(--muted); }
 .repo svg { width: 14px; height: 14px; fill: currentColor; }
+button.repo { font: inherit; background: none; cursor: pointer; }
+.theme-toggle svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .tile.group { cursor: pointer; }
 .tile.member { cursor: default; }
 h2 { font-size: 15px; margin: 0; font-weight: 600; }
@@ -60,6 +79,9 @@ h2 { font-size: 15px; margin: 0; font-weight: 600; }
 .dot.warn { background: var(--warn); }
 .dot.bad { background: var(--bad); }
 
+.banner { background: color-mix(in srgb, var(--warn) 14%, var(--card)); border-bottom: 1px solid var(--warn);
+  padding: 10px 20px; font-size: 13px; }
+.banner code { font-size: 12px; }
 main { max-width: 1400px; margin: 0 auto; padding: 18px 20px 40px; display: grid; gap: 16px; }
 
 .card {
@@ -209,3 +231,4 @@ footer a { color: var(--muted); text-decoration: underline; text-decoration-colo
   .speed-summary .big { font-size: 22px; }
   #updated { display: none; }
 }
+.rel { color: var(--muted); font-size: 12px; white-space: nowrap; cursor: help; }

@@ -276,23 +276,16 @@ function Install-NetBae {
         # ------------------------------------------------------------ port check
         function Get-PortHolder($p) { Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue | Select-Object -First 1 }
         $holder = Get-PortHolder $Port
-        # Port 80 is often taken on Windows (IIS / http.sys). On a first install just move to a free port.
-        if ($holder -and $freshConfig) {
-            foreach ($alt in 8080, 8088, 8099) {
-                if (-not (Get-PortHolder $alt)) {
-                    Warn "port $Port is in use - using port $alt instead (change [web] port in $ConfFile)"
-                    $text = [IO.File]::ReadAllText($ConfFile, $utf8) -replace '(?m)^port = \d+', "port = $alt"
-                    [IO.File]::WriteAllText($ConfFile, $text, $utf8)
-                    $Port = $alt
-                    $holder = $null
-                    break
-                }
-            }
-        }
+        # Port 80 is often taken on Windows (IIS / http.sys): move to the next free port and save it in the config.
         if ($holder) {
             $name = (Get-Process -Id $holder.OwningProcess -ErrorAction SilentlyContinue).ProcessName
             if ($holder.OwningProcess -eq 4) { $name = 'System (http.sys: IIS, WinRM, or another web service)' }
-            throw "port $Port is already used by '$name'. Set a different [web] port in $ConfFile (e.g. 8080) and re-run."
+            $alt = ($Port + 1)..($Port + 19) | Where-Object { -not (Get-PortHolder $_) } | Select-Object -First 1
+            if (-not $alt) { throw "port $Port and the 19 after it are all in use. Set a free [web] port in $ConfFile and re-run." }
+            Warn "port $Port is used by '$name' - using port $alt instead (saved as [web] port in $ConfFile)"
+            $text = [IO.File]::ReadAllText($ConfFile, $utf8) -replace '(?m)^port *= *\d+', "port = $alt"
+            [IO.File]::WriteAllText($ConfFile, $text, $utf8)
+            $Port = $alt
         }
 
         # ------------------------------------------------------------ scheduled task

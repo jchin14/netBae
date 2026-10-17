@@ -85,9 +85,9 @@ elif command -v apt-get >/dev/null; then
   apt-get install -y -qq python3 iputils-ping iproute2 traceroute curl ca-certificates tar gnupg >/dev/null
   PM=apt
 elif command -v dnf >/dev/null; then
-  dnf install -y -q python3 iputils iproute traceroute curl ca-certificates tar shadow-utils; PM=dnf
+  dnf install -y -q python3 iputils iproute traceroute curl ca-certificates tar shadow-utils util-linux; PM=dnf
 elif command -v yum >/dev/null; then
-  yum install -y -q python3 iputils iproute traceroute curl ca-certificates tar shadow-utils; PM=yum
+  yum install -y -q python3 iputils iproute traceroute curl ca-certificates tar shadow-utils util-linux; PM=yum
 elif command -v pacman >/dev/null; then
   pacman -Sy --noconfirm --needed python iputils iproute2 traceroute curl ca-certificates tar; PM=pacman
 elif command -v zypper >/dev/null; then
@@ -161,6 +161,8 @@ install_speedtest_repo() {
       fi
       ;;
     dnf|yum)
+      # Ookla's repo is built for RHEL 9; its unsigned-digest rpm is refused by Fedora's rpm policy.
+      grep -qx 'ID=fedora' /etc/os-release 2>/dev/null && return 1
       c_info "Adding Ookla's official yum repository"
       cat >/etc/yum.repos.d/ookla_speedtest-cli.repo <<EOF
 [ookla_speedtest-cli]
@@ -174,7 +176,8 @@ sslverify=1
 metadata_expire=300
 EOF
       if rpm -q speedtest-cli >/dev/null 2>&1; then $PM remove -y -q speedtest-cli; fi
-      $PM install -y -q speedtest || { rm -f /etc/yum.repos.d/ookla_speedtest-cli.repo; return 1; }
+      # Only from Ookla's repo: Fedora ships an unrelated "speedtest" package (a desktop app).
+      $PM install -y -q --disablerepo='*' --enablerepo=ookla_speedtest-cli speedtest || { rm -f /etc/yum.repos.d/ookla_speedtest-cli.repo; return 1; }
       ;;
     brew)
       [[ -n $BREW ]] || { c_warn "Homebrew not found - install it from https://brew.sh to get the speedtest CLI"; return 1; }
@@ -260,7 +263,11 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
     useradd --system --home-dir "$DATA_DIR" --create-home --shell "$NOLOGIN" "$SVC_USER"
   fi
 fi
-as_svc_user() { if [[ $OS == Darwin ]]; then sudo -u "$SVC_USER" "$@"; else runuser -u "$SVC_USER" -- "$@"; fi; }
+as_svc_user() {
+  if [[ $OS != Darwin ]] && command -v runuser >/dev/null; then runuser -u "$SVC_USER" -- "$@"
+  elif command -v sudo >/dev/null; then sudo -u "$SVC_USER" "$@"
+  else su -s /bin/sh "$SVC_USER" -c '"$0" "$@"' "$@"; fi
+}
 mkdir -p "$APP_DIR" "$CONF_DIR" "$DATA_DIR" /usr/local/bin
 chown "$SVC_USER:$SVC_USER" "$DATA_DIR"
 chmod 750 "$DATA_DIR"
@@ -310,19 +317,49 @@ as_svc_user "$PY" "$APP_DIR/netbae.py" -c "$CONF_DIR/config.toml" --check-config
   || die "config check failed - fix $CONF_DIR/config.toml and re-run"
 PORT=$("$PY" "$APP_DIR/netbae.py" -c "$CONF_DIR/config.toml" --print-port 2>/dev/null)
 
+# Who listens on a TCP port (empty if it's free). Call once netBae itself is stopped.
+port_holder() {
+  if [[ $OS == Darwin ]]; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN -Fc 2>/dev/null | sed -n 's/^c//p' | head -1 || true
+  elif command -v ss >/dev/null; then
+    local line name
+    line=$(ss -Hltnp "sport = :$1" 2>/dev/null | head -1)
+    [[ -z "$line" ]] && return
+    name=$(grep -o 'users:(("[^"]*"' <<<"$line" | cut -d'"' -f2)
+    echo "${name:-another program}"
+  fi
+}
+
+# If the configured port is taken, move to the next free one and save it in the config.
+pick_port() {
+  local holder p=$PORT
+  holder=$(port_holder "$p")
+  [[ -z "$holder" ]] && return
+  for ((p = PORT + 1; p < PORT + 20; p++)); do
+    if [[ -z "$(port_holder "$p")" ]]; then
+      c_warn "port $PORT is used by '$holder' - using port $p instead (saved as [web] port in $CONF_DIR/config.toml)"
+      sed -E "s/^port *= *[0-9]+/port = $p/" "$CONF_DIR/config.toml" >"$CONF_DIR/config.toml.tmp"
+      cat "$CONF_DIR/config.toml.tmp" >"$CONF_DIR/config.toml" && rm -f "$CONF_DIR/config.toml.tmp"
+      PORT=$p
+      return
+    fi
+  done
+  die "port $PORT and the 19 after it are all in use. Set a free [web] port in $CONF_DIR/config.toml and re-run."
+}
+
 # ---------------------------------------------------------------- macOS: launchd
 install_macos_service() {
   # Stop the running copy first (bootout is asynchronous, so wait for it to go away).
   launchctl bootout "system/$LABEL" 2>/dev/null || true
   for _ in $(seq 20); do launchctl print "system/$LABEL" >/dev/null 2>&1 || break; sleep 0.5; done
+  # A copy started by hand (not by launchd) would still hold the port: stop any leftover netBae process.
+  if pkill -f "$APP_DIR/netbae.py" 2>/dev/null; then c_info "Stopped a leftover netBae process"; sleep 2; fi
 
-  local holder
-  holder=$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -Fc 2>/dev/null | sed -n 's/^c//p' | head -1 || true)
-  if [[ -n "$holder" ]]; then
-    die "port $PORT is already used by '$holder'. Set a different [web] port in $CONF_DIR/config.toml (e.g. 8080) and re-run."
-  fi
+  pick_port
 
-  mkdir -p "$(dirname "$LOG_FILE")"
+  # launchd opens these paths after switching to the service user.  Set an
+  # explicit traversable mode instead of inheriting the invoking shell's umask.
+  install -d -m 0755 "$(dirname "$LOG_FILE")"
   touch "$LOG_FILE"
   chown "$SVC_USER:$SVC_USER" "$LOG_FILE"
   chmod 640 "$LOG_FILE"
@@ -409,12 +446,8 @@ fi
 
 # ---------------------------------------------------------------- port check
 systemctl stop netbae 2>/dev/null || true
-if command -v ss >/dev/null; then
-  HOLDER=$(ss -Hltnp "sport = :$PORT" 2>/dev/null | grep -o 'users:(("[^"]*"' | head -1 | cut -d'"' -f2 || true)
-  if [[ -n "$HOLDER" ]]; then
-    die "port $PORT is already used by '$HOLDER'. Set a different [web] port in $CONF_DIR/config.toml (e.g. 8080) and re-run."
-  fi
-fi
+if pkill -f "$APP_DIR/netbae.py" 2>/dev/null; then c_info "Stopped a leftover netBae process"; sleep 2; fi
+pick_port
 
 # ---------------------------------------------------------------- systemd
 c_info "Installing systemd service"
@@ -457,13 +490,13 @@ fi
 
 sleep 2
 if systemctl is-active --quiet netbae; then
-  IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+  IP=$(hostname -I 2>/dev/null | awk '{print $1}') || IP=""  # Fedora has no hostname command by default
   [[ -n "$IP" ]] || IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
   SUFFIX=""; [[ $PORT == 80 ]] || SUFFIX=":$PORT"
   echo
   if [[ -n "$OLD_VERSION" ]]; then c_info "netBae updated to $NEW_VERSION and running!"; else c_info "netBae is running!"; fi
   echo "    Dashboard:  http://${IP:-<this-machine-ip>}$SUFFIX"
-  echo "                http://$(hostname).local$SUFFIX  (if mDNS/avahi is available)"
+  echo "                http://$(uname -n).local$SUFFIX  (if mDNS/avahi is available)"
   echo "    Config:     netbae config     ($CONF_DIR/config.toml)"
   echo "    Logs:       netbae logs"
   echo "    Update:     netbae update     (or re-run the install command)"
