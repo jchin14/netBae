@@ -65,7 +65,7 @@ docker run -d --name netbae --network host --restart unless-stopped \
 - [Sharing a public dashboard](#sharing-a-public-dashboard): [netbae tunnel](#the-easy-way-netbae-tunnel) · [What visitors see](#what-visitors-see) · [By hand](#by-hand)
 - [How it measures](#how-it-measures)
 - [Averages and storage](#averages-and-storage)
-- [Behind a reverse proxy](#behind-a-reverse-proxy) · [API](#api) · [FAQ](#faq) · [Contributing](#contributing) · [Support](#support) · [Licence](#licence)
+- [Behind a reverse proxy](#behind-a-reverse-proxy) · [API](#api) · [FAQ](#faq) · [How it's tested](#how-its-tested) · [Contributing](#contributing) · [Support](#support) · [Licence](#licence)
 
 ## Why netBae
 
@@ -182,6 +182,8 @@ Images: `ghcr.io/jchin14/netbae` for amd64, arm64 (Pi 3/4/5 on 64-bit) and arm/v
 ## Everyday use
 
 The `netbae` command does everything day to day; the full list is in the [TL;DR](#tldr) and `netbae help`. On Windows it works in cmd and PowerShell, and commands that change something (update, restart, config, tunnel, uninstall) ask for admin rights. Updates never overwrite your config.
+
+On the dashboard, each chart's time menu has the last 15 minutes to a year, **A day…** (pick a date, then step with ◀ ▶) and a custom range. A badge shows whether a chart is **Live** or showing past data, and the header says when any chart isn't live. Once your connection has been on more than one ISP, the ping and DNS charts get an **ISP** selector that keeps only the times you were on that ISP, so you can compare providers.
 
 ### Uninstall
 
@@ -527,6 +529,26 @@ The destination is named only when it isn't the site itself ("direct to Cloudfla
 **Can I show certain groups expanded, e.g. on a wall display?** Open `http://<machine>/?expand=Gaming,DNS`.
 
 **By running speedtests**, you accept [Ookla's EULA and privacy policy](https://www.speedtest.net/about/eula). netBae passes `--accept-license --accept-gdpr` to the CLI.
+
+## How it's tested
+
+Every release has to pass these on fresh machines before it's published:
+
+- **Code checks:** shellcheck on the shell scripts, Python syntax, the default config, a smoke test of the app and the single-file installer build.
+- **Linux installer:** the real `install.sh` in systemd containers on Debian 12, Debian 13, Ubuntu 24.04 and Fedora: install, check the service, API, Ookla CLI and data collection, update in place, uninstall keeping the config, reinstall, then uninstall with `--purge` and check nothing is left.
+- **macOS installer:** the full install, update and uninstall on a Mac.
+- **Windows installer:** `install.ps1` on Windows, including a real speedtest through the service, the `irm | iex` path and `-Purge`.
+- **Docker:** the image is started in host and bridge networking and checked, then built for amd64, arm64 and arm/v7.
+
+Changes to the database format are also tested by upgrading a database made by the previous version and comparing the results of the same queries before and after, and the built-in targets are checked to resolve.
+
+### Known limitations
+
+- **Some games can't be measured:** Valorant, League of Legends and Warzone don't publish servers that answer pings.
+- **Routes are a strong hint, not proof:** traceroute only sees routers that answer it, and hop locations are a best estimate.
+- **Secondary connections are IPv4 only:** they're bound to an IPv4 source address, so they don't get IPv6 lines.
+- **Docker on a Mac or Windows** runs in a hidden VM, so it measures the VM's network; the native installers are more accurate there. In Docker, "All drives" isn't shown because a container can't see the host's other drives.
+- **Raspberry Pi:** the arm64 and arm/v7 Docker images are built for every release, and the installer is tested on Debian, but the automated tests run on x86 and Apple Silicon machines rather than a physical Pi.
 
 ## Contributing
 

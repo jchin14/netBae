@@ -2,6 +2,35 @@
 
 What's new in each netBae release. Update with `netbae update`, by re-running the install command, or with `docker compose pull && docker compose up -d`.
 
+## Milestones
+
+The main steps so far, with the full details per version below.
+
+| Versions | What arrived |
+|---|---|
+| 1.1 | First public release: ping, DNS, speedtests and system stats on a dashboard, one-command Linux install |
+| 1.2 | macOS and Windows, game servers (Steam & CS2, Fortnite, Discord), a secondary connection |
+| 1.3 - 1.4 | ISP tracking with chart markers, route tracing with on-net / direct / IX / transit labels |
+| 1.5 | Docker image for x86 and Raspberry Pi, manual speedtests, installer tests on four Linux distros |
+| 1.6 | Read-only public dashboard and `netbae tunnel` (Cloudflare, Tailscale), security hardening |
+| 1.8 - 1.9 | IPv6 pings and routes, built-in targets in their own file, a database about 40% smaller |
+| 1.10 - 1.12 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs |
+
+## 1.12.0 - 2026-10-18
+
+Look back at any day, compare ISPs, and clearer warnings.
+
+- **Look back at a day:** each chart's time menu has "A day…": pick a date (yesterday by default) and step back and forward with ◀ ▶.
+- **Compare ISPs:** once your main connection has been on more than one ISP, the ping and DNS charts get an ISP selector. It keeps only the times you were on that ISP (from the ISP checks), so the averages, P5/P95 and loss are for that provider alone.
+- Each chart shows whether it's **Live** or showing past data, and the header says when any chart is on a past range.
+- DNS and CDN: a DNS ms column (how long each server took to answer), click any column heading to sort (ascending, descending, back to the ranking), and click anywhere in a cell to see the route. When a server handed out several addresses, that opens a list of every address with its ping, loss and route (all of them are traced).
+- Packet loss stands out: orange above 0%, red above 1%, on the tiles and in the ping and DNS tables.
+- Hover over a status dot to see why it's orange or red (loss, a lost latest ping or high latency), and which hosts make a group orange or red.
+- **"No internet" when your internet was fine:** the ISP check uses ipinfo.io, which rate-limits busy addresses (HTTP 429), and the header then said "no internet". When ipinfo.io refuses, netBae now gets your public address from Cloudflare and the ISP from Team Cymru instead, and a lookup service refusing shows as "ISP lookup failed" rather than "no internet".
+- Routes: networks run by the same company count as one ISP, so a Superloop connection whose addresses are registered to Exetel (which Superloop owns) no longer shows every route as transit. The ISP check also names the network that announces your address rather than the company the address block is registered to.
+- The Run random, Run regions and secondary connection Run buttons start straight away, without a confirmation popup.
+- README: how each release is tested, and the known limitations; the changelog starts with a summary of the main milestones.
+
 ## 1.11.0 - 2026-10-18
 
 Sortable latency tables and storage for every drive.

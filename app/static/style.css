@@ -148,13 +148,25 @@ table.stats tr.total td { border-top: 1px solid var(--border); }
 @media (max-width: 600px) { .speed-details { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .flag { margin-right: 5px; }
 .tile.member { cursor: pointer; }
+.loss-warn { color: var(--warn); font-weight: 600; }
+.loss-bad { color: var(--bad); font-weight: 600; }
 table.stats th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
 table.stats th.sortable:hover { color: var(--text); }
 table.stats th.sorted { color: var(--accent); }
 #cdn-table td { vertical-align: top; }
+#cdn-table td.cdn-cell { cursor: pointer; }
+#cdn-table td.cdn-cell:hover { background: var(--hover, rgba(127,127,127,.08)); }
 #cdn-table .route { margin-top: 2px; font-size: 11.5px; white-space: nowrap; max-width: 210px; overflow: hidden; text-overflow: ellipsis; }
 .cdn-intro { margin: 0 0 10px; }
 .band-note[hidden] { display: none; }
+.live-badge { font-size: 11.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
+.live-badge.live { color: var(--good); }
+.live-badge.past { color: var(--warn); border-color: var(--warn); }
+.past-badge { color: var(--warn); border-color: var(--warn); }
+.past-badge[hidden] { display: none; }
+.isp-filter[hidden], .range .day[hidden] { display: none; }
+.range .day { display: inline-flex; gap: 4px; align-items: center; }
+.range .day .btn { padding: 2px 8px; }
 .tile .v6 { margin-top: 6px; padding-top: 5px; border-top: 1px dashed var(--border); font-size: 11.5px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile .v6 .dot { width: 7px; height: 7px; margin-right: 3px; vertical-align: 1px; }

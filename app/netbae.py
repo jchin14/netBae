@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.11.0"
+VERSION = "1.12.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -1000,14 +1000,50 @@ class _BoundHTTPS(http.client.HTTPSConnection):
         self.sock = ssl.create_default_context().wrap_socket(sock, server_hostname=self.host)
 
 
+class ServiceError(OSError):
+    """The internet works, but a lookup service answered with an error (e.g. rate limited)."""
+
+
 def lookup_isp(bind=None, timeout=10):
-    """Public IP, ISP and ASN as seen by ipinfo.io, sent through the given connection."""
+    """Public IP, ISP and ASN through the given connection: ipinfo.io, or when that refuses (it rate-limits
+    busy addresses), the address from Cloudflare's trace page and the network from Team Cymru."""
+    try:
+        r = lookup_isp_ipinfo(bind, timeout)
+        # ipinfo.io names the company the address block is registered to; routes care about the network that
+        # announces it (Exetel's blocks are announced by Superloop), so prefer that from Team Cymru
+        asn, name = ip_asn(r["ip"]) if r.get("ip") else (None, None)
+        if asn and f"AS{asn}" != r.get("asn"):
+            r.update(asn=f"AS{asn}", isp=name or r.get("isp"))
+        return r
+    except ServiceError as e:
+        first = e
+    try:
+        # 1.1.1.1 rather than a name: the address it reports is then the IPv4 one, like ipinfo.io's
+        conn = _BoundHTTPS("1.1.1.1", bind, timeout)
+        try:
+            conn.request("GET", "/cdn-cgi/trace", headers={"User-Agent": f"netBae/{VERSION}"})
+            r = conn.getresponse()
+            if r.status != 200:
+                raise ServiceError(f"{first}; Cloudflare returned HTTP {r.status}")
+            kv = dict(line.split("=", 1) for line in r.read().decode(errors="replace").splitlines() if "=" in line)
+        finally:
+            conn.close()
+    except ServiceError:
+        raise
+    except OSError as e:
+        raise ServiceError(f"{first}; Cloudflare: {e}") from None
+    ip = kv.get("ip")
+    asn, name = ip_asn(ip) if ip else (None, None)
+    return {"ip": ip, "isp": name, "asn": f"AS{asn}" if asn else None, "location": kv.get("loc") or None}
+
+
+def lookup_isp_ipinfo(bind=None, timeout=10):
     conn = _BoundHTTPS("ipinfo.io", bind, timeout)
     try:
         conn.request("GET", "/json", headers={"User-Agent": f"netBae/{VERSION}", "Accept": "application/json"})
         r = conn.getresponse()
         if r.status != 200:
-            raise OSError(f"ipinfo.io returned HTTP {r.status}")
+            raise ServiceError(f"ipinfo.io returned HTTP {r.status}")
         d = json.loads(r.read())
     finally:
         conn.close()
@@ -1619,6 +1655,41 @@ def route_cities(detailed):
     return out
 
 
+# Networks run by the same company, which count as one ISP on a route (a brand's addresses are often announced
+# by its parent, e.g. Exetel's by Superloop). Add to this when a route wrongly shows "transit" inside one company.
+SIBLING_ASNS = [{38195, 10143},           # Superloop, Exetel
+                {1221, 4637},             # Telstra, Telstra Global
+                {4804, 7474, 7473},       # Optus, Optus, Singtel (Optus's owner)
+                {4826, 9443}]             # Vocus
+
+
+def org_asns(asn):
+    """asn and the other networks run by the same company."""
+    return next((g for g in SIBLING_ASNS if asn in g), {asn} if asn else set())
+
+
+def route_kind(path, isp_asn):
+    """on-net / direct / ix / transit for a path of networks, counting the ISP's sister networks as the ISP."""
+    dest_asn = path[-1]["asn"] if path else None
+    if not path or not dest_asn:
+        return "unknown"
+    mine = org_asns(isp_asn or path[0]["asn"])
+    if dest_asn in mine:
+        return "on-net"
+    middle = [x for x in path if x["asn"] not in mine | {dest_asn} or x["ixp"]]
+    if middle and middle[0]["ixp"]:
+        return "ix"               # your ISP hands over at an internet exchange (even if a carrier follows)
+    return "transit" if middle else "direct"   # another carrier in between, or straight to the destination
+
+
+def fix_route_kind(kind, path):
+    """Correct a stored "transit" whose middle network was only the ISP's sister network (traced before netBae
+    knew they're one company, or when the ISP lookup named the registered brand rather than the network)."""
+    if kind == "transit" and path and any(path[0]["asn"] in g for g in SIBLING_ASNS):
+        return route_kind(path, path[0]["asn"])
+    return kind
+
+
 def classify_route(hops, dest_ip, isp_asn=None):
     """Annotate hops with ASNs and work out how traffic reaches the destination network."""
     detailed, path = [], []
@@ -1640,19 +1711,7 @@ def classify_route(hops, dest_ip, isp_asn=None):
     dest_asn, dest_name = ip_asn(dest_ip) if dest_ip else (None, None)
     if dest_asn and (not path or path[-1]["asn"] != dest_asn):
         path.append({"asn": dest_asn, "name": dest_name, "ixp": False, "unseen": True})
-    isp_asn = isp_asn or (path[0]["asn"] if path else None)
-    if not path or not dest_asn:
-        kind = "unknown"
-    elif dest_asn == isp_asn:
-        kind = "on-net"
-    else:
-        middle = [x for x in path if x["asn"] not in (isp_asn, dest_asn) or x["ixp"]]
-        if middle and middle[0]["ixp"]:
-            kind = "ix"               # your ISP hands over at an internet exchange (even if a carrier follows)
-        elif middle:
-            kind = "transit"          # another carrier sits between your ISP and the destination
-        else:
-            kind = "direct"           # your ISP connects straight to the destination's network
+    kind = route_kind(path, isp_asn) if dest_asn else "unknown"
     return kind, path, detailed
 
 
@@ -2842,6 +2901,10 @@ def api_config(m, q):
         "version": VERSION,
         "repo": REPO_URL,
         "chart_band": c["web"]["chart_band"],
+        # every ISP the main connection has been on, for filtering the latency charts by ISP
+        "isp_history": [{"isp": i, "first": a, "last": b} for i, a, b in m.db.query(
+            "SELECT isp, MIN(ts), MAX(ts) FROM isp WHERE connection = ? AND isp IS NOT NULL GROUP BY isp ORDER BY MAX(ts) DESC",
+            (c["isp"]["main_name"],))] if c["isp"]["enabled"] else [],
         "info": m.static_info,
         "ping": {"interval_seconds": c["ping"]["interval_seconds"], "offset_seconds": c["ping"]["offset_seconds"],
                  "region_interval_seconds": c["ping"]["region_interval_seconds"],
@@ -2872,9 +2935,54 @@ def api_config(m, q):
     }
 
 
+def isp_windows(m, isp, frm, to):
+    """[(start, end)] when the main connection was on this ISP, from the ISP checks: each check counts until the
+    next one, but no longer than two check intervals (so time netBae was off isn't credited to anyone)."""
+    hold = float(m.cfg["isp"]["interval_minutes"]) * 60 * 2
+    rows = m.db.query("SELECT ts, isp FROM isp WHERE connection = ? AND ts <= ? ORDER BY ts",
+                      (m.cfg["isp"]["main_name"], to))
+    out = []
+    for (ts, name), nxt in zip(rows, [r[0] for r in rows[1:]] + [time.time()]):
+        if name != isp:
+            continue
+        a, b = max(ts, frm), min(nxt, ts + hold, to)
+        if b <= a:
+            continue
+        if out and a - out[-1][1] < 1:
+            out[-1] = (out[-1][0], b)
+        else:
+            out.append((a, b))
+    gap = 60.0
+    while len(out) > 400:  # keep the SQL a sensible size: join windows separated by short gaps
+        merged = [out[0]]
+        for a, b in out[1:]:
+            if a - merged[-1][1] < gap:
+                merged[-1] = (merged[-1][0], b)
+            else:
+                merged.append((a, b))
+        out, gap = merged, gap * 2
+    return out
+
+
+def isp_filter(m, q, frm, to):
+    """SQL condition limiting samples to the times the main connection was on q's "isp", or ("", ())."""
+    isp = q.get("isp")
+    if not isp:
+        return "", ()
+    win = isp_windows(m, isp, frm, to)
+    if not win:
+        return "0", ()
+    return "(" + " OR ".join(["ts BETWEEN ? AND ?"] * len(win)) + ")", tuple(x for w in win for x in w)
+
+
+def and_filters(*parts):
+    parts = [p for p in parts if p[0]]
+    return (" AND ".join(p[0] for p in parts), tuple(x for p in parts for x in p[1])) if parts else ("", ())
+
+
 def api_ping(m, q):
     frm, to, bucket = parse_range(q, m.cfg["ping"]["interval_seconds"])
-    series, stats = latency_series(m, "ping", frm, to, bucket, split_list(q.get("targets")))
+    series, stats = latency_series(m, "ping", frm, to, bucket, split_list(q.get("targets")), isp_filter(m, q, frm, to))
     return {"from": frm, "to": to, "bucket": bucket, "series": series, "stats": stats}
 
 
@@ -2882,7 +2990,8 @@ def api_dns(m, q):
     frm, to, bucket = parse_range(q, m.cfg["dns"]["interval_seconds"])
     domain = q.get("domain")
     extra = ("domain = ?", (m.db.known_id(domain),)) if domain else ("", ())
-    series, stats = latency_series(m, "dns", frm, to, bucket, split_list(q.get("servers")), extra)
+    series, stats = latency_series(m, "dns", frm, to, bucket, split_list(q.get("servers")),
+                                   and_filters(extra, isp_filter(m, q, frm, to)))
     return {"from": frm, "to": to, "bucket": bucket, "series": series, "stats": stats}
 
 
@@ -2938,10 +3047,16 @@ def latest_routes(m):
             "SELECT target, MAX(ts), kind, path, hops FROM traceroute WHERE error IS NULL"
             " AND target NOT LIKE 'cdn:%' GROUP BY target"):
         detailed = locate_hops(json.loads(hops or "[]"))
-        out[tid] = {"ts": ts, "kind": kind, "path": with_rels(json.loads(path or "[]")),
+        p = json.loads(path or "[]")
+        out[tid] = {"ts": ts, "kind": fix_route_kind(kind, p), "path": with_rels(p),
                     "cities": route_cities(detailed),  # the public dashboard may hide the first hops' cities
                     "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
     return out
+
+
+def mean_or_none(xs):
+    xs = [x for x in xs if x is not None]
+    return sum(xs) / len(xs) if xs else None
 
 
 def cdn_scores(rows):
@@ -2983,7 +3098,9 @@ def api_cdn(m, q):
         a7 = avg7.get(server)
         out["servers"].append({"id": server, "name": sv["name"], "host": sv["host"], "family": sv.get("family"),
                                "results": hosts, "score": r2(scores.get((last, server))),
-                               "avg7d": r2(sum(a7) / len(a7)) if a7 else None})
+                               "avg7d": r2(sum(a7) / len(a7)) if a7 else None,
+                               # how long the DNS server took to answer, averaged over the hostnames
+                               "resolve_ms": r2(mean_or_none([al[0]["resolve_ms"] for al in hosts.values()]))})
     out["servers"].sort(key=lambda x: (x["score"] is None, x["score"] or 0))
     ips = {a["ip"] for x in out["servers"] for al in x["results"].values() for a in al if a["ip"]}
     for tid, ts, kind, path, hops in m.db.query(
@@ -2991,7 +3108,8 @@ def api_cdn(m, q):
             " GROUP BY target"):
         if tid[4:] in ips:
             detailed = locate_hops(json.loads(hops or "[]"))
-            out["routes"][tid] = {"ts": ts, "kind": kind, "path": with_rels(json.loads(path or "[]")),
+            out["routes"][tid] = {"ts": ts, "kind": fix_route_kind(kind, json.loads(path or "[]")),
+                                  "path": with_rels(json.loads(path or "[]")),
                                   "cities": route_cities(detailed),
                                   "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
     return out
@@ -3009,7 +3127,8 @@ def api_traceroute(m, q):
     tid = q.get("target") or ""
     rows = m.db.query("SELECT ts, dest, kind, path, hops, error, dest_host FROM traceroute WHERE target = ?"
                       " ORDER BY ts DESC LIMIT 30", (tid,))
-    hist = [{"ts": ts, "dest": dest, "dest_host": dh, "kind": kind, "path": with_rels(json.loads(path or "[]")),
+    hist = [{"ts": ts, "dest": dest, "dest_host": dh, "kind": fix_route_kind(kind, json.loads(path or "[]")),
+             "path": with_rels(json.loads(path or "[]")),
              "hops": locate_hops(json.loads(hops or "[]")) if i == 0 else None, "error": err}
             for i, (ts, dest, kind, path, hops, err, dh) in enumerate(rows)]
     return {"target": tid, "latest": hist[0] if hist else None, "history": hist, "rel_source": as_rel_serial()}

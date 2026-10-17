@@ -9,7 +9,7 @@ const PALETTE = ['#3b82f6', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4
   '#f97316', '#14b8a6', '#a855f7', '#eab308', '#0ea5e9', '#f43f5e', '#64748b', '#22c55e'];
 const RANGES = [
   ['15m', 900], ['1h', 3600], ['6h', 21600], ['24h', 86400],
-  ['7d', 604800], ['30d', 2592000], ['90d', 7776000], ['1y', 31536000], ['custom', null],
+  ['7d', 604800], ['30d', 2592000], ['90d', 7776000], ['1y', 31536000], ['day', null], ['custom', null],
 ];
 const REFRESH_MS = 15000;
 
@@ -27,6 +27,8 @@ function fmtMs(v) {
   return v < 10 ? v.toFixed(2) : v < 100 ? v.toFixed(1) : Math.round(v).toString();
 }
 const fmtPct = (v, d = 1) => (v == null ? '-' : `${v.toFixed(d)}%`);
+// packet loss / failures: orange above 0%, red above 1%
+const fmtLoss = (v, d = 1) => (v == null ? '-' : `<span class="${v > 1 ? 'loss-bad' : v > 0 ? 'loss-warn' : ''}">${fmtPct(v, d)}</span>`);
 const fmtMbps = (v) => (v == null ? '-' : v >= 100 ? Math.round(v).toString() : v.toFixed(1));
 function fmtBytes(b) {
   if (b == null) return '-';
@@ -92,41 +94,82 @@ async function ensureLibs() {
 function rangeControl(el, key, defaultRange, onChange) {
   const saved = store.get(`range:${key}`, { r: defaultRange });
   el.innerHTML = `
-    <select aria-label="Time range">${RANGES.map(([k]) => `<option value="${k}">${k === 'custom' ? 'Custom…' : 'Last ' + k}</option>`).join('')}</select>
+    <span class="live-badge"></span>
+    <select aria-label="Time range">${RANGES.map(([k]) => `<option value="${k}">${k === 'custom' ? 'Custom…' : k === 'day' ? 'A day…' : 'Last ' + k}</option>`).join('')}</select>
+    <span class="day" hidden>
+      <button class="btn ghost prev" title="Previous day" aria-label="Previous day">◀</button>
+      <input type="date" class="date" aria-label="Day">
+      <button class="btn ghost next" title="Next day" aria-label="Next day">▶</button>
+    </span>
     <span class="custom" hidden>
       <input type="datetime-local" class="from" aria-label="From">
       <input type="datetime-local" class="to" aria-label="To">
       <button class="btn ghost apply">Apply</button>
     </span>`;
   const sel = $('select', el), custom = $('.custom', el), from = $('.from', el), to = $('.to', el);
+  const dayBox = $('.day', el), date = $('.date', el);
   sel.value = saved.r;
+  if (!sel.value) sel.value = defaultRange;
   const now = Date.now() / 1000;
   from.value = toLocalInput(saved.from || now - 86400);
   to.value = toLocalInput(saved.to || now);
-  custom.hidden = sel.value !== 'custom';
+  // a whole local day, midnight to midnight; defaults to yesterday
+  const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  date.value = saved.day || ymd(new Date(Date.now() - 86400000));
+  date.max = ymd(new Date());
+  // "Live" while the chart follows the clock, otherwise which past period it shows
+  const badge = $('.live-badge', el);
+  const show = () => {
+    custom.hidden = sel.value !== 'custom'; dayBox.hidden = sel.value !== 'day';
+    const r = ctl.get();
+    badge.className = `live-badge ${r?.live ? 'live' : 'past'}`;
+    badge.textContent = r?.live ? '● Live' : sel.value === 'day' && date.value
+      ? `Past: ${new Date(...date.value.split('-').map((x, i) => (i === 1 ? x - 1 : +x))).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}`
+      : 'Past data';
+    badge.title = r?.live ? 'Showing live data, updated automatically' : 'Showing past data: it won\'t update until you pick a "Last ..." range';
+    document.dispatchEvent(new Event('rangechange'));
+  };
 
   const persist = () => store.set(`range:${key}`, {
-    r: sel.value, from: new Date(from.value).getTime() / 1000, to: new Date(to.value).getTime() / 1000,
+    r: sel.value, from: new Date(from.value).getTime() / 1000, to: new Date(to.value).getTime() / 1000, day: date.value,
   });
   sel.addEventListener('change', () => {
-    custom.hidden = sel.value !== 'custom';
+    show();
     persist();
     if (sel.value !== 'custom') onChange();
   });
-  $('.apply', el).addEventListener('click', () => { persist(); onChange(); });
+  $('.apply', el).addEventListener('click', () => { persist(); show(); onChange(); });
+  const step = (n) => {
+    const [y, mo, d] = date.value.split('-').map(Number);
+    const next = ymd(new Date(y, mo - 1, d + n));
+    if (next > date.max) return;
+    date.value = next;
+    persist(); show(); onChange();
+  };
+  $('.prev', el).addEventListener('click', () => step(-1));
+  $('.next', el).addEventListener('click', () => step(1));
+  date.addEventListener('change', () => { if (date.value) { persist(); show(); onChange(); } });
 
-  return {
+  const ctl = {
     get() {
       if (sel.value === 'custom') {
         const f = new Date(from.value).getTime() / 1000, t = new Date(to.value).getTime() / 1000;
         if (!(f < t)) return null;
         return { from: f, to: t, live: false };
       }
+      if (sel.value === 'day') {
+        if (!date.value) return null;
+        const [y, mo, d] = date.value.split('-').map(Number);
+        const f = new Date(y, mo - 1, d).getTime() / 1000, t = new Date(y, mo - 1, d + 1).getTime() / 1000;
+        return { from: f, to: Math.min(t, Date.now() / 1000), live: t > Date.now() / 1000 };  // today keeps updating
+      }
       const span = RANGES.find(([k]) => k === sel.value)[1];
       const t = Date.now() / 1000;
       return { from: t - span, to: t, live: true };
     },
   };
+  show();
+  return ctl;
 }
 
 // Toggle chips, grouped by item.group with a clickable group label that toggles the whole group.
@@ -307,7 +350,28 @@ function tileStatus(p) {
   return 'good';
 }
 
+// Why a dot is the colour it is (shown when hovering it)
+function tileWhy(p) {
+  const loss = p.loss5m ?? 0;
+  if (p.last == null && p.last_ts == null) return 'No measurements yet';
+  const reasons = [];
+  if (p.last == null) reasons.push('the latest ping timed out');
+  if (loss > 0) reasons.push(`${fmtPct(loss)} packet loss in the last 5 minutes`);
+  if (p.method !== 'region' && p.last > 150) reasons.push(`latency ${fmtMs(p.last)} ms (over 150 ms)`);
+  const st = tileStatus(p);
+  if (st === 'good') return `OK: every ping answered in the last 5 minutes, latency ${fmtMs(p.last)} ms`;
+  return `${st === 'bad' ? 'Problem' : 'Warning'}: ${reasons.join(', ')}`
+    + (st === 'bad' ? '' : '. Red at 10% loss, or 5% loss with the latest ping lost');
+}
+
 // group: red if most members are bad, amber if any member has a problem
+function groupWhy(members) {
+  const st = members.map((p) => [p, tileStatus(p)]).filter(([, x]) => x === 'bad' || x === 'warn');
+  if (!st.length) return 'OK: every host in this group is fine';
+  return `${st.length} of ${members.length} hosts need attention: `
+    + st.map(([p, x]) => `${p.name} (${x === 'bad' ? 'problem' : 'warning'})`).join(', ');
+}
+
 function groupStatus(members) {
   const st = members.map(tileStatus).filter(Boolean);
   if (!st.length) return '';
@@ -410,7 +474,7 @@ async function showRoute(id, title) {
 // One line for a target's IPv6 twin: its own latency, loss and route.
 function v6Line(v) {
   const now = v.last == null && v.last_ts ? ' · <span style="color:var(--bad)">timeout</span>' : '';
-  return `<div class="v6" title="IPv6: ${esc(v.host)} · now ${fmtMs(v.last)} ms"><span class="dot ${tileStatus(v)}"></span><b>IPv6</b> avg ${fmtMs(v.avg5m)} · loss ${fmtPct(v.loss5m)}${now}</div>
+  return `<div class="v6" title="IPv6: ${esc(v.host)} · now ${fmtMs(v.last)} ms"><span class="dot ${tileStatus(v)}" title="${esc(tileWhy(v))}"></span><b>IPv6</b> avg ${fmtMs(v.avg5m)} · loss ${fmtLoss(v.loss5m)}${now}</div>
     ${ROUTES[v.id] ? `<div class="route">${routeHtml(v.id)}</div>` : ''}`;
 }
 
@@ -418,10 +482,10 @@ function memberTile(p, color, v6) {
   const how = p.method === 'region' ? 'TCP to the fastest Ookla server' : p.method.toUpperCase();
   return `
     <div class="tile member" data-tile-route="${esc(p.id)}" title="${esc(p.host || 'looking up server…')} · ${how} · click for the route">
-      <div class="name"><span class="dot ${tileStatus(p)}"></span><span>${flag(p.flag)}${esc(p.name)}</span><i class="swatch" style="background:${color}"></i></div>
+      <div class="name"><span class="dot ${tileStatus(p)}" title="${esc(tileWhy(p))}"></span><span>${flag(p.flag)}${esc(p.name)}</span><i class="swatch" style="background:${color}"></i></div>
       ${p.where ? `<div class="where">${esc(p.where)}</div>` : ''}
       <div class="value">${p.last == null ? (p.last_ts ? '<span style="color:var(--bad)">timeout</span>' : '-') : fmtMs(p.last) + '<small>ms</small>'}</div>
-      <div class="host">${v6 ? '<b>IPv4</b> ' : ''}avg ${fmtMs(p.avg5m)} · loss ${fmtPct(p.loss5m)}</div>
+      <div class="host">${v6 ? '<b>IPv4</b> ' : ''}avg ${fmtMs(p.avg5m)} · loss ${fmtLoss(p.loss5m)}</div>
       <div class="route">${routeHtml(p.id)}</div>
       ${v6 ? v6Line(v6) : ''}
     </div>`;
@@ -443,11 +507,11 @@ function renderTiles() {
     return `
       <div class="card tile group${isOpen ? ' open' : ''}" data-group="${esc(g)}">
         <button class="group-head" aria-expanded="${isOpen}">
-          <span class="dot ${status}"></span><span class="gname">${esc(g)}</span>
+          <span class="dot ${status}" title="${esc(groupWhy(members))}"></span><span class="gname">${esc(g)}</span>
           <span class="count">${members.length}</span><span class="chev">▾</span>
         </button>
         <div class="value">${avg == null ? '-' : fmtMs(avg) + '<small>ms avg</small>'}</div>
-        <div class="host">now ${fmtMs(now)} · loss ${fmtPct(mean(members.map((p) => p.loss5m)))}${down ? ` · <span style="color:var(--bad)">${down} down</span>` : ''}</div>
+        <div class="host">now ${fmtMs(now)} · loss ${fmtLoss(mean(members.map((p) => p.loss5m)))}${down ? ` · <span style="color:var(--bad)">${down} down</span>` : ''}</div>
         ${isOpen ? `<div class="members">${members.map((p) => memberTile(p, PING_COLORS[p.id], v6[p.id])).join('')}</div>` : ''}
       </div>`;
   }).join('');
@@ -461,7 +525,8 @@ async function refreshSummary() {
     const x = c.last_ok;
     const failing = c.latest && c.latest.error;
     return x ? `<span title="${esc(x.asn || '')} · checked ${fmtAgo(x.ts)}${failing ? ' · latest check failed' : ''}">${esc(c.connection)}: <b>${esc(x.isp || '?')}</b> ${esc(x.ip || '')}</span>`
-      : failing ? `<span>${esc(c.connection)}: <span class="error-text">no internet</span></span>` : '';
+      // "no internet" only when the check couldn't connect; a lookup service refusing (e.g. HTTP 429) isn't an outage
+      : failing ? `<span title="${esc(c.latest.error)}">${esc(c.connection)}: <span class="error-text">${/HTTP \d{3}/.test(c.latest.error) ? 'ISP lookup failed' : 'no internet'}</span></span>` : '';
   }).filter(Boolean).join(' · ');
   renderTiles();
 
@@ -569,35 +634,73 @@ function renderGlobal(g) {
 
 // ------------------------------------------------------------------ DNS and CDN
 // Which CDN server each DNS resolver sends you to, ranked by the latency to the addresses it handed out.
+let CDN_DATA = null;
+let cdnSort = store.get('sort:cdn', null);  // {key, dir} or null = ranked by average latency
 async function refreshCdn() {
   const d = await api('cdn');
   const panel = $('#panel-cdn');
   panel.hidden = !d.enabled && !d.servers.length;
   if (panel.hidden) return;
+  CDN_DATA = d;
   CDN_ROUTES = d.routes || {};
   Object.assign(ROUTES, CDN_ROUTES);
   $('#run-cdn').hidden = !!CONFIG.public;
   $('#cdn-note').textContent = d.ts ? `· tested ${fmtAgo(d.ts)}, every ${d.interval_minutes} min` : '· first test running…';
-  if (!d.servers.length) { $('#cdn-table').innerHTML = ''; return; }
-  const cell = (al) => {
+  renderCdn();
+}
+
+// average latency to the addresses one DNS server handed out for one hostname
+const cdnAvg = (al) => mean((al || []).filter((x) => x.ip).map((x) => x.rtt));
+const cdnLoss = (al) => mean((al || []).filter((x) => x.ip).map((x) => x.loss));
+
+function renderCdn() {
+  const d = CDN_DATA;
+  if (!d?.servers.length) { $('#cdn-table').innerHTML = ''; return; }
+  const value = (x, key) => (key === 'score' ? x.score : key === 'avg7d' ? x.avg7d : key === 'dns' ? x.resolve_ms
+    : cdnAvg(x.results[key.slice(2)]));
+  const rows = cdnSort ? [...d.servers].sort((a, b) => {
+    const p = value(a, cdnSort.key), q = value(b, cdnSort.key);
+    if (p == null || q == null) return (p == null) - (q == null);
+    return (p - q) * cdnSort.dir;
+  }) : d.servers;
+  const th = (key, label, left) => {
+    const on = cdnSort?.key === key;
+    return `<th class="sortable${on ? ' sorted' : ''}${key === 'score' ? ' avg' : ''}" data-sort="${esc(key)}"${left ? ' style="text-align:left"' : ''} title="Sort by ${esc(label)}">`
+      + `${esc(label)}${on ? (cdnSort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
+  };
+  const cell = (x, h) => {
+    const al = x.results[h];
     if (!al?.length) return '<td class="muted" style="text-align:left">-</td>';
     const a = al[0];
     if (!a.ip) return `<td style="text-align:left"><span class="error-text">${esc(a.error || 'no answer')}</span></td>`;
-    // the average over the addresses handed out (what the ranking uses); hover for each address
-    const ok = al.filter((x) => x.ip);
-    const avg = mean(ok.map((x) => x.rtt));
-    const title = ok.map((x) => `${x.ip}: ${x.rtt == null ? 'no reply' : fmtMs(x.rtt) + ' ms'}${x.loss ? `, ${fmtPct(x.loss)} loss` : ''}`).join('\n');
-    return `<td style="text-align:left"><div title="${esc(title)}"><b>${avg == null ? '<span class="error-text">no reply</span>' : fmtMs(avg) + ' ms'}</b>
+    const ok = al.filter((y) => y.ip);
+    const avg = cdnAvg(al), loss = cdnLoss(al);
+    return `<td class="cdn-cell" data-server="${esc(x.id)}" data-host="${esc(h)}" style="text-align:left" title="Click for the route${ok.length > 1 ? 's to all ' + ok.length + ' addresses' : ''}">
+      <div><b>${avg == null ? '<span class="error-text">no reply</span>' : fmtMs(avg) + ' ms'}</b>${loss ? ` ${fmtLoss(loss)}` : ''}
       <span class="muted">${esc(a.ip)}${ok.length > 1 ? ` +${ok.length - 1}` : ''}</span></div>
       <div class="route">${routeHtml(`cdn:${a.ip}`)}</div></td>`;
   };
   $('#cdn-table').innerHTML = `
-    <thead><tr><th>#</th><th style="text-align:left">DNS server</th>${d.hostnames.map((h) => `<th style="text-align:left">${esc(h)}</th>`).join('')}
-      <th>Avg ms</th><th>7-day avg</th></tr></thead>
-    <tbody>${d.servers.map((x, i) => `<tr><td>${x.score == null ? '' : i + 1}</td>
+    <thead><tr><th>#</th><th style="text-align:left">DNS server</th>${d.hostnames.map((h) => th('h:' + h, h, true)).join('')}
+      ${th('score', 'Avg ms')}${th('avg7d', '7-day avg')}${th('dns', 'DNS ms')}</tr></thead>
+    <tbody>${rows.map((x) => `<tr><td>${x.score == null ? '' : d.servers.indexOf(x) + 1}</td>
       <td style="text-align:left"><b>${esc(x.name)}</b>${x.family === 6 ? ' <span class="muted">v6</span>' : ''}<div class="muted small">${esc(x.host)}</div></td>
-      ${d.hostnames.map((h) => cell(x.results[h])).join('')}
-      <td class="avg">${fmtMs(x.score)}</td><td>${fmtMs(x.avg7d)}</td></tr>`).join('')}</tbody>`;
+      ${d.hostnames.map((h) => cell(x, h)).join('')}
+      <td class="avg">${fmtMs(x.score)}</td><td>${fmtMs(x.avg7d)}</td><td>${fmtMs(x.resolve_ms)}</td></tr>`).join('')}</tbody>`;
+}
+
+// Every address a DNS server handed out for a hostname, each with its ping and route (click one for its hops)
+function showCdnRoutes(serverId, host) {
+  const x = CDN_DATA?.servers.find((s) => s.id === serverId);
+  const ok = (x?.results[host] || []).filter((a) => a.ip);
+  if (ok.length === 1) return showRoute(`cdn:${ok[0].ip}`, `${host} (${ok[0].ip})`);
+  const dlg = $('#route-dialog');
+  dlg.innerHTML = `<div class="dlg-head"><h2>${esc(host)} via ${esc(x.name)}${x.family === 6 ? ' v6' : ''}</h2><button class="link" data-close>Close</button></div>
+    <p class="muted small">${x.name} handed out ${ok.length} addresses. Average ${fmtMs(cdnAvg(ok))} ms. Click a route for its hops.</p>
+    <div class="table-wrap"><table class="stats"><thead><tr><th style="text-align:left">Address</th><th>Ping ms</th><th>Loss</th><th style="text-align:left">Route</th></tr></thead>
+    <tbody>${ok.map((a) => `<tr><td style="text-align:left">${esc(a.ip)}</td><td>${a.rtt == null ? '<span class="error-text">no reply</span>' : fmtMs(a.rtt)}</td>
+      <td>${fmtLoss(a.loss)}</td><td style="text-align:left">${routeHtml(`cdn:${a.ip}`)}</td></tr>`).join('')}</tbody></table></div>`;
+  dlg.showModal();
 }
 
 // ------------------------------------------------------------------ system card
@@ -813,10 +916,23 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
   const bandDefault = { 'p5-p95': 'pct', 'min-max': 'minmax', none: 'none' }[CONFIG.chart_band] || 'none';
   bandSel.value = store.get(`band:${id}`, bandDefault);
   if (!bandSel.value) bandSel.value = bandDefault;
+  // ISP filter: only the times the main connection was on the chosen ISP (shown once more than one has been seen)
+  const ispSel = document.createElement('select');
+  ispSel.className = 'isp-filter';
+  ispSel.setAttribute('aria-label', 'ISP');
+  ispSel.title = 'Only the times your main connection was on this ISP (from the ISP checks)';
+  const isps = CONFIG.isp_history || [];
+  const day = (t) => new Date(t * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: '2-digit' });
+  ispSel.innerHTML = '<option value="">All ISPs</option>' + isps.map((x) => `<option value="${esc(x.isp)}">${esc(x.isp)} (${day(x.first)} - ${day(x.last)})</option>`).join('');
+  ispSel.value = store.get(`isp:${id}`, '');
+  if (ispSel.value === undefined || ![...ispSel.options].some((o) => o.value === ispSel.value)) ispSel.value = '';
+  ispSel.hidden = isps.length < 2;
+  ispSel.addEventListener('change', () => { store.set(`isp:${id}`, ispSel.value); refresh(); });
   const bandNote = document.createElement('span');
   bandNote.className = 'muted small band-note';
   bandNote.hidden = true;
   bandSel.after(bandNote);
+  bandNote.after(ispSel);
   const chart = lineChart($('canvas', root), { yTitle: 'ms' });
   const zoom = yZoom(root, id, chart);
   // Only the average line gets a tooltip entry; it carries the band values with it.
@@ -848,6 +964,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
       return fam === '6' ? [v6] : [v4, v6];
     });
     const params = { from: r.from.toFixed(0), to: r.to.toFixed(0), points, ...(extraParams ? extraParams() : {}) };
+    if (ispSel.value) params.isp = ispSel.value;
     params[keyParam] = series.map((x) => x.key).join(',') || '__none__';
     const d = await api(endpoint, params);
     // point layout: [t, avg, min, max, loss%, p5, p95]
@@ -912,7 +1029,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
       const s = stats[it.key] || {};
       return `<tr><td><span class="dot" style="background:${it.color}"></span> ${esc(it.label)}</td>
         <td class="avg">${fmtMs(s.avg)}</td><td>${fmtMs(s.min)}</td><td>${fmtMs(s.p5)}</td><td>${fmtMs(s.p95)}</td><td>${fmtMs(s.max)}</td>
-        <td>${fmtPct(s.loss, 2)}</td><td>${(s.samples ?? 0).toLocaleString()}</td>${endpoint === 'ping' ? `<td style="text-align:left">${routeHtml(it.key)}</td>` : ''}</tr>`;
+        <td>${fmtLoss(s.loss, 2)}</td><td>${(s.samples ?? 0).toLocaleString()}</td>${endpoint === 'ping' ? `<td style="text-align:left">${routeHtml(it.key)}</td>` : ''}</tr>`;
     }).join('');
     $('.stats', root).innerHTML = `<thead><tr><th>Host</th>${COLS.map(th).join('')}${endpoint === 'ping' ? '<th style="text-align:left">Route</th>' : ''}</tr></thead><tbody>${body}</tbody>`;
   }
@@ -1041,8 +1158,17 @@ function systemPanel() {
 }
 
 // ------------------------------------------------------------------ boot
+// header note when any chart is showing past data rather than live
+function updatePastBadge() {
+  const past = panels.filter((p) => p.isLive() === false).length;
+  $('#past-badge').hidden = !past;
+  $('#past-badge').textContent = past === 1 ? 'A chart shows past data' : `${past} charts show past data`;
+}
+document.addEventListener('rangechange', () => { if (typeof panels !== 'undefined') setTimeout(updatePastBadge); });
+
 async function refreshAll(force = false) {
   if (document.hidden && !force) return;
+  updatePastBadge();
   const jobs = [refreshSummary(), refreshSystem(), refreshSharing(), refreshCdn(), ...panels.filter((p) => force || p.isLive()).map((p) => p.refresh())];
   const res = await Promise.allSettled(jobs);
   const failed = res.find((r) => r.status === 'rejected');
@@ -1144,9 +1270,17 @@ async function main() {
   $('#route-dialog').addEventListener('click', (e) => { if (e.target.id === 'route-dialog') e.target.close(); });
   $('#region-table').addEventListener('click', (e) => {
     const b = e.target.closest('.run-conn');
-    if (b && confirm(`Run a speedtest over ${b.dataset.conn} now? It uses a few hundred MB of that connection's data.`)) {
-      startTest(`conn:${encodeURIComponent(b.dataset.conn)}`);
+    if (b) startTest(`conn:${encodeURIComponent(b.dataset.conn)}`);
+  });
+  $('#cdn-table').addEventListener('click', (e) => {
+    const key = e.target.closest('th[data-sort]')?.dataset.sort;
+    if (key) {
+      cdnSort = cdnSort?.key !== key ? { key, dir: 1 } : cdnSort.dir > 0 ? { key, dir: -1 } : null;
+      store.set('sort:cdn', cdnSort);
+      return renderCdn();
     }
+    const c = e.target.closest('.cdn-cell');
+    if (c && !e.target.closest('.route-link')) showCdnRoutes(c.dataset.server, c.dataset.host);
   });
   $('#run-cdn').addEventListener('click', async () => {
     const b = $('#run-cdn');
@@ -1155,13 +1289,8 @@ async function main() {
     if (!r.started) { b.textContent = r.reason || 'Busy'; }
     setTimeout(async () => { await refreshCdn().catch(() => {}); b.disabled = false; b.textContent = 'Test now'; }, 20000);
   });
-  $('#run-global').addEventListener('click', () => {
-    if (confirm('Run a speedtest to a random server somewhere in the world now? It uses a few hundred MB.')) startTest('global');
-  });
-  $('#run-regions').addEventListener('click', () => {
-    const n = CONFIG.speedtest.regions.length;
-    if (confirm(`Run speedtests to ${n} region${n > 1 ? 's' : ''} now? Each test uses a few hundred MB.`)) startTest('regions');
-  });
+  $('#run-global').addEventListener('click', () => startTest('global'));
+  $('#run-regions').addEventListener('click', () => startTest('regions'));
 
   const sp = CONFIG.speedtest;
   if (CONFIG.repo) $('#repo-link').href = CONFIG.repo;
