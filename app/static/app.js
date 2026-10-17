@@ -44,6 +44,15 @@ function fmtDuration(s) {
 const flag = (cc) => (cc && /^[A-Z]{2}$/.test(cc)
   ? `<span class="flag">${String.fromCodePoint(...[...cc].map((c) => 0x1f1a5 + c.charCodeAt(0)))}</span>` : '');
 const fmtTime = (ts) => new Date(ts * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+// "in 2 h 14 min", "in 35 min", "in 3 d 4 h"
+function fmtIn(ts) {
+  const m = Math.max(0, Math.round((ts - Date.now() / 1000) / 60));
+  if (m < 1) return 'any moment';
+  if (m < 60) return `in ${m} min`;
+  if (m < 1440) return `in ${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
+  return `in ${Math.floor(m / 1440)} d${Math.floor((m % 1440) / 60) ? ` ${Math.floor((m % 1440) / 60)} h` : ''}`;
+}
+
 function fmtAgo(ts) {
   const s = Date.now() / 1000 - ts;
   if (s < 90) return 'just now';
@@ -342,7 +351,7 @@ function routeHtml(id) {
         : kind === 'direct' ? `direct to ${dest}` : names.join(' → ');
   const rel = kind === 'on-net' ? null : firstRel(r.path);
   const cls = kind;
-  return `<button class="route-link" data-route="${esc(id)}" title="${esc(names.join(' → '))}${rel ? ` · ${rel}` : ''} · traced ${fmtAgo(r.ts)} · click for hops">`
+  return `<button class="route-link" data-route="${esc(id)}" title="${esc(names.join(' → '))}${rel ? ` · ${rel}` : ''}${r.cities?.length ? ` · through ${esc(r.cities.join(' → '))}` : ''} · traced ${fmtAgo(r.ts)} · click for hops">`
     + `<span class="route-badge route-${cls}">${ROUTE_BADGE[r.kind] || r.kind}</span> ${esc(text)}${rel ? ` <span class="muted">· ${rel}</span>` : ''}</button>`;
 }
 
@@ -366,27 +375,39 @@ async function showRoute(id, title) {
   const dlg = $('#route-dialog');
   const hops = (r?.hops || []).map((h) => `<tr><td>${h.hop}</td><td style="text-align:left">${h.ip
       ? `${h.host ? `<div class="hop-host">${esc(h.host)}</div>` : ''}<div class="muted">${esc(h.ip)}</div>` : '<span class="muted">* no reply</span>'}</td>
-    <td>${h.rtt == null ? '-' : fmtMs(h.rtt)}</td><td style="text-align:left">${h.ix ? `<span class="route-badge route-ix">IX</span> ${esc(h.ix)}` : h.asn ? `${esc(h.name)} <span class="muted">AS${h.asn}</span>` : '<span class="muted">private / unknown</span>'}</td></tr>`).join('');
+    <td>${h.rtt == null ? '-' : fmtMs(h.rtt)}</td><td style="text-align:left">${h.ix ? `<span class="route-badge route-ix">IX</span> ${esc(h.ix)}` : h.asn ? `${esc(h.name)} <span class="muted">AS${h.asn}</span>` : '<span class="muted">private / unknown</span>'}</td>
+    <td style="text-align:left">${h.city ? (h.city_src === 'geo' ? `<span title="approximate, from IP geolocation">~${esc(h.city)}</span>` : esc(h.city)) : ''}</td></tr>`).join('');
+  const cities = [];
+  for (const h of r?.hops || []) if (h.city && cities[cities.length - 1] !== h.city) cities.push(h.city);
   const hist = d.history.slice(0, 10).map((x) => `<li>${fmtTime(x.ts)}: ${x.error ? `<span class="error-text">${esc(x.error)}</span>`
     : `<b>${esc(ROUTE_BADGE[x.kind] || x.kind)}</b> ${esc(x.path.map((p) => p.name).join(' → '))}`}</li>`).join('');
   dlg.innerHTML = `<div class="dlg-head"><h2>Route to ${esc(title)}</h2><button class="link" data-close>Close</button></div>
     ${r ? `<p><span class="route-badge route-${ROUTE_CLASS[r.kind] || r.kind}">${esc(ROUTE_BADGE[r.kind] || r.kind || '?')}</span>
       ${pathHtml(r.path)}</p>
-      <p class="muted small">Destination ${esc(r.dest_host && r.dest_host !== r.dest ? `${r.dest_host} (${r.dest})` : (r.dest || ''))} · traced ${fmtAgo(r.ts)} · networks from Team Cymru's IP-to-ASN data, hostnames from reverse DNS${d.rel_source ? `, who pays whom from CAIDA's AS relationships (${esc(d.rel_source)})` : ''}</p>
-      <div class="table-wrap"><table class="stats"><thead><tr><th>#</th><th style="text-align:left">Hop (hostname / IP)</th><th>ms</th><th style="text-align:left">Network</th></tr></thead><tbody>${hops}</tbody></table></div>
+      ${cities.length ? `<p class="small">Through ${esc(cities.join(' → '))}</p>` : ''}
+      <p class="muted small">Destination ${esc(r.dest_host && r.dest_host !== r.dest ? `${r.dest_host} (${r.dest})` : (r.dest || ''))} · traced ${fmtAgo(r.ts)} · networks from Team Cymru's IP-to-ASN data, hostnames from reverse DNS, locations from router names (~ = IP geolocation, approximate)${d.rel_source ? `, who pays whom from CAIDA's AS relationships (${esc(d.rel_source)})` : ''}</p>
+      <div class="table-wrap"><table class="stats"><thead><tr><th>#</th><th style="text-align:left">Hop (hostname / IP)</th><th>ms</th><th style="text-align:left">Network</th><th style="text-align:left">Location</th></tr></thead><tbody>${hops}</tbody></table></div>
       <h3 class="small">Recent routes</h3><ul class="route-hist">${hist}</ul>` : '<p class="muted">Not traced yet. Routes are traced every 12 hours, and right after netBae starts for any target without one.</p>'}`;
   dlg.showModal();
 }
 
-function memberTile(p, color) {
+// One line for a target's IPv6 twin: its own latency, loss and route.
+function v6Line(v) {
+  const now = v.last == null && v.last_ts ? ' · <span style="color:var(--bad)">timeout</span>' : '';
+  return `<div class="v6" title="IPv6: ${esc(v.host)} · now ${fmtMs(v.last)} ms"><span class="dot ${tileStatus(v)}"></span><b>IPv6</b> avg ${fmtMs(v.avg5m)} · loss ${fmtPct(v.loss5m)}${now}</div>
+    ${ROUTES[v.id] ? `<div class="route">${routeHtml(v.id)}</div>` : ''}`;
+}
+
+function memberTile(p, color, v6) {
   const how = p.method === 'region' ? 'TCP to the fastest Ookla server' : p.method.toUpperCase();
   return `
     <div class="tile member" title="${esc(p.host || 'looking up server…')} · ${how}">
       <div class="name"><span class="dot ${tileStatus(p)}"></span><span>${flag(p.flag)}${esc(p.name)}</span><i class="swatch" style="background:${color}"></i></div>
       ${p.where ? `<div class="where">${esc(p.where)}</div>` : ''}
       <div class="value">${p.last == null ? (p.last_ts ? '<span style="color:var(--bad)">timeout</span>' : '-') : fmtMs(p.last) + '<small>ms</small>'}</div>
-      <div class="host">avg ${fmtMs(p.avg5m)} · loss ${fmtPct(p.loss5m)}</div>
+      <div class="host">${v6 ? '<b>IPv4</b> ' : ''}avg ${fmtMs(p.avg5m)} · loss ${fmtPct(p.loss5m)}</div>
       <div class="route">${routeHtml(p.id)}</div>
+      ${v6 ? v6Line(v6) : ''}
     </div>`;
 }
 
@@ -394,8 +415,10 @@ function memberTile(p, color) {
 function renderTiles() {
   const open = new Set(store.get('tiles:open', []));
   const groups = [...new Set(lastPing.map((p) => p.group))];
+  // IPv6 twins are shown inside their IPv4 tile; group numbers stay IPv4 so they compare over time
+  const v6 = Object.fromEntries(lastPing.filter((p) => p.family === 6).map((p) => [p.twin, p]));
   $('#ping-tiles').innerHTML = groups.map((g) => {
-    const members = lastPing.filter((p) => p.group === g);
+    const members = lastPing.filter((p) => p.group === g && p.family !== 6);
     const status = groupStatus(members);
     const avg = mean(members.map((p) => p.avg5m)); // members' 5-minute averages (spikes trimmed)
     const now = mean(members.map((p) => p.last));
@@ -409,7 +432,7 @@ function renderTiles() {
         </button>
         <div class="value">${avg == null ? '-' : fmtMs(avg) + '<small>ms avg</small>'}</div>
         <div class="host">now ${fmtMs(now)} · loss ${fmtPct(mean(members.map((p) => p.loss5m)))}${down ? ` · <span style="color:var(--bad)">${down} down</span>` : ''}</div>
-        ${isOpen ? `<div class="members">${members.map((p) => memberTile(p, PING_COLORS[p.id])).join('')}</div>` : ''}
+        ${isOpen ? `<div class="members">${members.map((p) => memberTile(p, PING_COLORS[p.id], v6[p.id])).join('')}</div>` : ''}
       </div>`;
   }).join('');
 }
@@ -450,7 +473,12 @@ async function refreshSummary() {
   let meta = ok ? `Latest: ${esc(ok.server_name || '')}${ok.server_location ? ', ' + esc(ok.server_location) : ''} · ${fmtAgo(ok.ts)}${tests ? ` · ${tests} tests in 7d` : ''}` : '';
   if (st.latest && st.latest.error) meta += `<div class="error-text">Last run failed (${fmtAgo(st.latest.ts)}): ${esc(st.latest.error)}</div>`;
   const hm = (ts) => new Date(ts * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
-  if (CONFIG.speedtest.enabled && CONFIG.speedtest.next_run) meta += `<div>Next scheduled run: ${hm(CONFIG.speedtest.next_run)}${CONFIG.speedtest.next_regions_run ? ` · regions: ${hm(CONFIG.speedtest.next_regions_run)}` : ''}</div>`;
+  // the config's next run is from when the page loaded: step it forward past runs that have happened since
+  const upcoming = (ts, minutes) => { const now = Date.now() / 1000; while (ts && minutes > 0 && ts <= now) ts += minutes * 60; return ts; };
+  const when = (ts) => `${hm(ts)} (${fmtIn(ts)})`;
+  const next = upcoming(CONFIG.speedtest.next_run, CONFIG.speedtest.interval_minutes);
+  const nextRegions = upcoming(CONFIG.speedtest.next_regions_run, CONFIG.speedtest.regions_interval_minutes);
+  if (CONFIG.speedtest.enabled && next) meta += `<div>Next scheduled run: ${when(next)}${nextRegions ? ` · regions: ${when(nextRegions)}` : ''}</div>`;
   if (!CONFIG.speedtest.enabled) meta += `<div>Scheduled speedtests are off in the config${CONFIG.speedtest.manual ? '; Run now still works' : ''}.</div>`;
   $('#speed-meta').innerHTML = meta;
 
@@ -639,10 +667,16 @@ async function ispOverlay(root, r, onToggle) {
     legend.className = 'isp-legend';
     $('.chips', root).after(legend);
     legend.addEventListener('click', (e) => {
-      const b = e.target.closest('button[data-key]');
-      if (!b) return;
       const off = new Set(store.get('isp:off', []));
-      if (off.has(b.dataset.key)) off.delete(b.dataset.key); else off.add(b.dataset.key);
+      if (e.target.closest('.isp-title')) {  // the label toggles every ISP marker at once
+        const keys = [...legend.querySelectorAll('button[data-key]')].map((x) => x.dataset.key);
+        const allOff = keys.every((k) => off.has(k));
+        keys.forEach((k) => (allOff ? off.delete(k) : off.add(k)));
+      } else {
+        const b = e.target.closest('button[data-key]');
+        if (!b) return;
+        if (off.has(b.dataset.key)) off.delete(b.dataset.key); else off.add(b.dataset.key);
+      }
       store.set('isp:off', [...off]);
       onToggle();
     });
@@ -669,7 +703,8 @@ async function ispOverlay(root, r, onToggle) {
       });
     }
   });
-  legend.innerHTML = buttons.length ? `<span class="isp-title" title="Each marker along the top of the chart is an ISP check: colour = connection, shape = ISP. A bigger marker means the ISP or IP changed.">ISP checks</span>${buttons.join('')}` : '';
+  const allOff = buttons.length && CONFIG.isp.connections.every((conn) => (d.series[conn] || []).every((p) => !p[1] || off.has(`${conn}|${p[1]}`)));
+  legend.innerHTML = buttons.length ? `<button class="isp-title${allOff ? ' off' : ''}" title="Each marker along the top of the chart is an ISP check: colour = connection, shape = ISP. A bigger marker means the ISP or IP changed. Click to show or hide them all.">ISP checks</button>${buttons.join('')}` : '';
   return datasets;
 }
 
@@ -677,6 +712,13 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
   const root = $(`#${id}`);
   const metricSel = $('.metric', root);
   const bandSel = $('.band', root);
+  // IPv4 / IPv6 / both, for items with an IPv6 twin (item.v6 = the twin's id)
+  const familySel = $('.family', root);
+  if (familySel) {
+    familySel.hidden = !items.some((it) => it.v6);
+    familySel.value = store.get(`family:${id}`, '4');
+    if (!familySel.value) familySel.value = '4';
+  }
   metricSel.value = store.get(`metric:${id}`, 'latency');
   if (!metricSel.value) metricSel.value = 'latency';
   bandSel.value = store.get(`band:${id}`, 'pct');
@@ -702,19 +744,27 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     bandSel.hidden = metric === 'loss';
     // ~1 point per 6px so each bucket holds several samples and the spread band means something
     const points = Math.max(60, Math.min(300, Math.round(root.clientWidth / 6)));
+    // one series per selected item and IP version: IPv6 lines are dashed when both are shown
+    const fam = familySel && !familySel.hidden ? familySel.value : '4';
+    const series = items.filter((x) => sel.includes(x.id)).flatMap((it) => {
+      const v4 = { ...it, key: it.id };
+      if (!it.v6 || fam === '4') return [v4];
+      const v6 = { ...it, key: it.v6, label: `${it.label} (IPv6)`, dash: fam === 'both' ? [6, 3] : [] };
+      return fam === '6' ? [v6] : [v4, v6];
+    });
     const params = { from: r.from.toFixed(0), to: r.to.toFixed(0), points, ...(extraParams ? extraParams() : {}) };
-    params[keyParam] = sel.join(',') || '__none__';
+    params[keyParam] = series.map((x) => x.key).join(',') || '__none__';
     const d = await api(endpoint, params);
     // point layout: [t, avg, min, max, loss%, p5, p95]
     const [loI, hiI, bandName] = band === 'minmax' ? [2, 3, 'min–max'] : [5, 6, 'p5–p95'];
     chart.options.scales.y.title.text = metric === 'loss' ? '%' : 'ms';
 
     const datasets = [];
-    for (const it of items.filter((x) => sel.includes(x.id))) {
-      const pts = d.series[it.id] || [];
+    for (const it of series) {
+      const pts = d.series[it.key] || [];
       if (metric === 'loss') {
         datasets.push({
-          label: it.label, unit: '%', borderColor: it.color, backgroundColor: it.color,
+          label: it.label, unit: '%', borderColor: it.color, backgroundColor: it.color, borderDash: it.dash || [],
           stepped: 'middle', spanGaps: false, data: pts.map((p) => ({ x: p[0], y: p[4] })),
         });
         continue;
@@ -727,6 +777,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
       }
       datasets.push({
         role: 'avg', label: it.label, unit: 'ms', borderColor: it.color, backgroundColor: it.color, borderWidth: 2, spanGaps: false,
+        borderDash: it.dash || [],
         data: pts.map((p) => ({ x: p[0], y: p[1], lo: band === 'none' ? null : p[loI], hi: p[hiI], bandName })),
       });
     }
@@ -735,19 +786,20 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     setXRange(chart, r);
     chart.update();
 
-    const rows = items.filter((it) => sel.includes(it.id)).map((it) => {
-      const s = d.stats[it.id] || {};
+    const rows = series.map((it) => {
+      const s = d.stats[it.key] || {};
       return `<tr><td><span class="dot" style="background:${it.color}"></span> ${esc(it.label)}</td>
-        <td><b>${fmtMs(s.avg)}</b></td><td>${fmtMs(s.min)}</td><td>${fmtMs(s.p5)}</td><td>${fmtMs(s.p95)}</td><td>${fmtMs(s.max)}</td>
-        <td>${fmtPct(s.loss, 2)}</td><td>${(s.samples ?? 0).toLocaleString()}</td>${endpoint === 'ping' ? `<td style="text-align:left">${routeHtml(it.id)}</td>` : ''}</tr>`;
+        <td class="avg">${fmtMs(s.avg)}</td><td>${fmtMs(s.min)}</td><td>${fmtMs(s.p5)}</td><td>${fmtMs(s.p95)}</td><td>${fmtMs(s.max)}</td>
+        <td>${fmtPct(s.loss, 2)}</td><td>${(s.samples ?? 0).toLocaleString()}</td>${endpoint === 'ping' ? `<td style="text-align:left">${routeHtml(it.key)}</td>` : ''}</tr>`;
     }).join('');
-    $('.stats', root).innerHTML = `<thead><tr><th>Host</th><th>Avg ms</th><th>Min</th><th>P5</th><th>P95</th><th>Max</th><th>${lossLabel}</th><th>Samples</th>${endpoint === 'ping' ? '<th style="text-align:left">Route</th>' : ''}</tr></thead><tbody>${rows}</tbody>`;
+    $('.stats', root).innerHTML = `<thead><tr><th>Host</th><th class="avg">Avg ms</th><th>Min</th><th>P5</th><th>P95</th><th>Max</th><th>${lossLabel}</th><th>Samples</th>${endpoint === 'ping' ? '<th style="text-align:left">Route</th>' : ''}</tr></thead><tbody>${rows}</tbody>`;
     return r.live;
   };
   const chips = chipFilter($('.chips', root), id, items, refresh, defaultOff);
   const range = rangeControl($('.range', root), id, defaultRange, refresh);
   metricSel.addEventListener('change', () => { store.set(`metric:${id}`, metricSel.value); refresh(); });
   bandSel.addEventListener('change', () => { store.set(`band:${id}`, bandSel.value); refresh(); });
+  familySel?.addEventListener('change', () => { store.set(`family:${id}`, familySel.value); refresh(); });
   return { root, refresh, isLive: () => range.get()?.live, chart };
 }
 
@@ -887,9 +939,11 @@ async function main() {
   const expand = new URLSearchParams(location.search).get('expand');
   if (expand) store.set('tiles:open', expand.split(','));
 
-  PING_COLORS = groupColors(CONFIG.ping.targets);
-  const pingItems = CONFIG.ping.targets.map((t) => ({
-    id: t.id, label: t.name, color: PING_COLORS[t.id], group: t.group,
+  const v4Targets = CONFIG.ping.targets.filter((t) => t.family !== 6);
+  const twins = new Set(CONFIG.ping.targets.filter((t) => t.family === 6).map((t) => t.twin));
+  PING_COLORS = groupColors(v4Targets);
+  const pingItems = v4Targets.map((t) => ({
+    id: t.id, label: t.name, color: PING_COLORS[t.id], group: t.group, v6: twins.has(t.id) ? `${t.id}#v6` : null,
     title: t.method === 'region' ? `${t.name}: fastest Ookla speedtest server (TCP)` : `${t.host}${t.method === 'tcp' ? ` (TCP ${t.port})` : ''}`,
   }));
   panels.push(latencyPanel({

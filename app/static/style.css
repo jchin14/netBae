@@ -7,6 +7,7 @@
   --border: #e2e6ec;
   --grid: rgba(23, 32, 44, 0.07);
   --accent: #2f6fe4;
+  --accent-soft: rgba(47, 111, 228, 0.08);
   --good: #1a9e5c;
   --warn: #d48806;
   --bad: #d64545;
@@ -24,6 +25,8 @@
     --border: #26313d;
     --grid: rgba(230, 235, 241, 0.07);
     --accent: #5b93f5;
+  --accent-soft: rgba(91, 147, 245, 0.12);
+    --accent-soft: rgba(91, 147, 245, 0.12);
     --good: #34c27a;
     --warn: #f0a92e;
     --bad: #f06565;
@@ -141,6 +144,9 @@ table.stats tr.total td { border-top: 1px solid var(--border); }
 .speed-details .sub { font-size: 12px; color: var(--muted); }
 @media (max-width: 600px) { .speed-details { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .flag { margin-right: 5px; }
+.tile .v6 { margin-top: 6px; padding-top: 5px; border-top: 1px dashed var(--border); font-size: 11.5px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .v6 .dot { width: 7px; height: 7px; margin-right: 3px; vertical-align: 1px; }
 .tile .route { margin-top: 4px; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .route-link { background: none; border: 0; padding: 0; font: inherit; font-size: 12px; color: var(--muted); cursor: pointer; text-align: left; white-space: nowrap; }
 .route-link:hover { color: var(--text); }
@@ -159,7 +165,9 @@ table.stats tr.total td { border-top: 1px solid var(--border); }
 #isp-now b { color: var(--text); font-weight: 600; }
 .isp-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -2px 0 8px; }
 .isp-legend:empty { display: none; }
-.isp-legend .isp-title { font-size: 11.5px; font-weight: 600; letter-spacing: .04em; color: var(--text); margin-right: 4px; }
+.isp-legend .isp-title { font: inherit; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--text); background: none; border: 0; padding: 2px; margin-right: 4px; cursor: pointer; }
+.isp-legend .isp-title.off { color: var(--muted); background: none; }
 .isp-legend button {
   font: inherit; font-size: 12px; color: var(--text); background: var(--card); cursor: pointer;
   border: 1px dashed var(--border); border-radius: 999px; padding: 2px 10px 2px 8px; display: inline-flex; gap: 6px; align-items: center;
@@ -225,6 +233,10 @@ table.stats th { color: var(--muted); font-weight: 500; font-size: 12px; }
 table.stats th:first-child, table.stats td:first-child { text-align: left; }
 table.stats tr:last-child td { border-bottom: none; }
 table.stats a { color: var(--accent); text-decoration: none; }
+/* the average is the number to look at: tinted column, larger and bolder */
+table.stats th.avg, table.stats td.avg { background: var(--accent-soft); }
+table.stats th.avg { color: var(--accent); font-weight: 600; }
+table.stats td.avg { color: var(--accent); font-size: 15px; font-weight: 700; }
 
 footer { text-align: center; }
 footer a { color: var(--muted); text-decoration: underline; text-decoration-color: var(--border); }

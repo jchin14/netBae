@@ -60,7 +60,7 @@ docker run -d --name netbae --network host --restart unless-stopped \
 
 - [Why netBae](#why-netbae)
 - [Install](#install): supported systems, what the installer does on Linux, macOS and Windows, Docker, where things live
-- [Everyday use](#everyday-use)
+- [Everyday use](#everyday-use): [Uninstall](#uninstall)
 - [Configuration](#configuration): [All options](#all-options) · [Game servers](#game-servers) · [Regions](#region-speedtests-and-pings) · [Secondary connection](#monitoring-a-secondary-connection)
 - [Sharing a public dashboard](#sharing-a-public-dashboard): [netbae tunnel](#the-easy-way-netbae-tunnel) · [What visitors see](#what-visitors-see) · [By hand](#by-hand)
 - [How it measures](#how-it-measures)
@@ -73,7 +73,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 
 | | |
 |---|---|
-| **Ping, every 5 seconds** | your router, DNS resolvers, Google/YouTube, Netflix/Twitch, Facebook/Instagram/Reddit/X, AI (ChatGPT, Claude, Grok), Microsoft/Apple/AWS/GitHub, CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Usenet in the US and Europe, and **game servers** (Steam & CS2, Fortnite, Discord voice) |
+| **Ping, every 5 seconds** | your router, DNS resolvers, Google/YouTube, streaming (Netflix, Twitch, Disney+, HBO Max, plus Stan, ABC iview, 7plus, 9Now, Foxtel and Kayo in Australia), Facebook/Instagram/Reddit/X/TikTok, AI (ChatGPT, Claude, Grok), Microsoft/Apple/AWS/GitHub/Atlassian, hosting data centres (AWS, Oracle Cloud, Azure, OVHcloud, Vultr, DigitalOcean, Linode, Hetzner), CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Chinese clouds and CDNs (Alibaba, Tencent, Huawei, Baidu, ByteDance, CDNetworks), Usenet in the US and Europe, and **game servers** (Steam & CS2, Fortnite, Discord voice) |
 | **Grouped overview** | one card per category with its average ping; click a card to see every host in it |
 | **Charts that show jitter** | the average as a line with a shaded P5-P95 (or min-max) band; zoom and drag the y-axis |
 | **Speedtests** | the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages |
@@ -81,6 +81,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 | **Which ISP you're on** | each connection's public IP and ISP, checked every 10 minutes and marked on the charts, so failovers stand out |
 | **Routes** | every 12 hours, the route to each target: **on-net**, **direct**, via an **IX** (named) or **transit** through carriers like Cogent, Arelion or GTT, with each hand-over labelled **peering** or **paid transit** |
 | **Secondary connection** | test a second internet connection (e.g. a 5G failover link) alongside your main one |
+| **IPv4 and IPv6** | sites pinged and traced over both when your network has IPv6, side by side on the tiles and charts |
 | **DNS over IPv4 and IPv6** | your router, your DHCP DNS, and Cloudflare, Google, Quad9, OpenDNS, CleanBrowsing, AdGuard, NextDNS and Control D |
 | **Public dashboard** | optionally share a read-only, privacy-masked copy through Cloudflare or Tailscale with one command |
 | **History forever** | every ping for 7 days, 1-minute summaries for 90 days, hourly summaries for ever |
@@ -181,6 +182,30 @@ Images: `ghcr.io/jchin14/netbae` for amd64, arm64 (Pi 3/4/5 on 64-bit) and arm/v
 
 The `netbae` command does everything day to day; the full list is in the [TL;DR](#tldr) and `netbae help`. On Windows it works in cmd and PowerShell, and commands that change something (update, restart, config, tunnel, uninstall) ask for admin rights. Updates never overwrite your config.
 
+### Uninstall
+
+Linux, macOS or Windows. This keeps your config and history, so a later reinstall carries on where it left off:
+
+```bash
+netbae uninstall
+```
+
+To delete everything, including the config, history and the service user:
+
+```bash
+netbae uninstall --purge
+```
+
+On Windows the flag is `-Purge` (`netbae uninstall -Purge`). If the `netbae` command is missing, run the uninstaller directly: `sudo bash /opt/netbae/uninstall.sh` on Linux, `sudo bash /usr/local/lib/netbae/uninstall.sh` on a Mac. The Ookla speedtest CLI is left installed (`brew uninstall speedtest` on a Mac).
+
+Docker: remove the container, then delete the `netbae-data` folder if you don't want the config and history:
+
+```bash
+docker rm -f netbae
+```
+
+With Docker Compose, run `docker compose down` in the folder with `docker-compose.yml`.
+
 ## Configuration
 
 Everything lives in one commented [config file](config.toml) (`netbae config` opens it, checks it and restarts netBae). When an update adds options, your config isn't overwritten: the new defaults are saved next to it as `config.toml.default`. All schedules follow the wall clock (local time): `interval_minutes = 30` with `offset_minutes = 6` runs at :06 and :36 whatever time netBae started.
@@ -196,13 +221,16 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[web] port` | `80` | if it's taken when netBae starts, the next free port is used and the log says which |
 | `[storage] database` | `/var/lib/netbae/netbae.db` | the history database |
 | `[storage] raw_retention_days` | `7` | every sample |
-| `[storage] minute_retention_days` | `90` | 1-minute summaries (count, average, min, max, P5, P95) |
+| `[storage] minute_retention_days` | `90` | 1-minute summaries (count, average, min, max and a latency histogram) |
 | `[storage] retention_days` | `0` | hourly summaries, speedtests and system history (`0` = forever) |
 | `[ping] interval_seconds` / `offset_seconds` | `5` / `0` | |
 | `[ping] timeout_seconds` | `2` | |
-| `[ping] targets` | 41 hosts in 11 groups | `{ name, host, group }`; `host = "gateway"` = your router; `method = "tcp"` (with `port`) for hosts that block ping; game servers below |
+| `[ping] extra_targets` | none | your own hosts, added to the built-in list: `{ name, host, group }`; `host = "gateway"` = your router; `method = "tcp"` (with `port`) for hosts that block ping; game servers below. One with the same host as a built-in target replaces it |
+| `[ping] disable` | none | built-in targets to switch off, by name or group, e.g. `["Streaming AU", "Hetzner Falkenstein"]` |
+| `[ping] targets` | not set | set it to use only your own list instead of the built-in one |
 | `[ping] regions` | 18 cities | latency to the fastest Ookla server in each city, see [Regions](#region-speedtests-and-pings) |
 | `[ping] region_interval_seconds` | `30` | |
+| `[ping] ipv6` | `true` | also ping each site over IPv6 (a separate line) when this machine and the site have IPv6. Not the router, game/region servers or secondary connections |
 | `[dns] enabled` | `true` | |
 | `[dns] interval_seconds` / `offset_seconds` / `timeout_seconds` | `30` / `0` / `2` | |
 | `[dns] servers` | router, DHCP DNS + 8 public resolvers, IPv4 and IPv6 | `host = "dhcp"` adds the DNS servers DHCP gave this machine if they differ from the router; IPv6 servers are skipped on IPv4-only networks |
@@ -229,6 +257,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[traceroute] enabled` | `true` | |
 | `[traceroute] interval_hours` / `offset_minutes` | `12` / `15` | |
 | `[traceroute] max_hops` / `parallel` | `25` / `6` | traces at once |
+| `[traceroute] ipv6` | `true` | also trace the IPv6 route to every site pinged over IPv6 |
 | `[system] interval_seconds` / `offset_seconds` | `30` / `0` | CPU, RAM, load, temperature, storage |
 | `[system] disk_path` | `"/"` | the filesystem shown in storage usage |
 
@@ -245,13 +274,28 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[public] total_requests_per_minute` | `1200` | all visitors together |
 | `[public] hide` | `[]` | more addresses, prefixes or domains to hide, e.g. `["198.51.100.0/24", "example.com"]` |
 | `[public] show_hostname` | `false` | show this machine's name (often includes yours, e.g. `Sams-Pi`) |
-| `[public] show_city` | `true` | `false` shows only the country of your ISP location |
+| `[public] show_city` | `true` | `false` shows only the country of your ISP location and drops each route's first city |
 | `[[connections]] name` / `bind` | | a secondary connection: its name and the IP or interface to send from, see [below](#monitoring-a-secondary-connection) |
 | `[[connections]] targets` | `1.1.1.1`, `8.8.8.8`, `google.com` | what to ping over it, or `"all"` for every main target |
 | `[[connections]] speedtest` | `true` | |
 | `[[connections]] speedtest_interval_minutes` / `speedtest_offset_minutes` | `1440` / `45` | daily (`0` = only when you press Run) |
 
 </details>
+
+### Ping targets
+
+netBae's built-in list (65 hosts in 14 groups) lives in its own file, [`app/targets.toml`](app/targets.toml), installed next to `netbae.py` (`/opt/netbae/targets.toml` on Linux and in Docker, `/usr/local/lib/netbae` on macOS, `C:\Program Files\netBae` on Windows). It's replaced on every update, so new default targets show up by themselves. Don't edit it: add your own hosts with `extra_targets` and switch built-in ones off with `disable` in `config.toml`:
+
+```toml
+[ping]
+extra_targets = [
+  { name = "My server", host = "example.com", group = "Mine" },
+  { name = "Amazon", host = "amazon.com", method = "tcp", port = 443, group = "Shopping" },
+]
+disable = ["Streaming AU", "China cloud & CDN"]
+```
+
+Configs from before 1.8 list every target under `[ping] targets`, which replaces the built-in list. netBae keeps using it (and says so in the log). To switch over, delete `targets = [ ... ]` from your config and move anything you added yourself into `extra_targets`.
 
 ### Game servers
 
@@ -359,7 +403,7 @@ The same charts and tables as on your own dashboard, with these differences:
   - Any name on your own domain shows as `(hidden)`, e.g. a router called `unifi.home.example.com`. Your domains are found from the router's and this machine's names and the DNS search domain (names ending in `.lan`, `.local` or `.home.arpa` aren't treated as domains, since they don't identify you).
   - Hops inside your network keep their address but lose their name.
   - This machine's name (often includes yours, e.g. `Sams-Pi`) is hidden. Set `show_hostname = true` to show it.
-  - The ISP location shows the city, as on your own dashboard. Set `show_city = false` to show only the country (speedtest servers still show their city, and the nearest one is usually in or near yours).
+  - The ISP location shows the city, as on your own dashboard. Set `show_city = false` to show only the country, and to drop the first city of every route (yours), including the names of the routers there. Speedtest servers still show their city, and the nearest one is usually in or near yours.
   - Add anything else to `hide`, e.g. `hide = ["198.51.100.0/24", "example.com"]`.
 
   Internal addresses (router, this machine) and the DNS servers are shown as on your own dashboard.
@@ -397,9 +441,10 @@ If you use [Tailscale](https://tailscale.com/), run `sudo tailscale funnel --bg 
 - **Ping:** one ICMP echo per host per interval, using the system `ping`. Hosts that block ping can use a timed TCP connect instead.
 - **Router:** `gateway` reads the default route from the kernel (`/proc/net/route`; `route get default` on macOS, `route print` on Windows), so it follows whatever router you're using.
 - **Sites:** each name is pinged at the address it resolves to, which for big services is their nearest edge or CDN server. That's the path your real traffic takes.
+- **IPv4 and IPv6:** when this machine has an IPv6 route, each site is pinged at its IPv4 address and, if it has one, its IPv6 address, stored as two separate series (the public resolvers' IPv4 addresses are paired with their IPv6 ones, e.g. 1.1.1.1 with 2606:4700:4700::1111). Sites without IPv6 just have no IPv6 line, and nothing is recorded for IPv6 on an IPv4-only network. Fake "IPv6" addresses that still go over IPv4 (IPv4-mapped `::ffff:` and NAT64 `64:ff9b::`) are ignored. Routes are traced over both too.
 - **DNS:** one UDP A-record query per resolver and domain, timed in Python, over IPv4 and IPv6. "DHCP DNS" is read from the system's resolver settings (`/etc/resolv.conf` or systemd-resolved on Linux and macOS, the network adapter settings on Windows) at startup.
 - **ISP:** an HTTPS request to [ipinfo.io](https://ipinfo.io) through each connection (main and secondary) returns its public IP and ISP. The header shows the current one, and the charts mark every check: one colour per connection and one shape per ISP. Click a marker type above a chart to hide it. ipinfo.io sees your public IP, about 4,500 requests a month per connection at the default interval (its free tier allows 50,000).
-- **Routes:** the system `traceroute` (`tracert` on Windows) to each target every 12 hours, and right after netBae starts for any target that has no recent route. Each hop's network comes from [Team Cymru's IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) over DNS. A route is **on-net** if the destination is inside your ISP, **direct** if your ISP connects straight to the destination's network (a private interconnect), **IX** if your ISP hands the traffic over across an internet exchange (hops on an exchange's peering LAN, using [PeeringDB](https://www.peeringdb.com)'s prefix list, refreshed daily), even when a transit carrier follows the exchange, and **transit** if your ISP hands it straight to another carrier. Each hand-over is also labelled with the business relationship between the two networks (**peering**, **paid transit**, or **to customer**) from [CAIDA's AS relationships](https://www.caida.org/catalog/datasets/as-relationships/), inferred from public BGP data, published monthly and downloaded once a month (~10 MB on disk). Traceroute only sees routers that answer it, so treat it as a strong hint, not proof.
+- **Routes:** the system `traceroute` (`tracert` on Windows) to each target every 12 hours, and right after netBae starts for any target that has no recent route. Each hop's network comes from [Team Cymru's IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) over DNS. A route is **on-net** if the destination is inside your ISP, **direct** if your ISP connects straight to the destination's network (a private interconnect), **IX** if your ISP hands the traffic over across an internet exchange (hops on an exchange's peering LAN, using [PeeringDB](https://www.peeringdb.com)'s prefix list, refreshed daily), even when a transit carrier follows the exchange, and **transit** if your ISP hands it straight to another carrier. Each hand-over is also labelled with the business relationship between the two networks (**peering**, **paid transit**, or **to customer**) from [CAIDA's AS relationships](https://www.caida.org/catalog/datasets/as-relationships/), inferred from public BGP data, published monthly and downloaded once a month (~10 MB on disk). Each hop also gets a **location**, from the city code most backbone routers carry in their name (`be3021.ccr41.syd01.atlas.cogentco.com` is Sydney), or else from ipinfo.io's IP geolocation, marked `~` as approximate. A geolocated city is dropped if the hop answered too fast to be that far away (light in fibre covers about 100 km per millisecond of round trip), which weeds out anycast addresses like 8.8.8.8. Geolocation results are cached for 30 days and capped at 300 lookups a day. Traceroute only sees routers that answer it, so treat it as a strong hint, not proof.
 - **Speedtests:** the official Ookla CLI, auto-selecting the closest server unless you choose one.
 - **System:** the model name comes from the device tree on a Raspberry Pi (`/proc/device-tree/model`), DMI/BIOS info on PCs and VMs, `sysctl` on a Mac and the registry on Windows.
 
@@ -415,10 +460,10 @@ Averages ignore large outliers, so one bad spike doesn't skew them. Min, max and
 History is kept in SQLite at three resolutions:
 
 - every sample for `raw_retention_days` (7)
-- 1-minute summaries (count, average, min, max, 5th and 95th percentile) for `minute_retention_days` (90)
+- 1-minute summaries (count, average, min, max and a latency histogram) for `minute_retention_days` (90)
 - hourly summaries, speedtests and system history for `retention_days` (0 = forever)
 
-Charts automatically use the right one, so a whole year loads instantly even on a Pi. Two reference files sit next to the database and refresh themselves: PeeringDB's internet-exchange prefixes (`peeringdb-ix.json`, daily) and CAIDA's AS relationships (`as-rel-YYYYMM.db`, about 10 MB, monthly). With the defaults, expect a few hundred MB of recent detail plus roughly 30–50 MB per year of long-term history.
+Charts automatically use the right one, so a whole year loads instantly even on a Pi. P5 and P95 are exact for ranges up to 6 hours (worked out from every sample) and within a few percent beyond that: percentiles of 1-minute summaries can't be combined, so each summary also counts its samples in 48 latency bins (0.3 ms to 1 s, each 18% wider than the last), and those counts add up exactly over any range. History from before 1.8 has no histograms and shows the older, rougher P5/P95 (the average of each minute's lowest and highest). Two reference files sit next to the database and refresh themselves: PeeringDB's internet-exchange prefixes (`peeringdb-ix.json`, daily) and CAIDA's AS relationships (`as-rel-YYYYMM.db`, about 10 MB, monthly). With the defaults, expect a few hundred MB of recent detail plus roughly 30–50 MB per year of long-term history.
 
 ## Behind a reverse proxy
 

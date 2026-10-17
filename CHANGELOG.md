@@ -2,6 +2,22 @@
 
 What's new in each netBae release. Update with `netbae update`, by re-running the install command, or with `docker compose pull && docker compose up -d`.
 
+## 1.8.0 - 2026-10-18
+
+IPv6, more targets and route locations.
+
+- **IPv4 and IPv6:** when your network has IPv6, every site is also pinged and traced over IPv6, as a separate line. Tiles show both, and the ping chart has an IPv4 / IPv6 / both switch (IPv6 dashed). Sites without IPv6 are skipped, and IPv4 history carries on as before. Turn it off with `[ping] ipv6 = false` or `[traceroute] ipv6 = false`.
+- **Ping targets have their own file.** The built-in list is now `targets.toml`, which is updated with netBae, so new default targets (like the ones below) arrive by themselves. In `config.toml`, `[ping] extra_targets` adds your own hosts and `[ping] disable` switches built-in ones off by name or group. Configs from earlier versions list every target under `[ping] targets`, which still works and replaces the built-in list: delete it and move your own hosts to `extra_targets` to get the new defaults.
+- More default ping targets: Atlassian; a **Hosting** group that measures real data centres rather than the providers' websites (AWS and Oracle Cloud in Sydney, OVHcloud and Vultr in Sydney, DigitalOcean and Linode in Singapore, Hetzner in Falkenstein, and the Azure portal), with the hostnames for other regions in `targets.toml`; Disney+, HBO Max and TikTok; a **Streaming AU** group (Stan, ABC iview, 7plus, 9Now, Foxtel, Kayo); and a **China cloud & CDN** group (Alibaba Cloud, Tencent Cloud, Huawei Cloud, Baidu, ByteDance's BytePlus, CDNetworks).
+- Routes show which cities they pass through ("Through Melbourne → Sydney → Los Angeles"), with a location for every hop: from the router's name where it has a city code, otherwise approximate IP geolocation that's checked against the hop's response time. With `[public] show_city = false`, the public dashboard leaves out each route's first city (yours) and the names of the routers there.
+- **Accurate P5/P95 over long ranges.** Charts and tables covering more than about 6 hours used to show the average of each minute's lowest and highest ping as P5/P95, which made P95 too high (several times too high on a spiky connection). Summaries now keep a latency histogram, so P5/P95 are within a few percent over any range. This applies to data recorded from this version on; the database grows by about a third for the 1-minute summaries.
+- The speedtest card says how long until the next scheduled run, e.g. "Sat 1:06 PM (in 2 h 14 min)".
+- The Avg ms column in the ping and DNS tables stands out (highlighted, larger and bold).
+- Clicking "ISP checks" above a chart shows or hides all ISP markers at once.
+- The install and update message mentions `netbae tunnel` for sharing a read-only dashboard.
+- README: an Uninstall section for every platform, including Docker.
+- Fixed three built-in ping targets whose hostnames didn't exist (always 100% loss): UsenetExpress (`news.usenetexpress.com`), OVHcloud Sydney and DigitalOcean Singapore. If your `config.toml` still has its own `[ping] targets` list from before 1.8, change `usnews.usenetexpress.com` to `news.usenetexpress.com` there.
+
 ## 1.7.0 - 2026-10-17
 
 Manual speedtests and easier Docker setup.

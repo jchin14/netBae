@@ -438,6 +438,7 @@ EOF
     echo "    Config:     netbae config     ($CONF_DIR/config.toml)"
     echo "    Logs:       netbae logs       ($LOG_FILE)"
     echo "    Update:     netbae update     (or re-run the install command)"
+    echo "    Share:      netbae tunnel     (a read-only dashboard anyone can open, no port forwarding)"
     [[ -n "$ST" ]] || c_warn "Ookla speedtest CLI is missing - see https://www.speedtest.net/apps/cli"
   else
     tail -n 30 "$LOG_FILE" || true
@@ -506,6 +507,7 @@ if systemctl is-active --quiet netbae; then
   echo "    Config:     netbae config     ($CONF_DIR/config.toml)"
   echo "    Logs:       netbae logs"
   echo "    Update:     netbae update     (or re-run the install command)"
+  echo "    Share:      netbae tunnel     (a read-only dashboard anyone can open, no port forwarding)"
   [[ -n "$ST" ]] || c_warn "Ookla speedtest CLI is missing - see https://www.speedtest.net/apps/cli"
 else
   journalctl -u netbae -n 30 --no-pager || true

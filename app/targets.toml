@@ -1,0 +1,97 @@
+# netBae's built-in ping targets.
+#
+# This file is replaced on every update, so new default targets arrive by themselves: don't edit it.
+# To change the list, use [ping] in your config.toml instead:
+#   extra_targets = [ ... ]   your own hosts (one with the same host as a target here replaces it)
+#   disable = [ ... ]         built-in targets to switch off, by name or group, e.g. ["Streaming AU"]
+#
+# Fields: name, host, group (how the dashboard groups targets), and optionally method = "tcp" with a
+# port for hosts that block ping (times a TCP connect instead). host = "gateway" is your router.
+
+targets = [
+  { name = "Router",         host = "gateway",          group = "Network" },
+  { name = "Cloudflare DNS", host = "1.1.1.1",          group = "DNS" },
+  { name = "Google DNS",     host = "8.8.8.8",          group = "DNS" },
+  { name = "Quad9",          host = "9.9.9.9",          group = "DNS" },
+  { name = "OpenDNS",        host = "208.67.222.222",   group = "DNS" },
+  { name = "CleanBrowsing",  host = "185.228.168.9",    group = "DNS" },
+  { name = "AdGuard DNS",    host = "94.140.14.14",     group = "DNS" },
+  { name = "NextDNS",        host = "45.90.28.0",       group = "DNS" },
+  { name = "Control D",      host = "76.76.2.0",        group = "DNS" },
+  { name = "Google",         host = "google.com",       group = "Google" },
+  { name = "YouTube",        host = "youtube.com",      group = "Google" },
+  { name = "Netflix",        host = "www.netflix.com",  group = "Streaming" },   # netflix.com itself blocks ping
+  { name = "Twitch",         host = "twitch.tv",        group = "Streaming" },
+  { name = "Disney+",        host = "www.disneyplus.com", group = "Streaming" },
+  { name = "HBO Max",        host = "www.hbomax.com",   group = "Streaming" },
+  # Australian streaming: switch off with disable = ["Streaming AU"] if you're elsewhere
+  { name = "Stan",           host = "www.stan.com.au",  group = "Streaming AU" },
+  { name = "ABC iview",      host = "iview.abc.net.au", group = "Streaming AU" },
+  { name = "7plus",          host = "7plus.com.au",     group = "Streaming AU" },
+  { name = "9Now",           host = "www.9now.com.au",  group = "Streaming AU" },
+  { name = "Foxtel",         host = "www.foxtel.com.au", group = "Streaming AU" },
+  { name = "Kayo",           host = "kayosports.com.au", group = "Streaming AU" },
+  # Game/voice servers, found automatically (nearest to you, refreshed daily):
+  #   valve:auto   = nearest Steam Datagram Relay (Steam, CS2, Dota 2), or a site code like valve:syd, valve:lax
+  #   epic:auto    = nearest Fortnite ping beacon, or epic:oce / naw / nac / nae / eu / asia / me / br
+  #   discord:auto = nearest Discord voice server, or discord:sydney / singapore / ...
+  # Riot (Valorant, LoL) and Activision (Warzone) block ping and connection tests, so they can't be measured.
+  { name = "Steam & CS2",    host = "valve:auto",       group = "Gaming" },
+  { name = "Fortnite",       host = "epic:auto",        group = "Gaming" },
+  { name = "Discord voice",  host = "discord:auto",     group = "Gaming" },
+  { name = "Facebook",       host = "facebook.com",     group = "Social" },
+  { name = "Reddit",         host = "reddit.com",       group = "Social" },
+  { name = "X",              host = "x.com",            group = "Social" },
+  { name = "Instagram",      host = "instagram.com",    group = "Social" },
+  { name = "TikTok",         host = "www.tiktok.com",   group = "Social" },
+  { name = "OpenAI (ChatGPT)", host = "chatgpt.com",    group = "AI" },
+  { name = "Anthropic (Claude)", host = "claude.ai",    group = "AI" },
+  { name = "Grok",           host = "grok.com",         group = "AI" },
+  { name = "Microsoft",      host = "microsoft.com",    group = "Cloud & tech" },
+  { name = "Apple",          host = "apple.com",        group = "Cloud & tech" },
+  { name = "AWS",            host = "aws.amazon.com",   group = "Cloud & tech" },
+  { name = "GitHub",         host = "github.com",       group = "Cloud & tech" },
+  { name = "Atlassian",      host = "www.atlassian.com", group = "Cloud & tech" },
+  { name = "Akamai",         host = "akamai.com",       group = "CDN" },
+  { name = "Fastly",         host = "fastly.com",       group = "CDN" },
+  { name = "Cloudflare",     host = "www.cloudflare.com", group = "CDN" },
+  { name = "CloudFront",     host = "d1.awsstatic.com", group = "CDN" },   # Amazon's CDN
+  { name = "Azure Front Door", host = "www.office.com", group = "CDN" },   # Microsoft's own edge network
+  { name = "Bunny",          host = "bunny.net",        group = "CDN" },
+  { name = "Gcore",          host = "gcore.com",        group = "CDN" },
+  # Chinese clouds and CDNs: their international sites (nearest edge outside mainland China), except Baidu,
+  # which is served from China
+  { name = "Alibaba Cloud",  host = "www.alibabacloud.com", group = "China cloud & CDN" },
+  { name = "Tencent Cloud",  host = "www.tencentcloud.com", group = "China cloud & CDN" },
+  { name = "Huawei Cloud",   host = "www.huaweicloud.com",  group = "China cloud & CDN" },
+  { name = "Baidu",          host = "www.baidu.com",        group = "China cloud & CDN" },
+  { name = "ByteDance (BytePlus)", host = "www.byteplus.com", group = "China cloud & CDN" },
+  { name = "CDNetworks (Wangsu)",  host = "www.cdnetworks.com", group = "China cloud & CDN" },
+  # Hosting: real data centres, not the providers' websites (those sit behind CDNs). For a region nearer
+  # you, add it to extra_targets and disable the one here. Hostnames per provider:
+  #   AWS     dynamodb.<region>.amazonaws.com          e.g. us-east-1, eu-west-2, ap-southeast-1
+  #   Oracle  objectstorage.<region>.oraclecloud.com   e.g. us-ashburn-1, uk-london-1, ap-singapore-1
+  #   Vultr   <code>-ping.vultr.com                    e.g. sgp, lax-ca-us, fra-de, lon-gb
+  #   DigitalOcean speedtest-<dc>.digitalocean.com     e.g. nyc1, sfo3, lon1, fra1, ams3
+  #   Linode  speedtest.<city>.linode.com              e.g. newark, fremont, london, frankfurt
+  #   Hetzner <dc>-speed.hetzner.com                   e.g. nbg1, hel1, ash, hil
+  # AWS and Oracle don't answer ping, so they're timed with a TCP connect. Azure has no public per-region
+  # host to test, so its entry is the Azure portal on Microsoft's edge network.
+  { name = "AWS Sydney",     host = "dynamodb.ap-southeast-2.amazonaws.com", method = "tcp", port = 443, group = "Hosting" },
+  { name = "Oracle Cloud Sydney", host = "objectstorage.ap-sydney-1.oraclecloud.com", method = "tcp", port = 443, group = "Hosting" },
+  { name = "Azure (portal)", host = "portal.azure.com", group = "Hosting" },
+  { name = "OVHcloud Sydney", host = "syd.proof.ovh.net", group = "Hosting" },
+  { name = "Vultr Sydney",   host = "syd-au-ping.vultr.com", group = "Hosting" },
+  { name = "DigitalOcean Singapore", host = "sgp1.digitaloceanspaces.com", group = "Hosting" },
+  { name = "Linode Singapore", host = "speedtest.singapore.linode.com", group = "Hosting" },
+  { name = "Hetzner Falkenstein", host = "fsn1-speed.hetzner.com", group = "Hosting" },
+  # Usenet providers. Omicron (formerly Highwinds) also runs UsenetServer, Easynews and Newsgroup Ninja;
+  # NewsDemon resells UsenetExpress; Tweaknews and Pure Usenet share Eweka's network.
+  { name = "Omicron (Newshosting)", host = "news.newshosting.com", group = "Usenet US" },
+  { name = "Easynews",       host = "news.easynews.com",       group = "Usenet US" },   # Phoenix
+  { name = "Giganews",       host = "news.giganews.com",       group = "Usenet US" },
+  { name = "UsenetExpress",  host = "news.usenetexpress.com", group = "Usenet US" },
+  { name = "Frugal Usenet",  host = "news.frugalusenet.com",   group = "Usenet US" },
+  { name = "Eweka",          host = "news.eweka.nl",           group = "Usenet EU" },   # Amsterdam
+  { name = "Usenet.Farm",    host = "news.usenet.farm",        group = "Usenet EU" },   # Netherlands
+]

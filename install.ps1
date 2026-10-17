@@ -336,6 +336,7 @@ function Install-NetBae {
         Write-Host "    Config:     netbae config     ($ConfFile)"
         Write-Host "    Logs:       netbae logs       ($LogFile)"
         Write-Host '    Update:     netbae update     (or re-run the install command)'
+        Write-Host '    Share:      netbae tunnel     (a read-only dashboard anyone can open, no port forwarding)'
         Write-Host '    (open a new terminal for the netbae command)'
         if (-not $St) { Warn 'Ookla speedtest CLI is missing - see https://www.speedtest.net/apps/cli' }
     } finally {

@@ -29,75 +29,33 @@ total_requests_per_minute = 1200  # all visitors together
 hide = []                         # anything else to hide: addresses, prefixes or domains,
                                   # e.g. ["198.51.100.0/24", "2001:db8:1234::/48", "example.com"]
 show_hostname = false             # true = show this machine's name (often includes yours, e.g. Sams-Pi)
-show_city = true                  # false = show only the country of your ISP location, not the city
+show_city = true                  # false = only the country of your ISP location, and no first city on routes
 
 [storage]
 database = "/var/lib/netbae/netbae.db"
 # Data is kept at three resolutions. 0 = keep forever.
 raw_retention_days = 7       # full-resolution samples (every ping)
-minute_retention_days = 90   # 1-minute summaries (count, avg, min, max, p5, p95)
+minute_retention_days = 90   # 1-minute summaries (count, avg, min, max, latency histogram)
 retention_days = 0           # hourly summaries, speedtests and system history
 
 [ping]
 interval_seconds = 5
 offset_seconds = 0     # e.g. 2 -> pings at :02, :07, :12 ...
 timeout_seconds = 2
-# method = "icmp" (default, normal ping) or "tcp" (times a TCP connect, for hosts
-# that block ping), e.g. { name = "Example HTTPS", host = "example.com", method = "tcp", port = 443 }
-# host = "gateway" auto-detects your router (default gateway); or put its IP.
-# group = how the dashboard groups targets (any name you like).
-targets = [
-  { name = "Router",         host = "gateway",          group = "Network" },
-  { name = "Cloudflare DNS", host = "1.1.1.1",          group = "DNS" },
-  { name = "Google DNS",     host = "8.8.8.8",          group = "DNS" },
-  { name = "Quad9",          host = "9.9.9.9",          group = "DNS" },
-  { name = "OpenDNS",        host = "208.67.222.222",   group = "DNS" },
-  { name = "CleanBrowsing",  host = "185.228.168.9",    group = "DNS" },
-  { name = "AdGuard DNS",    host = "94.140.14.14",     group = "DNS" },
-  { name = "NextDNS",        host = "45.90.28.0",       group = "DNS" },
-  { name = "Control D",      host = "76.76.2.0",        group = "DNS" },
-  { name = "Google",         host = "google.com",       group = "Google" },
-  { name = "YouTube",        host = "youtube.com",      group = "Google" },
-  { name = "Netflix",        host = "www.netflix.com",  group = "Streaming" },   # netflix.com itself blocks ping
-  { name = "Twitch",         host = "twitch.tv",        group = "Streaming" },
-  # Game/voice servers, found automatically (nearest to you, refreshed daily):
-  #   valve:auto   = nearest Steam Datagram Relay (Steam, CS2, Dota 2), or a site code like valve:syd, valve:lax
-  #   epic:auto    = nearest Fortnite ping beacon, or epic:oce / naw / nac / nae / eu / asia / me / br
-  #   discord:auto = nearest Discord voice server, or discord:sydney / singapore / ...
-  # Riot (Valorant, LoL) and Activision (Warzone) block ping and connection tests, so they can't be measured.
-  { name = "Steam & CS2",    host = "valve:auto",       group = "Gaming" },
-  { name = "Fortnite",       host = "epic:auto",        group = "Gaming" },
-  { name = "Discord voice",  host = "discord:auto",     group = "Gaming" },
-  { name = "Facebook",       host = "facebook.com",     group = "Social" },
-  { name = "Reddit",         host = "reddit.com",       group = "Social" },
-  { name = "X",              host = "x.com",            group = "Social" },
-  { name = "Instagram",      host = "instagram.com",    group = "Social" },
-  { name = "OpenAI (ChatGPT)", host = "chatgpt.com",    group = "AI" },
-  { name = "Anthropic (Claude)", host = "claude.ai",    group = "AI" },
-  { name = "Grok",           host = "grok.com",         group = "AI" },
-  { name = "Microsoft",      host = "microsoft.com",    group = "Cloud & tech" },
-  { name = "Apple",          host = "apple.com",        group = "Cloud & tech" },
-  { name = "AWS",            host = "aws.amazon.com",   group = "Cloud & tech" },
-  { name = "GitHub",         host = "github.com",       group = "Cloud & tech" },
-  { name = "Akamai",         host = "akamai.com",       group = "CDN" },
-  { name = "Fastly",         host = "fastly.com",       group = "CDN" },
-  { name = "Cloudflare",     host = "www.cloudflare.com", group = "CDN" },
-  { name = "CloudFront",     host = "d1.awsstatic.com", group = "CDN" },   # Amazon's CDN
-  { name = "Azure Front Door", host = "www.office.com", group = "CDN" },   # Microsoft's own edge network
-  { name = "Bunny",          host = "bunny.net",        group = "CDN" },
-  { name = "Gcore",          host = "gcore.com",        group = "CDN" },
-  # Usenet providers. Omicron (formerly Highwinds) also runs UsenetServer, Easynews and Newsgroup Ninja;
-  # NewsDemon resells UsenetExpress; Tweaknews and Pure Usenet share Eweka's network.
-  { name = "Omicron (Newshosting)", host = "news.newshosting.com", group = "Usenet US" },
-  { name = "Easynews",       host = "news.easynews.com",       group = "Usenet US" },   # Phoenix
-  { name = "Giganews",       host = "news.giganews.com",       group = "Usenet US" },
-  { name = "UsenetExpress",  host = "usnews.usenetexpress.com", group = "Usenet US" },
-  { name = "Frugal Usenet",  host = "news.frugalusenet.com",   group = "Usenet US" },
-  { name = "Eweka",          host = "news.eweka.nl",           group = "Usenet EU" },   # Amsterdam
-  { name = "Usenet.Farm",    host = "news.usenet.farm",        group = "Usenet EU" },   # Netherlands
-  # more ideas: store.steampowered.com, spotify.com, gemini.google.com,
-  # { name = "Amazon", host = "amazon.com", method = "tcp", port = 443, group = "Shopping" },   # blocks ping
+# Ping targets: netBae's built-in list (65 hosts: DNS, streaming, gaming, social, AI, cloud, CDNs, hosting,
+# Usenet ...) is in targets.toml next to netbae.py (/opt/netbae on Linux and in Docker, /usr/local/lib/netbae on macOS,
+# C:\Program Files\netBae on Windows) and is updated with netBae, so new defaults arrive by themselves.
+# Change it here:
+#   extra_targets  your own hosts. One with the same host as a built-in target replaces it (e.g. to rename it).
+#                  method = "icmp" (default, normal ping) or "tcp" (times a TCP connect, for hosts that
+#                  block ping) with a port; host = "gateway" is your router; group = any name you like.
+#   disable        built-in targets to switch off, by name or group
+# Or set targets = [ ... ] to use only your own list (the built-in list is then ignored).
+extra_targets = [
+  # { name = "My server", host = "example.com", group = "Mine" },
+  # { name = "Amazon",    host = "amazon.com", method = "tcp", port = 443, group = "Shopping" },   # blocks ping
 ]
+disable = []           # e.g. ["Streaming AU", "China cloud & CDN", "Hetzner Falkenstein"]
 
 # Region pings: latency to the fastest Ookla speedtest server in each city (TCP connect to
 # the server, found automatically and refreshed daily). Same names as [speedtest] regions.
@@ -105,6 +63,10 @@ regions = ["Sydney", "Perth", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Gu
            "Los Angeles", "Toronto", "New York", "São Paulo", "London", "Amsterdam", "Paris", "Milan",
            "Cape Town"]
 region_interval_seconds = 30
+# Also ping each site over IPv6, as a separate line, when this machine and the site have IPv6.
+# IPv4 sites keep their IPv4 history; the dashboard's tiles show both and the chart can switch
+# between IPv4, IPv6 or both. (Not the router, game/region servers or secondary connections.)
+ipv6 = true
 
 [dns]
 enabled = true
@@ -178,6 +140,7 @@ interval_hours = 12
 offset_minutes = 15
 max_hops = 25
 parallel = 6           # traces at once
+ipv6 = true            # also trace IPv6 routes to the sites pinged over IPv6 ([ping] ipv6)
 
 [system]
 interval_seconds = 30

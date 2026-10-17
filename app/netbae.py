@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -70,6 +70,34 @@ PUBLIC_RESOLVERS = [
     ("Control D", "76.76.2.0", "2606:1a40::"),
 ]
 
+# IPv6 address of a public resolver's IPv4 address, so pings to 1.1.1.1 get an IPv6 twin too
+V6_TWIN = {v4: v6 for _, v4, v6 in PUBLIC_RESOLVERS}
+
+TARGETS_FILE = os.path.join(HERE, "targets.toml")
+# used only if targets.toml is missing or unreadable
+FALLBACK_TARGETS = [{"name": "Router", "host": "gateway", "group": "Network"},
+                    {"name": "Cloudflare DNS", "host": "1.1.1.1", "group": "DNS"},
+                    {"name": "Google DNS", "host": "8.8.8.8", "group": "DNS"},
+                    {"name": "Google", "host": "google.com", "group": "Google"}]
+
+
+def load_builtin_targets(path=TARGETS_FILE):
+    """netBae's own ping targets, shipped (and replaced on every update) as targets.toml next to this file."""
+    try:
+        if tomllib is None:
+            raise OSError("Python 3.11+ (or the 'tomli' package) is needed to read it")
+        with open(path, "rb") as f:
+            targets = tomllib.load(f)["targets"]
+        if not isinstance(targets, list):
+            raise ValueError("'targets' isn't a list")
+        return targets
+    except (OSError, ValueError, KeyError) as e:
+        log.warning("couldn't read the built-in targets from %s (%s); using a minimal list", path, e)
+        return list(FALLBACK_TARGETS)
+
+
+BUILTIN_TARGETS = load_builtin_targets()
+
 DEFAULT_CONFIG = {
     "web": {"host": "0.0.0.0", "port": 80},
     # optional read-only copy of the dashboard for sharing (e.g. through a Cloudflare Tunnel)
@@ -83,54 +111,16 @@ DEFAULT_CONFIG = {
         "interval_seconds": 5,
         "offset_seconds": 0,
         "timeout_seconds": 2,
-        "targets": [
-            {"name": "Router", "host": "gateway", "group": "Network"},
-            {"name": "Cloudflare DNS", "host": "1.1.1.1", "group": "DNS"},
-            {"name": "Google DNS", "host": "8.8.8.8", "group": "DNS"},
-            {"name": "Quad9", "host": "9.9.9.9", "group": "DNS"},
-            {"name": "OpenDNS", "host": "208.67.222.222", "group": "DNS"},
-            {"name": "CleanBrowsing", "host": "185.228.168.9", "group": "DNS"},
-            {"name": "AdGuard DNS", "host": "94.140.14.14", "group": "DNS"},
-            {"name": "NextDNS", "host": "45.90.28.0", "group": "DNS"},
-            {"name": "Control D", "host": "76.76.2.0", "group": "DNS"},
-            {"name": "Google", "host": "google.com", "group": "Google"},
-            {"name": "YouTube", "host": "youtube.com", "group": "Google"},
-            {"name": "Netflix", "host": "www.netflix.com", "group": "Streaming"},
-            {"name": "Twitch", "host": "twitch.tv", "group": "Streaming"},
-            {"name": "Steam & CS2", "host": "valve:auto", "group": "Gaming"},
-            {"name": "Fortnite", "host": "epic:auto", "group": "Gaming"},
-            {"name": "Discord voice", "host": "discord:auto", "group": "Gaming"},
-            {"name": "Facebook", "host": "facebook.com", "group": "Social"},
-            {"name": "Reddit", "host": "reddit.com", "group": "Social"},
-            {"name": "X", "host": "x.com", "group": "Social"},
-            {"name": "Instagram", "host": "instagram.com", "group": "Social"},
-            {"name": "OpenAI (ChatGPT)", "host": "chatgpt.com", "group": "AI"},
-            {"name": "Anthropic (Claude)", "host": "claude.ai", "group": "AI"},
-            {"name": "Grok", "host": "grok.com", "group": "AI"},
-            {"name": "Microsoft", "host": "microsoft.com", "group": "Cloud & tech"},
-            {"name": "Apple", "host": "apple.com", "group": "Cloud & tech"},
-            {"name": "AWS", "host": "aws.amazon.com", "group": "Cloud & tech"},
-            {"name": "GitHub", "host": "github.com", "group": "Cloud & tech"},
-            {"name": "Akamai", "host": "akamai.com", "group": "CDN"},
-            {"name": "Fastly", "host": "fastly.com", "group": "CDN"},
-            {"name": "Cloudflare", "host": "www.cloudflare.com", "group": "CDN"},
-            {"name": "CloudFront", "host": "d1.awsstatic.com", "group": "CDN"},
-            {"name": "Azure Front Door", "host": "www.office.com", "group": "CDN"},
-            {"name": "Bunny", "host": "bunny.net", "group": "CDN"},
-            {"name": "Gcore", "host": "gcore.com", "group": "CDN"},
-            {"name": "Omicron (Newshosting)", "host": "news.newshosting.com", "group": "Usenet US"},
-            {"name": "Easynews", "host": "news.easynews.com", "group": "Usenet US"},
-            {"name": "Giganews", "host": "news.giganews.com", "group": "Usenet US"},
-            {"name": "UsenetExpress", "host": "usnews.usenetexpress.com", "group": "Usenet US"},
-            {"name": "Frugal Usenet", "host": "news.frugalusenet.com", "group": "Usenet US"},
-            {"name": "Eweka", "host": "news.eweka.nl", "group": "Usenet EU"},
-            {"name": "Usenet.Farm", "host": "news.usenet.farm", "group": "Usenet EU"},
-        ],
+        "targets": BUILTIN_TARGETS,  # from targets.toml; config.toml adds extra_targets and disable
+        "extra_targets": [],
+        "disable": [],
         # Latency to the fastest Ookla speedtest server in each region (TCP connect), shown as a "Regions" group.
         "regions": ["Sydney", "Perth", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Guam", "Delhi", "Oman",
                     "Los Angeles", "Toronto", "New York", "São Paulo", "London", "Amsterdam", "Paris", "Milan",
                     "Cape Town"],
         "region_interval_seconds": 30,
+        # also ping each site over IPv6 (stored separately) when this machine and the site have IPv6
+        "ipv6": True,
     },
     "dns": {
         "enabled": True,
@@ -159,7 +149,8 @@ DEFAULT_CONFIG = {
     # public IP + ISP of the main connection and every secondary connection (shows failovers)
     "isp": {"enabled": True, "interval_minutes": 10, "offset_minutes": 0, "main_name": "Main"},
     # route to every target every 12 h: which networks (ASNs) carry it - on-net, peering or transit
-    "traceroute": {"enabled": True, "interval_hours": 12, "offset_minutes": 15, "max_hops": 25, "parallel": 6},
+    "traceroute": {"enabled": True, "interval_hours": 12, "offset_minutes": 15, "max_hops": 25, "parallel": 6,
+                   "ipv6": True},  # also trace IPv6 routes to the sites pinged over IPv6
     # extra internet connections tested through a different source IP or interface (e.g. a secondary 5G/4G WAN)
     "connections": [],
 }
@@ -471,6 +462,29 @@ def find_speedtest(binary):
     return "speedtest"
 
 
+def merge_targets(ping):
+    """(raw, normalized) ping targets: the built-in or listed targets, minus [ping] disable (names or groups),
+    plus [ping] extra_targets (one with the same host, method and port replaces the built-in one)."""
+    off = {str(x).strip().lower() for x in ping.get("disable") or []}
+    pairs, used = [], set()
+    for t in ping["targets"]:
+        n = normalize_target(t)
+        hit = {n["name"].lower(), n["group"].lower()} & off
+        used |= hit
+        if not hit:
+            pairs.append((t, n))
+    for t in ping.get("extra_targets") or []:
+        n = normalize_target(t)
+        same = [i for i, (_, x) in enumerate(pairs) if x["id"] == n["id"]]
+        if same:
+            pairs[same[0]] = (t, n)
+        else:
+            pairs.append((t, n))
+    for name in sorted(off - used):
+        log.warning("[ping] disable: no built-in target or group called %r", name)
+    return [t for t, _ in pairs], [n for _, n in pairs]
+
+
 def load_config(path):
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     if os.path.exists(path):
@@ -478,6 +492,9 @@ def load_config(path):
             raise SystemExit("Python 3.11+ (or the 'tomli' package) is required to read the config file")
         with open(path, "rb") as f:
             user = tomllib.load(f)
+        if "targets" in (user.get("ping") or {}):  # a full list of its own (configs from before 1.8 have one)
+            log.info("config.toml has its own [ping] targets, so the built-in list in targets.toml isn't used. Delete "
+                     "targets to get the built-in list (updated with netBae) and put your own hosts in extra_targets.")
         for section, values in user.items():
             if isinstance(values, dict):
                 cfg.setdefault(section, {}).update(values)
@@ -486,8 +503,8 @@ def load_config(path):
     else:
         log.warning("config %s not found, using built-in defaults", path)
 
-    raw_targets = list(cfg["ping"]["targets"])
-    cfg["ping"]["targets"] = [normalize_target(t) for t in cfg["ping"]["targets"]]
+    raw_targets, ping_targets = merge_targets(cfg["ping"])
+    cfg["ping"]["targets"] = ping_targets
     cfg["ping"]["regions"] = [r for r in map(normalize_region, cfg["ping"]["regions"]) if r]
     for r in cfg["ping"]["regions"]:
         cfg["ping"]["targets"].append({"id": f"region:{r['name']}", "name": r["name"], "host": None,
@@ -496,6 +513,15 @@ def load_config(path):
     cfg["connections"] = [normalize_connection(c, raw_targets) for c in cfg["connections"]]
     for c in cfg["connections"]:
         cfg["ping"]["targets"].extend(c["targets"])
+    if cfg["ping"]["ipv6"]:
+        # Sites on the main connection are measured over IPv4 and IPv6 separately: the IPv6 twin's id is "<id>#v6".
+        # Not the router, game/region servers or secondary connections (bound to an IPv4 source address).
+        for t in list(cfg["ping"]["targets"]):
+            if t["method"] in ("icmp", "tcp") and not t.get("bind") and t["id"] != "gateway" and ":" not in t["host"] \
+                    and (not is_ip(t["host"]) or t["host"] in V6_TWIN):
+                t["family"] = 4
+                cfg["ping"]["targets"].append(dict(t, id=t["id"] + "#v6", name=f'{t["name"]} (IPv6)', family=6,
+                                                   twin=t["id"]))
     servers = []
     for t in cfg["dns"]["servers"]:
         if isinstance(t, dict) and str(t.get("host", "")).lower() == "dhcp":
@@ -588,21 +614,30 @@ CREATE TABLE IF NOT EXISTS traceroute (ts REAL NOT NULL, target TEXT NOT NULL, d
     path TEXT, hops TEXT, error TEXT, dest_host TEXT);
 CREATE INDEX IF NOT EXISTS traceroute_target_ts ON traceroute(target, ts);
 CREATE TABLE IF NOT EXISTS own_prefix (prefix TEXT PRIMARY KEY, first_seen REAL, last_seen REAL);
+CREATE TABLE IF NOT EXISTS hop_geo (ip TEXT PRIMARY KEY, ts REAL, city TEXT, lat REAL, lon REAL);
 CREATE INDEX IF NOT EXISTS system_ts ON system(ts);
 CREATE TABLE IF NOT EXISTS ping_1m (
     target TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
-    avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL, PRIMARY KEY (target, ts)) WITHOUT ROWID;
+    avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL,
+    h0 INTEGER, h1 INTEGER, h2 INTEGER, h3 INTEGER, h4 INTEGER, h5 INTEGER, h6 INTEGER, h7 INTEGER,
+    h8 INTEGER, h9 INTEGER, h10 INTEGER, h11 INTEGER, PRIMARY KEY (target, ts)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS ping_1m_ts ON ping_1m(ts);
 CREATE TABLE IF NOT EXISTS dns_1m (
     server TEXT NOT NULL, domain TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
-    avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL, PRIMARY KEY (server, domain, ts)) WITHOUT ROWID;
+    avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL,
+    h0 INTEGER, h1 INTEGER, h2 INTEGER, h3 INTEGER, h4 INTEGER, h5 INTEGER, h6 INTEGER, h7 INTEGER,
+    h8 INTEGER, h9 INTEGER, h10 INTEGER, h11 INTEGER, PRIMARY KEY (server, domain, ts)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS dns_1m_ts ON dns_1m(ts);
 CREATE TABLE IF NOT EXISTS ping_1h (
     target TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
-    avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL, PRIMARY KEY (target, ts)) WITHOUT ROWID;
+    avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL,
+    h0 INTEGER, h1 INTEGER, h2 INTEGER, h3 INTEGER, h4 INTEGER, h5 INTEGER, h6 INTEGER, h7 INTEGER,
+    h8 INTEGER, h9 INTEGER, h10 INTEGER, h11 INTEGER, PRIMARY KEY (target, ts)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS dns_1h (
     server TEXT NOT NULL, domain TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
-    avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL, PRIMARY KEY (server, domain, ts)) WITHOUT ROWID;
+    avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL,
+    h0 INTEGER, h1 INTEGER, h2 INTEGER, h3 INTEGER, h4 INTEGER, h5 INTEGER, h6 INTEGER, h7 INTEGER,
+    h8 INTEGER, h9 INTEGER, h10 INTEGER, h11 INTEGER, PRIMARY KEY (server, domain, ts)) WITHOUT ROWID;
 """
 
 # Raw samples are summarised into 1-minute rows (count, avg, min, max, p5, p95) so long
@@ -617,6 +652,40 @@ ROLLUP_ABOVE_SECONDS = 6 * 3600  # whole-range stats longer than this come from 
 # Averages ignore the fastest and slowest 5% of samples once there are at least 10, so a few
 # spikes don't drag the average around (min, max and P95 still show them).
 TRIMMED_AVG = "AVG(CASE WHEN cnt < 10 OR (rn > 0.05 * cnt AND rn <= 0.95 * cnt) THEN v END)"
+
+# Latency histograms make P5/P95 exact enough over any range: percentiles of 1-minute summaries can't be
+# combined, but histograms can be added up. Each summary row counts its samples in 48 bins spaced
+# evenly on a log scale from 0.3 ms to 1 s (each bin 18% wider than the last; slower samples go in the
+# last bin). Four 16-bit counts are packed into each of the columns h0..h11, and SQLite adds them up
+# field by field, so long ranges stay fast and each row grows by ~20 bytes.
+HIST_BINS, HIST_LO, HIST_HI = 48, 0.3, 1000.0
+HIST_EDGES = [HIST_LO * (HIST_HI / HIST_LO) ** (i / HIST_BINS) for i in range(HIST_BINS + 1)]
+HIST_COLS = [f"h{i}" for i in range(HIST_BINS // 4)]
+HIST_BIN_SQL = ("CASE WHEN v IS NULL THEN NULL "
+                + " ".join(f"WHEN v < {HIST_EDGES[i + 1]!r} THEN {i}" for i in range(HIST_BINS - 1))
+                + f" ELSE {HIST_BINS - 1} END")
+# packed columns from raw samples (inner query provides hb = bin number)
+HIST_FROM_RAW = ", ".join(
+    f"NULLIF(SUM(CASE hb WHEN {4 * j} THEN 1 WHEN {4 * j + 1} THEN 65536 WHEN {4 * j + 2} THEN 4294967296"
+    f" WHEN {4 * j + 3} THEN 281474976710656 ELSE 0 END), 0)" for j in range(len(HIST_COLS)))
+# packed columns added up from summary rows (an hour holds at most 3600 samples per bin, well under 65536)
+HIST_COMBINE = ", ".join(
+    "NULLIF(" + " + ".join(f"COALESCE(SUM((h{j} >> {16 * k}) & 65535), 0) * {65536 ** k}" for k in range(4)) + ", 0)"
+    for j in range(len(HIST_COLS)))
+# the 48 bin counts, unpacked, for reading percentiles
+HIST_SUMS = ", ".join(f"SUM((h{j} >> {16 * k}) & 65535)" for j in range(len(HIST_COLS)) for k in range(4))
+
+
+def hist_percentile(counts, p, mn, mx):
+    """Nearest-rank percentile from bin counts, placed linearly within its bin and kept within min..max."""
+    total = sum(counts)
+    k, cum = max(1, math.ceil(p * total)), 0
+    for i, c in enumerate(counts):
+        if c and cum + c >= k:
+            lo, hi = max(HIST_EDGES[i], mn), min(HIST_EDGES[i + 1], mx) if i < HIST_BINS - 1 else mx
+            return lo if hi <= lo else lo + (hi - lo) * (k - cum - 0.5) / c
+        cum += c
+    return None
 
 
 def trimmed_mean(values):
@@ -636,16 +705,20 @@ def outlier_free(values):
     return [x for x in v if lo <= x <= hi]
 
 
-def pct_select(val, bucket_expr, keys, table, where):
-    """Per-bucket count/ok/avg/min/max/p5/p95 from raw samples (nearest-rank percentiles)."""
+def pct_select(val, bucket_expr, keys, table, where, hist=False):
+    """Per-bucket count/ok/avg/min/max/p5/p95 from raw samples (nearest-rank percentiles), plus the
+    packed histogram columns if hist."""
     part = ", ".join(keys + [bucket_expr])
     return (
         f"SELECT {', '.join(keys)}, b, COUNT(*), COUNT(v), {TRIMMED_AVG}, MIN(v), MAX(v),"
         f" MIN(CASE WHEN rn >= 0.05 * cnt THEN v END), MIN(CASE WHEN rn >= 0.95 * cnt THEN v END)"
+        + (f", {HIST_FROM_RAW}" if hist else "") +
+        f" FROM (SELECT {', '.join(keys)}, b, v, rn, cnt"
+        + (f", {HIST_BIN_SQL} AS hb" if hist else "") +
         f" FROM (SELECT {', '.join(keys)}, {bucket_expr} AS b, {val} AS v,"
         f"   ROW_NUMBER() OVER (PARTITION BY {part} ORDER BY {val} IS NULL, {val}) AS rn,"
         f"   COUNT({val}) OVER (PARTITION BY {part}) AS cnt"
-        f"   FROM {table} WHERE {where})"
+        f"   FROM {table} WHERE {where}))"
         f" GROUP BY {', '.join(keys)}, b")
 
 
@@ -656,16 +729,17 @@ COMBINE = ("SUM(n), SUM(ok), SUM(avg * ok) / NULLIF(SUM(ok), 0), MIN(mn), MAX(mx
 def rollup_hourly(db, spec, frm, to):
     keys = ", ".join(spec["keys"])
     db.conn().execute(
-        f"INSERT OR REPLACE INTO {spec['hourly']} ({keys}, ts, n, ok, avg, mn, mx, p5, p95)"
-        f" SELECT {keys}, CAST(ts / 3600 AS INTEGER) * 3600 AS h, {COMBINE}"
+        f"INSERT OR REPLACE INTO {spec['hourly']} ({keys}, ts, n, ok, avg, mn, mx, p5, p95, {', '.join(HIST_COLS)})"
+        f" SELECT {keys}, CAST(ts / 3600 AS INTEGER) * 3600 AS h, {COMBINE}, {HIST_COMBINE}"
         f" FROM {spec['rollup']} WHERE ts >= ? AND ts < ? GROUP BY {keys}, h", (frm, to))
 
 
 def rollup(db, spec, frm, to):
     keys = spec["keys"]
-    sql = pct_select(spec["val"], "CAST(ts / 60 AS INTEGER) * 60", keys, spec["raw"], "ts >= ? AND ts < ?")
+    sql = pct_select(spec["val"], "CAST(ts / 60 AS INTEGER) * 60", keys, spec["raw"], "ts >= ? AND ts < ?", hist=True)
     db.conn().execute(
-        f"INSERT OR REPLACE INTO {spec['rollup']} ({', '.join(keys)}, ts, n, ok, avg, mn, mx, p5, p95) {sql}",
+        f"INSERT OR REPLACE INTO {spec['rollup']} ({', '.join(keys)}, ts, n, ok, avg, mn, mx, p5, p95,"
+        f" {', '.join(HIST_COLS)}) {sql}",
         (frm, to))
 
 
@@ -682,6 +756,11 @@ class DB:
                          ("server_host", "TEXT")):  # added in 1.1-1.4
             if col not in cols:
                 self.conn().execute(f"ALTER TABLE speedtest ADD COLUMN {col} {typ}")
+        for t in ("ping_1m", "dns_1m", "ping_1h", "dns_1h"):  # latency histograms, added in 1.8
+            have = {r[1] for r in self.query(f"PRAGMA table_info({t})")}
+            for col in HIST_COLS:
+                if col not in have:
+                    self.conn().execute(f"ALTER TABLE {t} ADD COLUMN {col} INTEGER")
         if "dest_host" not in {r[1] for r in self.query("PRAGMA table_info(traceroute)")}:  # added in 1.4
             self.conn().execute("ALTER TABLE traceroute ADD COLUMN dest_host TEXT")
         # since 1.4.2 a route whose first hand-over is at an exchange counts as IX, even if transit follows
@@ -798,8 +877,9 @@ def icmp_ping(host, timeout, bind=None):
             cmd = ["ping6", "-n", "-c", "1"] + ((["-S", bind] if is_ip(bind) else ["-B", bind]) if bind else [])
         else:
             cmd = ["ping", "-n", "-c", "1", "-t", t] + ((["-S", bind] if is_ip(bind) else ["-b", bind]) if bind else [])
-    else:
-        cmd = ["ping", "-n", "-c", "1", "-W", t] + (["-I", bind] if bind else [])
+    else:  # older iputils need ping6 for IPv6 addresses; newer ones still ship it as an alias
+        exe = "ping6" if ":" in host and shutil.which("ping6") else "ping"
+        cmd = [exe, "-n", "-c", "1", "-W", t] + (["-I", bind] if bind else [])
     cmd.append(host)
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout + 5,
@@ -841,6 +921,8 @@ AS_NAMES = {
     13335: "Cloudflare", 15169: "Google", 16509: "Amazon", 14618: "Amazon", 8075: "Microsoft", 32934: "Meta",
     20940: "Akamai", 16625: "Akamai", 54113: "Fastly", 2906: "Netflix", 40027: "Netflix", 32590: "Valve",
     36459: "GitHub", 714: "Apple", 6185: "Apple", 46489: "Twitch", 200325: "Bunny", 199524: "Gcore",
+    45102: "Alibaba Cloud", 132203: "Tencent Cloud", 136907: "Huawei Cloud", 38365: "Baidu", 396986: "ByteDance",
+    16276: "OVHcloud", 24940: "Hetzner", 20473: "Vultr", 14061: "DigitalOcean", 63949: "Linode", 31898: "Oracle Cloud",
     34343: "BIP (Eweka)", 34305: "Base IP", 12989: "Omicron (Highwinds)", 30094: "Giganews", 60068: "Datacamp", 13414: "X", 4635: "HKIX", 24115: "Equinix",
     7594: "IX Australia", 4739: "Internode", 1103: "SURF", 3209: "Vodafone DE", 8220: "Colt", 12956: "Telxius",
     6830: "Liberty Global", 5432: "Proximus", 2856: "BT", 5400: "BT", 64050: "BGPNET", 9304: "HGC",
@@ -1201,6 +1283,10 @@ def traceroute(host, max_hops=25, bind=None):
     """[(hop, ip or None, rtt_ms or None)] using the system traceroute (or tracepath / tracert)."""
     if IS_WINDOWS:
         cmd = ["tracert", "-d", "-h", str(max_hops), "-w", "1000"] + (["-S", bind] if bind and is_ip(bind) and ":" in bind else [])
+    elif IS_MAC and ":" in host:  # macOS traceroute is IPv4-only
+        cmd = ["/usr/sbin/traceroute6", "-n", "-q", "1", "-w", "1", "-m", str(max_hops)]
+        if bind:
+            cmd += ["-s", bind] if is_ip(bind) else []
     elif shutil.which("traceroute") or os.path.exists("/usr/sbin/traceroute"):
         exe = shutil.which("traceroute") or "/usr/sbin/traceroute"
         cmd = [exe, "-n", "-q", "1", "-w", "1", "-m", str(max_hops)]
@@ -1226,6 +1312,138 @@ def traceroute(host, max_hops=25, bind=None):
     while hops and not hops[-1][1]:  # drop the run of timeouts at the end
         hops.pop()
     return hops
+
+
+# --------------------------------------------------------------------------- hop locations
+# Router hostnames usually name their city: an airport code (be3021.ccr41.syd01.atlas.cogentco.com,
+# ae2.cr0-lax1.ip4.gtt.net), a 6-letter city code (ae-6.r24.tokyjp05.jp.bb.gin.ntt.net) or the city
+# itself (ae-1.LosAngeles1.Level3.net). Hops without one fall back to IP geolocation (approximate).
+_C = {
+    "Sydney, AU": "syd sydney sydnau", "Melbourne, AU": "mel melbourne", "Brisbane, AU": "bne brisbane",
+    "Perth, AU": "per perth", "Adelaide, AU": "adl adelaide", "Canberra, AU": "cbr canberra", "Darwin, AU": "drw darwin",
+    "Hobart, AU": "hba hobart", "Auckland, NZ": "akl auckland", "Wellington, NZ": "wlg wellington",
+    "Christchurch, NZ": "chc christchurch", "Singapore, SG": "sin sgp singapore sngpsg", "Hong Kong, HK": "hkg hongkong",
+    "Tokyo, JP": "tyo nrt hnd tokyo tokyjp", "Osaka, JP": "osa kix osaka osakjp", "Seoul, KR": "sel icn seoul",
+    "Taipei, TW": "tpe taipei", "Kuala Lumpur, MY": "kul kualalumpur", "Bangkok, TH": "bkk bangkok",
+    "Jakarta, ID": "cgk jkt jakarta", "Manila, PH": "mnl manila", "Mumbai, IN": "bom mumbai", "Delhi, IN": "del delhi",
+    "Chennai, IN": "maa chennai", "Bangalore, IN": "blr bangalore", "Dubai, AE": "dxb dubai", "Fujairah, AE": "fjr fujairah",
+    "Muscat, OM": "mct muscat", "Guam, GU": "gum guam", "Honolulu, US": "hnl honolulu",
+    "Los Angeles, US": "lax losangeles lsanca", "San Jose, US": "sjc sanjose snjsca", "Palo Alto, US": "pao paloalto plalca",
+    "San Francisco, US": "sfo sanfrancisco", "Seattle, US": "sea seattle sttlwa", "Portland, US": "pdx portland",
+    "Salt Lake City, US": "slc saltlakecity", "Phoenix, US": "phx phoenix", "Denver, US": "den denver dnvrco",
+    "Dallas, US": "dfw dal dallas dllstx", "Houston, US": "iah hou houston", "Kansas City, US": "mci kansascity",
+    "Chicago, US": "ord chi chicago chcgil", "Minneapolis, US": "msp minneapolis", "St. Louis, US": "stl stlouis",
+    "Atlanta, US": "atl atlanta atlnga", "Miami, US": "mia miami miamfl", "Ashburn, US": "iad ash ashburn asbnva",
+    "Washington, US": "was washington", "New York, US": "nyc jfk lga newyork nycmny", "Newark, US": "ewr newark nwrknj",
+    "Boston, US": "bos boston", "Philadelphia, US": "phl philadelphia", "Toronto, CA": "yyz tor toronto",
+    "Montreal, CA": "yul mtl montreal", "Vancouver, CA": "yvr vancouver", "Mexico City, MX": "mex mexico",
+    "Querétaro, MX": "qro queretaro", "São Paulo, BR": "gru sao saopaulo", "Rio de Janeiro, BR": "gig rio",
+    "Santiago, CL": "scl santiago", "Buenos Aires, AR": "eze buenosaires", "Bogotá, CO": "bog bogota", "Lima, PE": "lim lima",
+    "London, GB": "lon lhr london londen", "Manchester, GB": "manchester", "Dublin, IE": "dub dublin",
+    "Amsterdam, NL": "ams amsterdam amstnl", "Frankfurt, DE": "fra frankfurt frnkge", "Berlin, DE": "ber txl berlin",
+    "Düsseldorf, DE": "dus dusseldorf", "Munich, DE": "muc munich", "Hamburg, DE": "ham hamburg", "Paris, FR": "par cdg paris parsfr",
+    "Marseille, FR": "mrs marseille", "Brussels, BE": "bru brussels", "Zurich, CH": "zrh zurich", "Geneva, CH": "gva geneva",
+    "Vienna, AT": "vie vienna", "Milan, IT": "mil mxp milan", "Rome, IT": "rom rome", "Madrid, ES": "mad madrid",
+    "Barcelona, ES": "bcn barcelona", "Lisbon, PT": "lis lisbon", "Stockholm, SE": "sto arn stockholm",
+    "Copenhagen, DK": "cph copenhagen", "Oslo, NO": "osl oslo", "Helsinki, FI": "hel helsinki", "Warsaw, PL": "waw warsaw",
+    "Prague, CZ": "prg prague", "Budapest, HU": "bud budapest", "Bucharest, RO": "buh otp bucharest", "Sofia, BG": "sof sofia",
+    "Athens, GR": "ath athens", "Istanbul, TR": "ist istanbul", "Tel Aviv, IL": "tlv telaviv",
+    "Johannesburg, ZA": "jnb johannesburg", "Cape Town, ZA": "cpt capetown", "Nairobi, KE": "nbo nairobi",
+    "Lagos, NG": "lagos", "Cairo, EG": "cai cairo",
+}
+CITY_CODES = {code: city for city, codes in _C.items() for code in codes.split()}
+del _C
+
+
+def city_from_hostname(host):
+    """'Sydney, AU' from a router name like be3021.ccr41.syd01.atlas.cogentco.com, or None."""
+    labels = (host or "").lower().split(".")
+    for label in labels[:-2]:  # the last two labels are the operator's domain (e.g. cogentco.com)
+        words = [t.strip("0123456789") for t in re.split(r"[-_]", label)]
+        pairs = [a + b for a, b in zip(words, words[1:])]  # los-angeles, new-york, san-jose
+        for word in pairs + words:
+            if len(word) >= 3 and word in CITY_CODES:
+                return CITY_CODES[word]
+    return None
+
+
+def km_between(a, b):
+    """Great-circle distance in km between two (lat, lon) points."""
+    la1, lo1, la2, lo2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    h = math.sin((la2 - la1) / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin((lo2 - lo1) / 2) ** 2
+    return 12742 * math.asin(min(1, math.sqrt(h)))
+
+
+class HopGeo:
+    """IP geolocation for hops without a city in their name (ipinfo.io), cached in the database for
+    30 days and capped per day so it stays well inside ipinfo's free allowance."""
+    DAILY = 300
+
+    def __init__(self, db):
+        self.db, self.mem, self.day, self.used, self.lock = db, {}, None, 0, threading.Lock()
+
+    def lookup(self, ip):
+        """{city, lat, lon} or None."""
+        if ip in self.mem:
+            return self.mem[ip]
+        row = self.db.query("SELECT city, lat, lon FROM hop_geo WHERE ip = ? AND ts > ?", (ip, time.time() - 30 * 86400))
+        if row:
+            self.mem[ip] = {"city": row[0][0], "lat": row[0][1], "lon": row[0][2]} if row[0][0] else None
+            return self.mem[ip]
+        with self.lock:
+            today = time.strftime("%Y-%m-%d")
+            if self.day != today:
+                self.day, self.used = today, 0
+            if self.used >= self.DAILY:
+                return None
+            self.used += 1
+        try:
+            d = http_json(f"https://ipinfo.io/{ip}/json", timeout=8)
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                self.used = self.DAILY  # over ipinfo's limit: try again tomorrow
+            return None
+        except Exception:
+            return None
+        city = ", ".join(x for x in (d.get("city"), d.get("country")) if x) or None
+        lat, _, lon = (d.get("loc") or "").partition(",")
+        try:
+            g = {"city": city, "lat": float(lat), "lon": float(lon)} if city else None
+        except ValueError:
+            g = None
+        self.db.insert_many("INSERT OR REPLACE INTO hop_geo VALUES (?,?,?,?,?)",
+                            [(ip, time.time(), g and g["city"], g and g["lat"], g and g["lon"])])
+        self.mem[ip] = g
+        return g
+
+
+def locate_hops(detailed, geo=None, home_ip=None):
+    """Give each public hop a city: from its hostname, else from IP geolocation if that's physically
+    possible (light in fibre covers ~100 km per ms of round trip, so a 9 ms hop can't be 2,000 km away)."""
+    home = geo.lookup(home_ip) if geo and home_ip else None
+    for h in detailed:
+        if h.get("city") or not h.get("ip") or not PublicMask.is_public_ip(h["ip"]):
+            continue
+        city = city_from_hostname(h.get("host"))
+        if city:
+            h["city"], h["city_src"] = city, "name"
+            continue
+        g = geo.lookup(h["ip"]) if geo else None
+        if not g:
+            continue
+        if home and h.get("rtt") is not None and h["rtt"] * 100 < km_between((home["lat"], home["lon"]), (g["lat"], g["lon"])) * 0.8:
+            continue  # too close in time to be that far away (anycast, or a stale geolocation entry)
+        h["city"], h["city_src"] = g["city"], "geo"
+    return detailed
+
+
+def route_cities(detailed):
+    """Cities a route passes through, in order, without repeats."""
+    out = []
+    for h in detailed:
+        if h.get("city") and (not out or out[-1] != h["city"]):
+            out.append(h["city"])
+    return out
 
 
 def classify_route(hops, dest_ip, isp_asn=None):
@@ -1647,11 +1865,13 @@ class Monitor:
         self.region_lookups = set()
         self.game_cache = {}
         self.trace_lock = threading.Lock()
+        self.hop_geo = HopGeo(self.db)
         self.docker_bridge = docker_bridge()
         if self.docker_bridge:
             log.warning("running on Docker's bridge network: the router, DHCP DNS and routes will show Docker's "
                         "network, not yours. Use network_mode: host for accurate results.")
         self.ipv6 = (0, None)  # (checked_at, available)
+        self.addr_cache = {}   # (host, 4|6) -> (checked_at, address or None)
         self.started = time.time()
         self.config_path = None
         # public dashboard sharing, shown on the private dashboard
@@ -1693,9 +1913,47 @@ class Monitor:
         self.pool.submit(self.collect_system)
 
     # -- collectors
+    def address(self, host, family):
+        """host's IPv4 or IPv6 address (looked up every 5 minutes, every minute while it has none), or None."""
+        if is_ip(host):
+            if ":" not in host and family == 6:
+                return V6_TWIN.get(host)
+            return host if (":" in host) == (family == 6) else None
+        hit = self.addr_cache.get((host, family))
+        if hit and time.time() - hit[0] < (300 if hit[1] else 60):
+            return hit[1]
+        try:
+            found = [i[4][0] for i in socket.getaddrinfo(host, None, socket.AF_INET6 if family == 6 else socket.AF_INET,
+                                                          socket.SOCK_STREAM)]
+        except OSError:
+            found = []
+        # macOS returns IPv4-mapped addresses (::ffff:1.2.3.4) for IPv4-only sites, and NAT64 networks
+        # synthesize 64:ff9b:: ones: both still reach the site over IPv4, so they don't count as IPv6
+        addr = next((a for a in found if not (":" in a and (ipaddress.ip_address(a.split("%")[0]).ipv4_mapped
+                                                            or a.lower().startswith("64:ff9b:")))), None)
+        self.addr_cache[(host, family)] = (time.time(), addr)
+        return addr
+
+    def v6_live(self, t):
+        """An IPv6 twin worth showing: this machine has IPv6 and the site has an IPv6 address."""
+        if not self.ipv6_available():
+            return False
+        if is_ip(t["host"]):
+            return t["host"] in V6_TWIN
+        return bool((self.addr_cache.get((t["host"], 6)) or (0, None))[1])
+
     def ping_one(self, t):
         timeout = self.cfg["ping"]["timeout_seconds"]
         bind = t.get("bind")
+        if t.get("family"):  # measured over IPv4 and IPv6 separately: ping that family's address
+            if t["family"] == 6 and not self.ipv6_available():
+                return SKIP  # no failures recorded on an IPv4-only network
+            addr = self.address(t["host"], t["family"])
+            if not addr:
+                return SKIP if t["family"] == 6 else None  # a site without IPv6 just has no IPv6 line
+            if t["method"] == "tcp":
+                return tcp_ping(addr, t["port"], timeout)
+            return icmp_ping(addr, timeout)
         if t["method"] == "game":
             srv = self.game_server(t)
             if not srv:
@@ -1766,6 +2024,10 @@ class Monitor:
             elif t["method"] == "region":
                 srv = [c for c in (self.region_servers(t["region"], wait=False) or []) if c["host"]]
                 host = srv[0]["host"] if srv else None
+            elif t.get("family") == 6:
+                if not self.cfg["traceroute"]["ipv6"] or not self.ipv6_available():
+                    continue
+                host = self.address(t["host"], 6)
             else:
                 host = t["host"]
             if host and host != "gateway" and not t["id"].endswith("gateway"):  # the router is one hop away
@@ -1817,13 +2079,15 @@ class Monitor:
                 ts = time.time()
                 try:
                     try:
-                        dest = socket.getaddrinfo(host, None, socket.AF_INET if not bind or ":" not in bind else 0)[0][4][0]
+                        dest = host if is_ip(host) else \
+                            socket.getaddrinfo(host, None, socket.AF_INET if not bind or ":" not in bind else 0)[0][4][0]
                     except OSError:
                         dest = None
                     hops = traceroute(dest or host, tr["max_hops"], bind)
                     known = isp.get(conn_of_bind.get(bind, self.cfg["isp"]["main_name"])) or {}
                     isp_asn = int(known["asn"][2:]) if (known.get("asn") or "").startswith("AS") else None
                     kind, path, detailed = classify_route(hops, dest, isp_asn)
+                    locate_hops(detailed, self.hop_geo, known.get("ip"))
                     return (ts, tid, dest, kind, json.dumps(path), json.dumps(detailed), None, host)
                 except Exception as e:
                     return (ts, tid, None, None, None, None, str(e)[:200], host)
@@ -2129,12 +2393,20 @@ def aggregate(m, name, frm, to, bucket, keys=None, extra=("", ())):
     if extra[0]:
         where += " AND " + extra[0]
         params += list(extra[1])
-    if level != "raw":
-        # Combine summary rows: exact count/min/max, sample-weighted avg and percentiles.
-        sql = f"SELECT {key}, {bexpr} AS b, {COMBINE} FROM {spec[level]} WHERE {where} GROUP BY {key}, b ORDER BY b"
-    else:
-        sql = pct_select(spec["val"], bexpr, [key], spec["raw"], where) + " ORDER BY b"
-    return m.db.query(sql, params)
+    if level == "raw":
+        return m.db.query(pct_select(spec["val"], bexpr, [key], spec["raw"], where) + " ORDER BY b", params)
+    # Combine summary rows: exact count/min/max, sample-weighted avg, and P5/P95 from the added-up
+    # histograms. Rows from before histograms existed fall back to weighted per-row percentiles.
+    sql = (f"SELECT {key}, {bexpr} AS b, {COMBINE}, {HIST_SUMS} FROM {spec[level]} WHERE {where}"
+           f" GROUP BY {key}, b ORDER BY b")
+    out = []
+    for row in m.db.query(sql, params):
+        k, b, n, ok, avg, mn, mx, p5, p95 = row[:9]
+        counts = [c or 0 for c in row[9:]]
+        if ok and sum(counts) == ok:
+            p5, p95 = hist_percentile(counts, 0.05, mn, mx), hist_percentile(counts, 0.95, mn, mx)
+        out.append((k, b, n, ok, avg, mn, mx, p5, p95))
+    return out
 
 
 def latency_series(m, name, frm, to, bucket, keys=None, extra=("", ())):
@@ -2160,7 +2432,9 @@ def api_config(m, q):
         "info": m.static_info,
         "ping": {"interval_seconds": c["ping"]["interval_seconds"], "offset_seconds": c["ping"]["offset_seconds"],
                  "region_interval_seconds": c["ping"]["region_interval_seconds"],
-                 "targets": [{k: v for k, v in t.items() if k != "region"} for t in c["ping"]["targets"]]},
+                 "ipv6": c["ping"]["ipv6"] and m.ipv6_available(),
+                 "targets": [{k: v for k, v in t.items() if k != "region"} for t in c["ping"]["targets"]
+                             if t.get("family") != 6 or m.v6_live(t)]},
         "dns": {"enabled": c["dns"]["enabled"], "interval_seconds": c["dns"]["interval_seconds"],
                 "servers": c["dns"]["servers"], "domains": c["dns"]["domains"],
                 "ipv6_available": m.ipv6_available()},
@@ -2245,11 +2519,14 @@ def isp_current(m):
 
 
 def latest_routes(m):
-    """Latest successful route per target: {id: {ts, kind, path}}."""
+    """Latest successful route per target: {id: {ts, kind, path, cities}}."""
     out = {}
-    for tid, ts, kind, path in m.db.query(
-            "SELECT target, MAX(ts), kind, path FROM traceroute WHERE error IS NULL GROUP BY target"):
-        out[tid] = {"ts": ts, "kind": kind, "path": with_rels(json.loads(path or "[]"))}
+    for tid, ts, kind, path, hops in m.db.query(
+            "SELECT target, MAX(ts), kind, path, hops FROM traceroute WHERE error IS NULL GROUP BY target"):
+        detailed = locate_hops(json.loads(hops or "[]"))
+        out[tid] = {"ts": ts, "kind": kind, "path": with_rels(json.loads(path or "[]")),
+                    "cities": route_cities(detailed),  # the public dashboard may hide the first hops' cities
+                    "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
     return out
 
 
@@ -2259,7 +2536,7 @@ def api_traceroute(m, q):
     rows = m.db.query("SELECT ts, dest, kind, path, hops, error, dest_host FROM traceroute WHERE target = ?"
                       " ORDER BY ts DESC LIMIT 30", (tid,))
     hist = [{"ts": ts, "dest": dest, "dest_host": dh, "kind": kind, "path": with_rels(json.loads(path or "[]")),
-             "hops": json.loads(hops or "[]") if i == 0 else None, "error": err}
+             "hops": locate_hops(json.loads(hops or "[]")) if i == 0 else None, "error": err}
             for i, (ts, dest, kind, path, hops, err, dh) in enumerate(rows)]
     return {"target": tid, "latest": hist[0] if hist else None, "history": hist, "rel_source": as_rel_serial()}
 
@@ -2297,8 +2574,11 @@ def api_summary(m, q):
     for t in m.cfg["ping"]["targets"]:
         l = last.get(t["id"], (None, None))
         a = agg.get(t["id"])
+        if t.get("family") == 6 and not a and not m.v6_live(t):
+            continue  # this site (or this network) has no IPv6
         ping.append({"id": t["id"], "name": t["name"], "host": t.get("display") or t["host"], "method": t["method"],
                      "group": t["group"], "flag": t.get("flag", ""), "connection": t.get("connection"),
+                     "family": t.get("family"), "twin": t.get("twin"),
                      "where": t.get("where") or ("finding nearest server…" if t["method"] == "game" else None),
                      "last": r2(l[0]), "last_ts": l[1],
                      "avg5m": r2(a[0]) if a else None,
@@ -2607,6 +2887,15 @@ class PublicMask:
             self.back[v] = orig
         return v
 
+    @classmethod
+    def hide_home_hops(cls, hops):
+        """Without show_city: drop the route's first city, which is yours. Public hops up to the last one in
+        that city lose their city and hostname (routers there are often named after it)."""
+        first = next((h.get("city") for h in hops if isinstance(h, dict) and h.get("city")), None)
+        last = max((i for i, h in enumerate(hops) if isinstance(h, dict) and first and h.get("city") == first), default=-1)
+        return [dict(h, city=None, city_src=None, host=None) if i <= last and cls.is_public_ip(h.get("ip")) else h
+                for i, h in enumerate(hops)]
+
     def unmask(self, q):
         """Query parameters from the public page back to the real ids."""
         return {k: ",".join(self.back.get(x, x) for x in v.split(",")) for k, v in q.items()}
@@ -2625,6 +2914,11 @@ class PublicMask:
                 o = dict(o, hostname=None)
             if "location" in o and "isp" in o and o.get("location") and not self.show_city:
                 o = dict(o, location=o["location"].split(",")[-1].strip())  # "Melbourne, AU" -> "AU"
+            if "public_cities" in o:  # a route summary
+                o = dict(o, cities=o["cities"] if self.show_city else o["public_cities"])
+                del o["public_cities"]
+            if not self.show_city and isinstance(o.get("hops"), list):
+                o = dict(o, hops=self.hide_home_hops(o["hops"]))
             return {self.text(k) if isinstance(k, str) else k: self._walk(v) for k, v in o.items()}
         if isinstance(o, (list, tuple)):
             return [self._walk(v) for v in o]
