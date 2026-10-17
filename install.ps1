@@ -224,6 +224,7 @@ function Install-NetBae {
         Remove-Item "$AppDir\static" -Recurse -Force -ErrorAction SilentlyContinue
         Copy-Item "$Src\app\*" $AppDir -Recurse -Force -Exclude '__pycache__'
         Copy-Item "$Src\uninstall.ps1" $AppDir -Force
+        Copy-Item "$Src\tunnel.ps1" $AppDir -Force
         $utf8 = New-Object System.Text.UTF8Encoding($false)
         $mgr = [IO.File]::ReadAllText("$Src\bin\netbae.ps1", $utf8).Replace('__NETBAE_REPO__', $Repo)
         [IO.File]::WriteAllText("$AppDir\bin\netbae.ps1", $mgr, $utf8)
@@ -283,7 +284,7 @@ function Install-NetBae {
             $alt = ($Port + 1)..($Port + 19) | Where-Object { -not (Get-PortHolder $_) } | Select-Object -First 1
             if (-not $alt) { throw "port $Port and the 19 after it are all in use. Set a free [web] port in $ConfFile and re-run." }
             Warn "port $Port is used by '$name' - using port $alt instead (saved as [web] port in $ConfFile)"
-            $text = [IO.File]::ReadAllText($ConfFile, $utf8) -replace '(?m)^port *= *\d+', "port = $alt"
+            $text = [IO.File]::ReadAllText($ConfFile, $utf8) -replace '(?ms)(^\[web\][ \t]*\r?$(?:(?!^\[).)*?^port *= *)\d+', "`${1}$alt"  # [web] only, not [public]
             [IO.File]::WriteAllText($ConfFile, $text, $utf8)
             $Port = $alt
         }

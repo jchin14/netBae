@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -72,6 +72,10 @@ PUBLIC_RESOLVERS = [
 
 DEFAULT_CONFIG = {
     "web": {"host": "0.0.0.0", "port": 80},
+    # optional read-only copy of the dashboard for sharing (e.g. through a Cloudflare Tunnel)
+    "public": {"enabled": False, "host": "0.0.0.0", "port": 8080,
+               "requests_per_minute": 120, "total_requests_per_minute": 1200, "hide": [],
+               "show_hostname": False, "show_city": True},
     # raw samples -> 1-minute summaries -> hourly summaries; 0 = keep forever
     "storage": {"database": os.path.join(WIN_DATA_DIR, "netbae.db") if IS_WINDOWS else "/var/lib/netbae/netbae.db",
                 "raw_retention_days": 7, "minute_retention_days": 90, "retention_days": 0},
@@ -582,6 +586,7 @@ CREATE INDEX IF NOT EXISTS isp_ts ON isp(ts);
 CREATE TABLE IF NOT EXISTS traceroute (ts REAL NOT NULL, target TEXT NOT NULL, dest TEXT, kind TEXT,
     path TEXT, hops TEXT, error TEXT, dest_host TEXT);
 CREATE INDEX IF NOT EXISTS traceroute_target_ts ON traceroute(target, ts);
+CREATE TABLE IF NOT EXISTS own_prefix (prefix TEXT PRIMARY KEY, first_seen REAL, last_seen REAL);
 CREATE INDEX IF NOT EXISTS system_ts ON system(ts);
 CREATE TABLE IF NOT EXISTS ping_1m (
     target TEXT NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
@@ -915,6 +920,75 @@ def reverse_dns(ip):
         except (ValueError, OSError):
             _ptr_cache[ip] = None
     return _ptr_cache[ip]
+
+
+# Suffixes that only exist inside home networks: never someone's registered domain.
+LOCAL_SUFFIXES = {"local", "lan", "home", "internal", "localdomain", "arpa", "intranet", "corp", "private",
+                  "localhost", "test", "invalid", "example", "router", "gateway", "domain", "station", "box"}
+SECOND_LEVEL = {"com", "net", "org", "co", "gov", "edu", "ac", "id", "asn", "or", "ne", "go", "me", "ltd", "plc"}
+
+
+def site_domain(host):
+    """The registered domain in a hostname (unifi.home.example.com.au -> example.com.au), or None for
+    names that only exist on a home network (router.lan, nas.local, x.home.arpa)."""
+    labels = [x for x in str(host or "").lower().rstrip(".").split(".") if x]
+    if len(labels) < 2 or labels[-1] in LOCAL_SUFFIXES or not labels[-1].isalpha():
+        return None
+    n = 3 if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in SECOND_LEVEL else 2
+    return ".".join(labels[-n:])
+
+
+def local_search_domains():
+    """DNS search domains this machine got from DHCP or its settings (e.g. home.example.com)."""
+    found = []
+    for path in ("/etc/resolv.conf", "/run/systemd/resolve/resolv.conf"):
+        for line in (read_file(path) or "").splitlines():
+            parts = line.split()
+            if parts and parts[0] in ("search", "domain"):
+                found += parts[1:]
+    try:
+        if platform.system() == "Darwin":
+            out = subprocess.run(["scutil", "--dns"], capture_output=True, text=True, timeout=5).stdout
+            found += re.findall(r"search domain\[\d+\] : (\S+)", out)
+        elif IS_WINDOWS:
+            out = subprocess.run(["ipconfig", "/all"], capture_output=True, text=True, timeout=10,
+                                 errors="replace").stdout
+            found += re.findall(r"(?:Primary Dns Suffix|DNS Suffix Search List|Connection-specific DNS Suffix)"
+                                r"[ .]*: *(\S+)", out)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return found
+
+
+def local_global_ipv6():
+    """This machine's global (internet) IPv6 addresses, on every interface."""
+    found = []
+    text = read_file("/proc/net/if_inet6")
+    if text:
+        found = [str(ipaddress.ip_address(int(line.split()[0], 16))) for line in text.splitlines() if line.strip()]
+    else:
+        try:
+            out = subprocess.run(["ipconfig"] if IS_WINDOWS else ["ifconfig"], capture_output=True, text=True,
+                                 timeout=10, errors="replace").stdout
+            found = re.findall(r"[0-9a-fA-F]{0,4}(?::[0-9a-fA-F]{0,4}){2,7}", out)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:  # the address used for the internet (no packets are sent for UDP connect)
+        sk = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        sk.connect(("2606:4700:4700::1111", 53))
+        found.append(sk.getsockname()[0])
+        sk.close()
+    except OSError:
+        pass
+    out = set()
+    for ip in found:
+        try:
+            a = ipaddress.ip_address(ip.split("%")[0])
+        except ValueError:
+            continue
+        if a.version == 6 and a.is_global:
+            out.add(str(a))
+    return sorted(out)
 
 
 _asn_cache = {}
@@ -1578,6 +1652,11 @@ class Monitor:
                         "network, not yours. Use network_mode: host for accurate results.")
         self.ipv6 = (0, None)  # (checked_at, available)
         self.started = time.time()
+        self.config_path = None
+        # public dashboard sharing, shown on the private dashboard
+        self.public_visitors, self.public_direct_ts = {}, None
+        self.share, self.share_ts, self.share_busy = {"tunnels": []}, 0, False
+        self.share_lock = threading.Lock()
 
     def start(self):
         c = self.cfg
@@ -1813,6 +1892,19 @@ class Monitor:
             except Exception as e:
                 return (time.time(), name, None, None, None, None, str(e)[:200])
         self.db.insert_many("INSERT INTO isp VALUES (?,?,?,?,?,?,?)", list(self.pool.map(one, self.isp_connections())))
+        self.record_own_prefixes()
+
+    def record_own_prefixes(self):
+        """Remember every IPv6 /56 this machine has had, so the public dashboard keeps hiding old ones."""
+        now = time.time()
+        nets = {str(ipaddress.ip_network(f"{ip}/56", strict=False)) for ip in local_global_ipv6()}
+        for (ip,) in self.db.query("SELECT DISTINCT ip FROM isp WHERE ip LIKE '%:%' AND ts > ?", (now - 3600,)):
+            try:
+                nets.add(str(ipaddress.ip_network(f"{ip}/56", strict=False)))
+            except ValueError:
+                pass
+        self.db.insert_many("INSERT OR IGNORE INTO own_prefix VALUES (?, ?, ?)", [(n, now, now) for n in nets])
+        self.db.insert_many("UPDATE own_prefix SET last_seen = ? WHERE prefix = ?", [(now, n) for n in nets])
 
     def collect_system(self):
         s = self.sys.sample()
@@ -2250,6 +2342,104 @@ def st_by_label(m, kind, now):
     return out
 
 
+def find_program(name, *extra):
+    """A program on the PATH or in one of the usual install places."""
+    found = shutil.which(name)
+    if found:
+        return found
+    return next((x for x in extra if os.path.isfile(x)), None)
+
+
+def local_json(port, path, timeout=1.5):
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+        conn.request("GET", path)
+        r = conn.getresponse()
+        body = r.read()
+        conn.close()
+        return json.loads(body) if r.status == 200 else None
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+
+
+def tunnel_status(m):
+    """Tunnels pointing at the public dashboard: cloudflared (through its metrics server, on
+    127.0.0.1:20241-20245 by default) and Tailscale Funnel, each checked from outside."""
+    port = int(m.cfg["public"]["port"])
+    tunnels = []
+    for mport in range(20241, 20246):
+        ready = local_json(mport, "/ready")
+        if ready is None:
+            continue
+        connected = (ready.get("readyConnections") or 0) > 0
+        quick = (local_json(mport, "/quicktunnel") or {}).get("hostname")
+        if quick:
+            tunnels.append({"kind": "Cloudflare quick tunnel", "url": f"https://{quick}", "connected": connected})
+            continue
+        hosts = []
+        cfg = (local_json(mport, "/config") or {}).get("config") or {}
+        for rule in cfg.get("ingress") or []:  # tunnels configured in the Cloudflare dashboard
+            if rule.get("hostname") and f":{port}" in str(rule.get("service", "")):
+                hosts.append(rule["hostname"])
+        tunnels.append({"kind": "Cloudflare Tunnel", "url": f"https://{hosts[0]}" if hosts else None,
+                        "connected": connected, "metrics": mport})
+    # netbae tunnel's own config names the hostname of a tunnel on your domain
+    yml = os.path.join(os.path.dirname(m.config_path or DEFAULT_CONFIG_PATH), "cloudflared", "config.yml")
+    host = next(iter(re.findall(r"^\s*- hostname: *(\S+)", read_file(yml) or "", re.M)), None)
+    if host:
+        named = next((t for t in tunnels if t["kind"] == "Cloudflare Tunnel" and not t["url"]), None)
+        if named:
+            named["url"] = f"https://{host}"
+        elif not any(t["url"] == f"https://{host}" for t in tunnels):
+            tunnels.append({"kind": "Cloudflare Tunnel", "url": f"https://{host}", "connected": False})
+    ts = find_program("tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+                      os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Tailscale", "tailscale.exe"))
+    if ts:
+        try:
+            out = subprocess.run([ts, "funnel", "status"], capture_output=True, text=True, timeout=8,
+                                 errors="replace").stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        if re.search(rf"(127\.0\.0\.1|localhost):{port}\b", out):
+            url = next(iter(re.findall(r"(https://\S+?)(?::443)? \(Funnel on\)", out)), None)
+            tunnels.append({"kind": "Tailscale Funnel", "url": url, "connected": bool(url)})
+    for t in tunnels:  # can the internet actually reach it?
+        t["reachable"] = False
+        if t.get("url"):
+            try:
+                req = urllib.request.Request(t["url"] + "/api/config", headers={"User-Agent": f"netBae/{VERSION}"})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    t["reachable"] = '"public":true' in r.read(1 << 20).decode(errors="replace")
+            except Exception:
+                pass
+        t.pop("metrics", None)
+    return tunnels
+
+
+def api_sharing(m, q):
+    """Private dashboard only: is the public dashboard on, which tunnels reach it, how many visitors."""
+    pub = m.cfg["public"]
+    now = time.time()
+    with m.share_lock:
+        stale = now - m.share_ts > (20 if q.get("fresh") else 120)
+        if pub["enabled"] and stale and not m.share_busy:
+            m.share_busy = True
+
+            def refresh():
+                try:
+                    m.share = {"tunnels": tunnel_status(m)}
+                except Exception:
+                    log.exception("tunnel status check failed")
+                finally:
+                    m.share_ts, m.share_busy = time.time(), False
+            threading.Thread(target=refresh, name="tunnel-status", daemon=True).start()
+        share = dict(m.share)
+    return dict(share, enabled=pub["enabled"], port=pub["port"], host=pub["host"], checked=m.share_ts or None,
+                checking=m.share_busy, visitors_1h=sum(1 for t in list(m.public_visitors.values()) if now - t < 3600),
+                visitors_24h=sum(1 for t in list(m.public_visitors.values()) if now - t < 86400),
+                direct_ts=m.public_direct_ts)
+
+
 def api_run_speedtest(m, q):
     if not m.cfg["speedtest"]["enabled"]:
         return {"started": False, "reason": "speedtest is disabled in config"}
@@ -2266,6 +2456,191 @@ def api_run_speedtest(m, q):
     return {"started": True}
 
 
+# --------------------------------------------------------------------------- public dashboard
+
+_IP_RE = re.compile(r"(?<!\d)(?<!\d\.)(?:\d{1,3}\.){3}\d{1,3}(?!\d)(?!\.\d)"
+                    r"|(?<![\w:])[0-9a-fA-F]{0,4}(?::[0-9a-fA-F]{0,4}){2,7}(?![\w:])")
+
+
+V6_MATCH = 48  # IPv6 addresses in the same /48 as one of yours count as yours (ISPs hand out /48 to /64)
+
+
+class PublicMask:
+    """Hides you in public responses: the last half of your public IPv4 addresses, everything after
+    the ISP's /32 for IPv6 addresses in any /48 you've had, hostnames on your own domains or carrying
+    your addresses, the names of hops inside your network, this machine's name and your city.
+    [public] hide adds more addresses, prefixes or domains."""
+
+    def __init__(self, m):
+        self.m, self.loaded, self.v4, self.v4nets, self.v6 = m, 0, set(), [], []
+        self.domains, self.extra_domains, self.domains_loaded, self.needles, self.names = [], [], 0, [], []
+        self.show_host, self.show_city = m.cfg["public"]["show_hostname"], m.cfg["public"]["show_city"]
+        self.lock = threading.Lock()
+        self.back = {}  # masked -> original, so an id containing your address still works in queries
+
+    def refresh(self):
+        with self.lock:
+            now = time.time()
+            if now - self.loaded < 60:
+                return
+            v4, v4nets, v6 = set(), [], set()
+            ips = [r[0] for r in self.m.db.query("SELECT DISTINCT ip FROM isp WHERE ip IS NOT NULL")]
+            ips += local_global_ipv6()
+            for (pfx,) in self.m.db.query("SELECT prefix FROM own_prefix"):
+                v6.add(ipaddress.ip_network(pfx).supernet(new_prefix=V6_MATCH))
+            extra_domains = []
+            for item in self.m.cfg["public"].get("hide") or []:
+                try:
+                    net = ipaddress.ip_network(str(item).strip(), strict=False)
+                except ValueError:
+                    extra_domains.append(str(item).strip().lower().strip("."))
+                    continue
+                if net.version == 4:
+                    v4nets.append(net)
+                else:  # a single IPv6 address hides its whole /48
+                    v6.add(net if net.prefixlen <= V6_MATCH else net.supernet(new_prefix=V6_MATCH))
+            for ip in ips:
+                try:
+                    a = ipaddress.ip_address(str(ip).split("%")[0])
+                except ValueError:
+                    continue
+                if not a.is_global:
+                    continue
+                if a.version == 4:
+                    v4.add(str(a))
+                else:
+                    v6.add(ipaddress.ip_network(f"{a}/{V6_MATCH}", strict=False))
+            if now - self.domains_loaded > 600:
+                self.domains = sorted(self.find_domains(), key=len, reverse=True)
+                self.domains_loaded = now
+            self.extra_domains = [d for d in extra_domains if d]
+            # your addresses as ISPs write them inside hostnames
+            needles = set()
+            for ip in v4:
+                o = ip.split(".")
+                needles.update({"-".join(o), "_".join(o), "-".join(o[::-1]), ".".join(o[::-1]) + ".",
+                                "".join(x.zfill(3) for x in o), "".join(f"{int(x):02x}" for x in o)})
+            for n in v6:  # e.g. 2401-d002-3914-..., 2401d0023914...
+                h = n.network_address.exploded.split(":")[:3]
+                needles.update({"-".join(h), "-".join(x.lstrip("0") or "0" for x in h) + "-", "".join(h)})
+            host = self.m.static_info.get("hostname") or ""
+            names = {host, host.split(".")[0], socket.gethostname(), socket.gethostname().split(".")[0]}
+            self.names = [] if self.show_host else sorted((x for x in names if len(x) >= 3), key=len, reverse=True)
+            self.v4, self.v4nets, self.v6, self.needles, self.loaded = v4, v4nets, list(v6), sorted(needles), now
+
+    def find_domains(self):
+        """Your own domains: from the router's and this machine's names, the DNS search domains,
+        and the names of hops inside your network."""
+        names = local_search_domains()
+        names += [reverse_dns(ip) for ip in (default_gateway(), SystemStats.primary_ip()) if ip]
+        for (hops,) in self.m.db.query("SELECT hops FROM traceroute WHERE hops IS NOT NULL ORDER BY ts DESC LIMIT 100"):
+            for h in json.loads(hops or "[]")[:4]:
+                if h.get("host") and not self.is_public_ip(h.get("ip")):
+                    names.append(h["host"])
+        return {d for d in map(site_domain, names) if d}
+
+    @staticmethod
+    def is_public_ip(ip):
+        try:
+            return ipaddress.ip_address(str(ip).split("%")[0]).is_global
+        except ValueError:
+            return False
+
+    def _ip(self, mt):
+        txt = mt.group(0)
+        try:
+            a = ipaddress.ip_address(txt)
+        except ValueError:
+            return txt
+        if a.version == 4 and (str(a) in self.v4 or any(a in n for n in self.v4nets)):
+            out = ".".join(txt.split(".")[:2] + ["x", "x"])
+        elif a.version == 6 and any(a in n for n in self.v6):
+            out = ":".join(a.exploded.split(":")[:2] + ["x"] * 6)
+        else:
+            return txt
+        self.back[out] = txt
+        return out
+
+    def text(self, v):
+        orig = v
+        v = _IP_RE.sub(self._ip, v)
+        for ip in self.v4:  # hostnames like 203-0-113-5.isp.example
+            dashed = ip.replace(".", "-")
+            if dashed in v:
+                v = v.replace(dashed, "-".join(ip.split(".")[:2] + ["x", "x"]))
+        low = v.lower()
+        for d in self.domains + self.extra_domains:  # any name on your own domain
+            if d in low:
+                v = re.sub(r"(?<![\w-])(?:[\w-]+\.)*" + re.escape(d) + r"(?![\w-])", "(hidden)", v, flags=re.I)
+                low = v.lower()
+        for needle in self.needles:  # hostnames carrying your addresses
+            if needle in low:
+                v = re.sub(r"[\w.-]*" + re.escape(needle) + r"[\w.-]*", "(hidden)", v, flags=re.I)
+                low = v.lower()
+        for name in self.names:  # this machine's name
+            if name.lower() in low:
+                v = re.sub(r"(?<![\w-])" + re.escape(name) + r"(?![\w-])", "(hidden)", v, flags=re.I)
+                low = v.lower()
+        if v != orig:
+            self.back[v] = orig
+        return v
+
+    def unmask(self, q):
+        """Query parameters from the public page back to the real ids."""
+        return {k: ",".join(self.back.get(x, x) for x in v.split(",")) for k, v in q.items()}
+
+    def apply(self, obj):
+        self.refresh()
+        return self._walk(obj)
+
+    def _walk(self, o):
+        if isinstance(o, str):
+            return self.text(o)
+        if isinstance(o, dict):
+            if "ip" in o and "host" in o and o.get("host") and not self.is_public_ip(o.get("ip")):
+                o = dict(o, host=None)  # a hop inside your network: its name says who you are
+            if "hostname" in o and not self.show_host:
+                o = dict(o, hostname=None)
+            if "location" in o and "isp" in o and o.get("location") and not self.show_city:
+                o = dict(o, location=o["location"].split(",")[-1].strip())  # "Melbourne, AU" -> "AU"
+            return {self.text(k) if isinstance(k, str) else k: self._walk(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [self._walk(v) for v in o]
+        return o
+
+
+class RateLimiter:
+    """Token buckets: one per visitor plus one shared by everyone, each refilled per minute."""
+
+    def __init__(self, per_client, total):
+        self.per_client, self.total = max(1, int(per_client)), max(1, int(total))
+        self.buckets, self.all, self.lock = {}, [float(self.total), time.monotonic()], threading.Lock()
+
+    @staticmethod
+    def _take(b, cap, now):
+        b[0] = min(cap, b[0] + (now - b[1]) * cap / 60.0)
+        b[1] = now
+        if b[0] < 1:
+            return (1 - b[0]) * 60.0 / cap  # seconds until the next request is allowed
+        b[0] -= 1
+        return 0
+
+    def check(self, client):
+        """0 if the request may go ahead, else the seconds to wait."""
+        now = time.monotonic()
+        with self.lock:
+            if len(self.buckets) > 10000:  # forget visitors whose bucket has refilled
+                self.buckets = {k: b for k, b in self.buckets.items() if now - b[1] < 60}
+            b = self.buckets.setdefault(client, [float(self.per_client), now])
+            wait_s = self._take(b, self.per_client, now)
+            if wait_s:
+                return wait_s
+            wait_s = self._take(self.all, self.total, now)
+            if wait_s:
+                b[0] += 1  # not this visitor's fault
+            return wait_s
+
+
 GET_ROUTES = {
     "/api/config": api_config, "/api/ping": api_ping, "/api/dns": api_dns,
     "/api/speedtest": api_speedtest, "/api/system": api_system,
@@ -2273,23 +2648,84 @@ GET_ROUTES = {
     "/api/traceroute": api_traceroute,
 }
 POST_ROUTES = {"/api/speedtest/run": api_run_speedtest}
+PRIVATE_ROUTES = dict(GET_ROUTES, **{"/api/sharing": api_sharing})  # not on the public dashboard
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
                  ".json": "application/json", ".ico": "image/x-icon"}
 
 
-def make_handler(monitor):
+def make_handler(monitor, public=False):
+    pcfg = monitor.cfg["public"]
+    limiter = RateLimiter(pcfg["requests_per_minute"], pcfg["total_requests_per_minute"]) if public else None
+    mask = PublicMask(monitor) if public else None
+    busy = threading.BoundedSemaphore(32)  # public: at most this many requests worked on at once
+    direct_warned = [0.0]
+
     class Handler(BaseHTTPRequestHandler):
         server_version = f"netbae/{VERSION}"
+        timeout = 20 if public else None  # public: drop connections that stall mid-request
+
+        def client_id(self):
+            a = peer_ip(self.client_address[0])
+            peer = str(a) if a else self.client_address[0]
+            if a and a.is_private:  # a tunnel or reverse proxy on your network: rate-limit the real visitor
+                fwd = (self.headers.get("CF-Connecting-IP") or self.headers.get("X-Real-IP")
+                       or (self.headers.get("X-Forwarded-For") or "").split(",")[0]).strip()
+                if fwd:
+                    return fwd
+            return peer
+
+        def warn_direct(self):
+            """Visitors arriving straight from the internet mean the port is forwarded, not tunnelled."""
+            a = peer_ip(self.client_address[0])
+            if a and a.is_global:
+                mask.refresh()
+                if str(a) in mask.v4 or any(a in n for n in mask.v6):
+                    return  # your own network, reaching this machine on its public IPv6 address
+            if a and a.is_global:
+                monitor.public_direct_ts = time.time()
+            if a and a.is_global and time.time() - direct_warned[0] > 3600:
+                direct_warned[0] = time.time()
+                log.warning("public dashboard: a visitor (%s) reached port %d straight from the internet, so the port "
+                            "is forwarded on your router and visitors see your full IP address. Use a Cloudflare "
+                            "Tunnel or Tailscale Funnel instead (see the README) and remove the port forward.",
+                            a, self.server.server_address[1])
+
+        def public_gate(self):
+            """Public dashboard: True if this request may go ahead (else a reply was sent)."""
+            mask.refresh()
+            self.warn_direct()
+            cid = self.client_id()
+            a = peer_ip(cid)
+            if not (a and (str(a) in mask.v4 or any(a in n for n in mask.v6))):  # not you (e.g. the tunnel check)
+                v = monitor.public_visitors
+                if len(v) > 20000:
+                    for k in [k for k, t in list(v.items()) if time.time() - t > 86400]:
+                        v.pop(k, None)
+                v[cid] = time.time()
+            wait_s = limiter.check(cid)
+            if wait_s:
+                self.send_json({"error": "too many requests, slow down"}, 429, {"Retry-After": str(math.ceil(wait_s))})
+                return False
+            return True
 
         def log_message(self, fmt, *args):
             log.debug("%s - %s", self.address_string(), fmt % args)
 
-        def send_json(self, obj, status=200):
+        def end_headers(self):
+            if public:
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("X-Frame-Options", "DENY")
+            super().end_headers()
+
+        def send_json(self, obj, status=200, headers=None):
             body = json.dumps(obj, separators=(",", ":")).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -2301,7 +2737,12 @@ def make_handler(monitor):
             if fn is None:
                 return False
             try:
-                self.send_json(fn(monitor, q))
+                out = fn(monitor, mask.unmask(q) if public else q)
+                if public:
+                    if u.path == "/api/config":
+                        out = dict(out, public=True)
+                    out = mask.apply(out)
+                self.send_json(out)
             except (BrokenPipeError, ConnectionResetError):
                 pass  # the browser went away (reload, closed tab) before the reply was sent
             except ValueError as e:
@@ -2312,7 +2753,18 @@ def make_handler(monitor):
             return True
 
         def do_GET(self):
-            if self.dispatch(GET_ROUTES):
+            if not public:
+                return self.serve_get()
+            if not busy.acquire(blocking=False):
+                return self.send_json({"error": "busy, try again shortly"}, 503, {"Retry-After": "5"})
+            try:
+                if self.public_gate():
+                    self.serve_get()
+            finally:
+                busy.release()
+
+        def serve_get(self):
+            if self.dispatch(GET_ROUTES if public else PRIVATE_ROUTES):
                 return
             path = urlparse(self.path).path
             if path.startswith("/api/"):
@@ -2331,6 +2783,8 @@ def make_handler(monitor):
             self.wfile.write(body)
 
         def do_POST(self):
+            if public:  # nothing can be started or changed from the public dashboard
+                return self.send_json({"error": "this is a read-only public dashboard"}, 403)
             if not self.dispatch(POST_ROUTES):
                 self.send_json({"error": "not found"}, 404)
 
@@ -2349,6 +2803,31 @@ def is_netbae(host, port):
         return False
 
 
+class DualStackServer(ThreadingHTTPServer):
+    """host = "::": IPv6 and (where the OS allows) IPv4 on one socket."""
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        try:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        except (OSError, AttributeError):
+            pass
+        super().server_bind()
+
+
+def http_server(host, port, handler):
+    return (DualStackServer if ":" in str(host) else ThreadingHTTPServer)((host, port), handler)
+
+
+def peer_ip(addr):
+    """A client address as an ipaddress object (IPv4 clients of a dual-stack socket come as ::ffff:a.b.c.d)."""
+    try:
+        a = ipaddress.ip_address(str(addr).split("%")[0])
+    except ValueError:
+        return None
+    return a.ipv4_mapped if a.version == 6 and a.ipv4_mapped else a
+
+
 def bind_web(host, port, handler, tries=20):
     """The dashboard's server on the configured port, or the next free one if something else holds it."""
     # On Windows SO_REUSEADDR would let a second copy bind the same port instead of failing.
@@ -2356,7 +2835,7 @@ def bind_web(host, port, handler, tries=20):
     ThreadingHTTPServer.request_queue_size = 128  # default of 5 drops parallel dashboard requests
     for p in range(port, min(port + tries, 65536)):
         try:
-            httpd = ThreadingHTTPServer((host, p), handler)
+            httpd = http_server(host, p, handler)
         except OSError as e:
             if is_netbae(host, p):
                 sys.exit(f"netBae is already running on port {p}")
@@ -2401,10 +2880,24 @@ def main():
         return
 
     monitor = Monitor(cfg)
+    monitor.config_path = os.path.abspath(args.config)
     host, port = cfg["web"]["host"], int(cfg["web"]["port"])
     httpd = bind_web(host, port, make_handler(monitor))
     monitor.start()  # only once the port is ours, so a second copy never collects alongside the first
     log.info("netBae %s dashboard listening on http://%s:%d", VERSION, host, httpd.server_address[1])
+    pub = cfg["public"]
+    if pub["enabled"]:
+        pport = int(pub["port"])
+        try:
+            if pport == httpd.server_address[1]:
+                raise OSError("it's the same port as the main dashboard")
+            pserver = http_server(pub["host"], pport, make_handler(monitor, public=True))
+            pserver.daemon_threads = True
+            threading.Thread(target=pserver.serve_forever, name="public-web", daemon=True).start()
+            log.info("read-only public dashboard listening on http://%s:%d (%d requests/min per visitor)",
+                     pub["host"], pport, int(pub["requests_per_minute"]))
+        except OSError as e:
+            log.error("couldn't start the public dashboard on port %d (%s); the main dashboard still runs", pport, e)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -472,7 +472,7 @@ async function refreshSummary() {
       <tbody>
         ${row('<b>Closest server</b>', ok, st.averages?.['7d'], 'strong', '', 'speedtest:Auto')}
         ${conns.map((x) => row(`<b>${esc(x.name)}</b>`, x.ts != null && x.error && x.last_ok ? x.last_ok : x, x.avg7d, 'strong',
-          CONFIG.speedtest.enabled ? `<button class="link run-conn" data-conn="${esc(x.name)}">Run</button>` : '')).join('')}
+          CONFIG.speedtest.enabled && !CONFIG.public ? `<button class="link run-conn" data-conn="${esc(x.name)}">Run</button>` : '')).join('')}
         ${regions.map((x) => row(`${flag(x.flag)}${esc(x.name)}`, x, x.avg7d, '', '', `region:${x.name}`)).join('')}
         ${regions.length ? `<tr class="strong total"><td><b>All regions</b></td><td colspan="6" class="muted" style="text-align:left">${st.regions_avg?.['7d']?.tests ?? 0} tests in 7 days</td>${avgCells(st.regions_avg?.['7d'])}<td></td><td></td><td></td></tr>` : ''}
       </tbody>`;
@@ -480,10 +480,11 @@ async function refreshSummary() {
 
   const running = st.status.running;
   const btn = $('#run-speedtest');
+  btn.hidden = !!CONFIG.public;  // the public dashboard is read-only
   btn.disabled = !CONFIG.speedtest.enabled || running;
   btn.textContent = running ? `Running ${st.status.label && st.status.label !== 'Auto' ? st.status.label : ''}…`.replace(' …', '…') : 'Run now';
   const rbtn = $('#run-regions');
-  rbtn.hidden = !CONFIG.speedtest.enabled || !CONFIG.speedtest.regions.length;
+  rbtn.hidden = !CONFIG.speedtest.enabled || !CONFIG.speedtest.regions.length || !!CONFIG.public;
   rbtn.disabled = running;
 }
 
@@ -491,6 +492,31 @@ async function refreshSummary() {
 function bar(pct) {
   const cls = pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : '';
   return `<div class="bar"><div class="${cls}" style="width:${Math.min(100, pct || 0)}%"></div></div>`;
+}
+
+// ------------------------------------------------------------------ public dashboard sharing (private view only)
+async function refreshSharing() {
+  if (CONFIG.public) return;
+  const d = await api('sharing');
+  const el = $('#share-now');
+  el.hidden = !d.enabled;
+  if (!d.enabled) return;
+  const host = (u) => u.replace(/^https:\/\//, '');
+  const parts = (d.tunnels || []).map((t) => {
+    const cls = t.reachable ? 'good' : t.connected ? 'warn' : 'bad';
+    const state = t.reachable ? 'online' : t.connected ? (d.checking ? 'checking…' : 'connected, not reachable yet') : 'not connected';
+    const where = t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener">${esc(host(t.url))}</a>` : 'no hostname yet';
+    return `<span title="${esc(t.kind)}${d.checked ? ` · checked ${fmtAgo(d.checked)}` : ''}"><span class="dot ${cls}"></span> ${where} <span class="muted">(${esc(t.kind)}, ${state})</span></span>`;
+  });
+  if (!parts.length) {
+    parts.push(d.checked || !d.checking
+      ? `<span title="The public dashboard is on, but no Cloudflare Tunnel or Tailscale Funnel points at it"><span class="dot"></span> on port ${esc(d.port)}, not shared yet (run <code>netbae tunnel</code>)</span>`
+      : '<span>checking tunnels…</span>');
+  }
+  const visitors = `<span title="${d.visitors_24h} in the last 24 hours">${d.visitors_1h} visitor${d.visitors_1h === 1 ? '' : 's'} in the last hour</span>`;
+  const direct = d.direct_ts && Date.now() / 1000 - d.direct_ts < 86400
+    ? ` · <span class="error-text" title="A visitor reached the public port straight from the internet, so it's port-forwarded and they can see your full IP. Remove the port forward and use netbae tunnel.">reached without a tunnel ${fmtAgo(d.direct_ts)}</span>` : '';
+  el.innerHTML = `Public dashboard: ${parts.join(' · ')} · ${visitors}${direct}`;
 }
 
 async function refreshSystem() {
@@ -834,7 +860,7 @@ function systemPanel() {
 // ------------------------------------------------------------------ boot
 async function refreshAll(force = false) {
   if (document.hidden && !force) return;
-  const jobs = [refreshSummary(), refreshSystem(), ...panels.filter((p) => force || p.isLive()).map((p) => p.refresh())];
+  const jobs = [refreshSummary(), refreshSystem(), refreshSharing(), ...panels.filter((p) => force || p.isLive()).map((p) => p.refresh())];
   const res = await Promise.allSettled(jobs);
   const failed = res.find((r) => r.status === 'rejected');
   if (failed) {
@@ -940,7 +966,8 @@ async function main() {
 
   const sp = CONFIG.speedtest;
   if (CONFIG.repo) $('#repo-link').href = CONFIG.repo;
-  $('#docker-note').hidden = !CONFIG.docker_bridge;
+  $('#docker-note').hidden = !CONFIG.docker_bridge || !!CONFIG.public;
+  $('#public-badge').hidden = !CONFIG.public;
   $('#footer').innerHTML = `<a href="${esc(CONFIG.repo || '#')}" target="_blank" rel="noopener">netBae ${esc(CONFIG.version)}</a> by `
     + '<a href="https://github.com/jchin14" target="_blank" rel="noopener">jchin14</a> · '
     + `ping every ${CONFIG.ping.interval_seconds}s · `
@@ -948,7 +975,7 @@ async function main() {
     + 'tip: double-click a chip to show only that series';
 
   await refreshAll(true);
-  setInterval(refreshAll, REFRESH_MS);
+  setInterval(refreshAll, CONFIG.public ? REFRESH_MS * 2 : REFRESH_MS);  // public: go easy on the server
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(); });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (store.get('theme', 'auto') === 'auto') location.reload(); });
 }

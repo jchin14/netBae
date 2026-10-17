@@ -15,3 +15,16 @@ services:
     volumes:
       - ./netbae-data:/data       # config.toml + history (netbae.db) live here
       - /:/host:ro                # optional: lets the dashboard show the host's disk usage
+
+  # Optional: share a read-only public dashboard through a Cloudflare Tunnel, without opening a port.
+  # 1. In netbae-data/config.toml set [public] enabled = true and host = "127.0.0.1", then restart netbae.
+  # 2. Create a tunnel in the Cloudflare dashboard (Zero Trust > Networks > Tunnels), give it a public
+  #    hostname with service http://127.0.0.1:8080, and paste its token below.
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: netbae-tunnel
+  #   restart: unless-stopped
+  #   network_mode: host
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     TUNNEL_TOKEN: "paste-your-tunnel-token-here"

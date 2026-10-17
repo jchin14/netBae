@@ -287,6 +287,7 @@ if [[ -d "$APP_DIR/static/vendor" ]]; then VENDOR_BACKUP=$(mktemp -d); cp -a "$A
 rm -rf "$APP_DIR/static"
 cp -a "$SRC_DIR/app/." "$APP_DIR/"
 install -m 0755 "$SRC_DIR/uninstall.sh" "$APP_DIR/uninstall.sh"
+install -m 0755 "$SRC_DIR/tunnel.sh" "$APP_DIR/tunnel.sh"
 sed "s#__NETBAE_REPO__#$NETBAE_REPO#" "$SRC_DIR/bin/netbae" >/usr/local/bin/netbae
 chmod 0755 /usr/local/bin/netbae
 mkdir -p "$APP_DIR/static/vendor"
@@ -338,7 +339,8 @@ pick_port() {
   for ((p = PORT + 1; p < PORT + 20; p++)); do
     if [[ -z "$(port_holder "$p")" ]]; then
       c_warn "port $PORT is used by '$holder' - using port $p instead (saved as [web] port in $CONF_DIR/config.toml)"
-      sed -E "s/^port *= *[0-9]+/port = $p/" "$CONF_DIR/config.toml" >"$CONF_DIR/config.toml.tmp"
+      # [web] section only: [public] has a port line too
+      sed -E '/^\[web\]/,/^\[/ s/^port *= *[0-9]+/port = '"$p"'/' "$CONF_DIR/config.toml" >"$CONF_DIR/config.toml.tmp"
       cat "$CONF_DIR/config.toml.tmp" >"$CONF_DIR/config.toml" && rm -f "$CONF_DIR/config.toml.tmp"
       PORT=$p
       return

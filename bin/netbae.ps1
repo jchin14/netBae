@@ -92,6 +92,7 @@ switch ($Command) {
     }
     'check' { if (-not (Invoke-Check)) { exit 1 } }
     'version' { Write-Host "netBae $(Get-Version)" }
+    'tunnel' { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$AppDir\tunnel.ps1" @Rest; exit $LASTEXITCODE }
     'uninstall' {
         $purge = $Rest | Where-Object { $_ -in '-purge', '--purge', '/purge' }
         $tmp = Join-Path $env:TEMP 'netbae-uninstall.ps1'   # run from outside the folder it deletes
@@ -110,6 +111,8 @@ netbae - manage the netBae internet monitor
   netbae check        validate the config and show the next speedtest times
   netbae restart | start | stop
   netbae version
+  netbae tunnel       share a read-only dashboard publicly (Cloudflare or Tailscale, no port forwarding)
+  netbae tunnel status | off
   netbae uninstall [-Purge]
 '@
     }

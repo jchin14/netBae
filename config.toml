@@ -12,6 +12,25 @@
 host = "0.0.0.0"       # 0.0.0.0 = reachable from other machines on your network
 port = 80             # dashboard at http://<this-machine>/ ; if it's taken, the next free port is used
 
+# Read-only copy of the dashboard on a second port, for sharing (best through a Cloudflare
+# Tunnel or Tailscale Funnel - see the README; don't port-forward it on your router).
+# It runs alongside the main dashboard in the same service. Visitors can look but can't
+# run speedtests or anything else, and requests are rate-limited. Your public IPv4 addresses
+# show as 203.0.x.x, IPv6 addresses in any /48 you've had as 2403:5800:x:x:x:x:x:x, and
+# hostnames carrying your addresses, names on your own domain (found from your router, this
+# machine and your DNS search domain), names of hops inside your network and this machine's
+# name are hidden.
+[public]
+enabled = false
+host = "0.0.0.0"                  # "127.0.0.1" if the tunnel runs on this machine (hides it from your LAN), "::" for IPv6 too
+port = 8080
+requests_per_minute = 120         # per visitor; an open dashboard uses about 20 a minute
+total_requests_per_minute = 1200  # all visitors together
+hide = []                         # anything else to hide: addresses, prefixes or domains,
+                                  # e.g. ["198.51.100.0/24", "2001:db8:1234::/48", "example.com"]
+show_hostname = false             # true = show this machine's name (often includes yours, e.g. Sams-Pi)
+show_city = true                  # false = show only the country of your ISP location, not the city
+
 [storage]
 database = "/var/lib/netbae/netbae.db"
 # Data is kept at three resolutions. 0 = keep forever.

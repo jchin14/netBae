@@ -55,6 +55,11 @@ body {
 }
 h1 { font-size: 20px; margin: 0; font-weight: 650; display: flex; align-items: center; gap: 8px; }
 h1 .logo { width: 24px; height: 24px; fill: none; stroke: var(--accent); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.share-now .dot { width: 7px; height: 7px; vertical-align: 1px; }
+.share-now code { font-size: 11px; }
+.share-now[hidden] { display: none; }
+.badge-public { border: 1px solid var(--border); color: var(--muted); border-radius: 999px; padding: 1px 8px; margin-right: 8px; }
+.badge-public[hidden] { display: none; }
 .repo { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); text-decoration: none; margin-left: 10px;
   border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
 .repo:hover { color: var(--text); border-color: var(--muted); }

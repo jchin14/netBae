@@ -32,6 +32,18 @@ function Set-MachinePath([scriptblock]$change) {
     }
 }
 
+# netbae tunnel: the Cloudflare task, and a Tailscale Funnel pointing at netBae's public port
+if (Get-ScheduledTask -TaskName 'netBae tunnel' -ErrorAction SilentlyContinue) {
+    Stop-ScheduledTask -TaskName 'netBae tunnel' -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName 'netBae tunnel' -Confirm:$false
+}
+Get-CimInstance Win32_Process -Filter "Name = 'cloudflared.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like "*$DataDir*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+$ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+$pport = if ((Test-Path "$DataDir\config.toml") -and ((Get-Content "$DataDir\config.toml" -Raw) -match '(?ms)^\[public\][^\[]*?^port *= *(\d+)')) { $Matches[1] } else { '8080' }
+if ((Test-Path $ts) -and ((& $ts funnel status 2>$null) | Out-String) -like "*127.0.0.1:$pport*") { & $ts funnel --https=443 off *> $null }
+
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false

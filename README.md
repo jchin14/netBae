@@ -16,46 +16,76 @@ Ping, DNS, game servers and speedtests, recorded around the clock on a Raspberry
 
 </div>
 
-## Why netBae
+## TL;DR
 
-Your ISP's status page says everything is fine, but your game lagged, the video call dropped and the evening stream buffered. netBae keeps a record of what your connection was actually doing, so you can see when it was slow, how slow and where the problem was.
-
-- **Latency to everything that matters:** your router, DNS resolvers, Google/YouTube, Netflix/Twitch, Facebook/Instagram/Reddit/X, AI (ChatGPT, Claude, Grok), Microsoft/Apple/AWS/GitHub, CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Usenet in the US and Europe (Omicron/Newshosting, Easynews, Giganews, UsenetExpress, Frugal, Eweka, Usenet.Farm) and **game servers** (Steam & CS2, Fortnite, Discord voice), every 5 seconds
-- **Grouped overview:** one card per category with its average ping. Click a card to see every host in it.
-- **Charts that show jitter:** the average as a solid line with a shaded P5–P95 (or min–max) band. The y-axis fits the averages, and you can zoom and drag. When there's only a little data (a new install or a newly added host), the time axis zooms in to it.
-- **Speedtests** with the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages
-- **Worldwide view:** latency to 18 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them
-- **Which ISP you're on:** the public IP and ISP of each connection, checked every 10 minutes and marked on the charts, so failovers stand out
-- **Routes and transit providers:** every 12 hours (and right after netBae starts, for anything without a recent route) netBae traces the route to each target and shows whether it's **on-net**, a **direct** connection to the destination's network, handed over at an **IX** (internet exchange, named) or **transit** via carriers like Cogent, Arelion, GTT or Vodafone. Each hand-over is labelled **peering** or **paid transit**, and every hop and hostname is one click away
-- **Secondary connection monitoring:** test a second internet connection (e.g. a 5G/4G failover link) alongside your main one, at the same time
-- **DNS over IPv4 and IPv6:** response times for your router, the DNS servers DHCP gave you, and Cloudflare, Google, Quad9, OpenDNS, CleanBrowsing, AdGuard, NextDNS and Control D
-- **History kept forever,** at the right resolution: every ping for 7 days, 1-minute summaries for 90 days, hourly summaries for ever
-- **Works from any device** on your network, including when the internet is down
-- **Light and dark themes:** follows your device, or pick one with the switch in the header (remembered per browser)
-- **No Docker, no dependencies:** Python's standard library and SQLite. One command installs or updates it.
-
-## Quick start
-
-On a Raspberry Pi, a Linux VM (Proxmox, etc.) or a Mac:
+**Install** (or update: run it again, your config and history are kept):
 
 ```bash
+# Raspberry Pi, any Linux, or a Mac
 curl -fsSL https://raw.githubusercontent.com/jchin14/netBae/main/install.sh | sudo bash
 ```
 
-On Windows 10/11, in **PowerShell as Administrator**:
-
 ```powershell
+# Windows 10/11, in PowerShell as Administrator
 irm https://raw.githubusercontent.com/jchin14/netBae/main/install.ps1 | iex
 ```
 
-Or with **Docker** (Linux):
-
 ```bash
+# Docker (Linux host)
 docker run -d --name netbae --network host --restart unless-stopped \
   -e TZ=Australia/Melbourne -v netbae-data:/data ghcr.io/jchin14/netbae:latest
 ```
 
-Then open **`http://<that-machine>/`** on your phone or laptop. Run the same command again any time to update; your config and history are kept.
+**Open** `http://<that-machine>/` from any device on your network.
+
+**Useful commands:**
+
+```bash
+netbae status          # is it running, and on which port?
+netbae logs            # follow the log
+netbae config          # edit the config, check it and restart
+netbae check           # check the config and show when the next speedtests run
+netbae update          # update to the latest version
+netbae restart         # also: start, stop
+netbae tunnel          # share a read-only dashboard publicly (no port forwarding)
+netbae tunnel status   # what's shared, where, and how many visitors (also: off)
+netbae uninstall       # remove it (--purge also deletes config and history; -Purge on Windows)
+```
+
+## Contents
+
+- [Why netBae](#why-netbae)
+- [Install](#install): supported systems, what the installer does on Linux, macOS and Windows, Docker, where things live
+- [Everyday use](#everyday-use)
+- [Configuration](#configuration): [All options](#all-options) · [Game servers](#game-servers) · [Regions](#region-speedtests-and-pings) · [Secondary connection](#monitoring-a-secondary-connection)
+- [Sharing a public dashboard](#sharing-a-public-dashboard): [netbae tunnel](#the-easy-way-netbae-tunnel) · [What visitors see](#what-visitors-see) · [By hand](#by-hand)
+- [How it measures](#how-it-measures)
+- [Averages and storage](#averages-and-storage)
+- [Behind a reverse proxy](#behind-a-reverse-proxy) · [API](#api) · [FAQ](#faq) · [Contributing](#contributing) · [Licence](#licence)
+
+## Why netBae
+
+Your ISP's status page says everything is fine, but your game lagged, the video call dropped and the evening stream buffered. netBae keeps a record of what your connection was actually doing, so you can see when it was slow, how slow and where the problem was.
+
+| | |
+|---|---|
+| **Ping, every 5 seconds** | your router, DNS resolvers, Google/YouTube, Netflix/Twitch, Facebook/Instagram/Reddit/X, AI (ChatGPT, Claude, Grok), Microsoft/Apple/AWS/GitHub, CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Usenet in the US and Europe, and **game servers** (Steam & CS2, Fortnite, Discord voice) |
+| **Grouped overview** | one card per category with its average ping; click a card to see every host in it |
+| **Charts that show jitter** | the average as a line with a shaded P5-P95 (or min-max) band; zoom and drag the y-axis |
+| **Speedtests** | the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages |
+| **Worldwide view** | latency to 18 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them |
+| **Which ISP you're on** | each connection's public IP and ISP, checked every 10 minutes and marked on the charts, so failovers stand out |
+| **Routes** | every 12 hours, the route to each target: **on-net**, **direct**, via an **IX** (named) or **transit** through carriers like Cogent, Arelion or GTT, with each hand-over labelled **peering** or **paid transit** |
+| **Secondary connection** | test a second internet connection (e.g. a 5G failover link) alongside your main one |
+| **DNS over IPv4 and IPv6** | your router, your DHCP DNS, and Cloudflare, Google, Quad9, OpenDNS, CleanBrowsing, AdGuard, NextDNS and Control D |
+| **Public dashboard** | optionally share a read-only, privacy-masked copy through Cloudflare or Tailscale with one command |
+| **History forever** | every ping for 7 days, 1-minute summaries for 90 days, hourly summaries for ever |
+| **Light and dark themes** | follows your device, or pick one in the header |
+| **No dependencies** | Python's standard library and SQLite; works from any device on your network, even when the internet is down |
+
+## Install
+
+The [TL;DR](#tldr) has the install commands. Run the same command again any time to update; your config and history are kept. It works on:
 
 | | Supported |
 |---|---|
@@ -139,39 +169,78 @@ Use the [docker-compose.yml](docker-compose.yml) in this repo (`docker compose u
 
 ## Everyday use
 
-```bash
-netbae update        # update to the latest version (or re-run the install command)
-netbae status        # is it running?
-netbae logs          # follow the log
-netbae config        # edit the config, validate it and restart
-netbae check         # validate the config and show the next speedtest times
-netbae restart       # also start / stop
-netbae uninstall     # remove (add --purge to also delete config + history; -Purge on Windows)
-```
-
-On Windows, commands that change something (update, restart, config, uninstall) ask for admin rights.
-
-When an update adds new options or default targets, your config isn't overwritten. The latest defaults are saved next to it as `config.toml.default`.
+The `netbae` command does everything day to day; the full list is in the [TL;DR](#tldr) and `netbae help`. On Windows it works in cmd and PowerShell, and commands that change something (update, restart, config, tunnel, uninstall) ask for admin rights. Updates never overwrite your config.
 
 ## Configuration
 
-Everything lives in one commented [config file](config.toml). The highlights:
+Everything lives in one commented [config file](config.toml) (`netbae config` opens it, checks it and restarts netBae). When an update adds options, your config isn't overwritten: the new defaults are saved next to it as `config.toml.default`. All schedules follow the wall clock (local time): `interval_minutes = 30` with `offset_minutes = 6` runs at :06 and :36 whatever time netBae started.
 
-| Setting | Default | |
+### All options
+
+<details open>
+<summary><b>[web] [storage] [ping] [dns]</b></summary>
+
+| Option | Default | |
 |---|---|---|
-| `[web] port` | `80` | if it's taken when netBae starts, the next free port is used and the log says which (`netbae logs`) |
-| `[ping] targets` | 41 hosts in 11 groups | `{ name, host, group }`; `host = "gateway"` = your router; `method = "tcp"` for hosts that block ping |
+| `[web] host` | `"0.0.0.0"` | `0.0.0.0` = reachable from your network; `"::"` for IPv6 too |
+| `[web] port` | `80` | if it's taken when netBae starts, the next free port is used and the log says which |
+| `[storage] database` | `/var/lib/netbae/netbae.db` | the history database |
+| `[storage] raw_retention_days` | `7` | every sample |
+| `[storage] minute_retention_days` | `90` | 1-minute summaries (count, average, min, max, P5, P95) |
+| `[storage] retention_days` | `0` | hourly summaries, speedtests and system history (`0` = forever) |
 | `[ping] interval_seconds` / `offset_seconds` | `5` / `0` | |
-| `[ping] regions` | 18 cities | latency to the fastest Ookla server in each city, every `region_interval_seconds` (30) |
-| `[dns] servers` / `domains` | router, DHCP DNS + 8 public resolvers over IPv4 and IPv6 / 5 domains | `host = "dhcp"` adds the DNS servers this machine got from DHCP if they differ from the router; IPv6 servers are skipped on IPv4-only networks |
-| `[speedtest] interval_minutes` / `offset_minutes` | `60` / `0` | e.g. `offset_minutes = 6` → runs at :06 every hour |
-| `[speedtest] regions` | none | cities to speedtest, e.g. `["Sydney", "Singapore", "London"]`, once a day by default |
-| `[storage]` | `7` / `90` / `0` days | raw samples / 1-minute summaries / hourly summaries (`0` = forever) |
-| `[isp] interval_minutes` | `10` | how often each connection's public IP and ISP are checked |
-| `[traceroute] interval_hours` | `12` | how often every target's route is traced |
-| `[[connections]]` | none | extra internet connections to test, see [below](#monitoring-a-secondary-connection) |
+| `[ping] timeout_seconds` | `2` | |
+| `[ping] targets` | 41 hosts in 11 groups | `{ name, host, group }`; `host = "gateway"` = your router; `method = "tcp"` (with `port`) for hosts that block ping; game servers below |
+| `[ping] regions` | 18 cities | latency to the fastest Ookla server in each city, see [Regions](#region-speedtests-and-pings) |
+| `[ping] region_interval_seconds` | `30` | |
+| `[dns] enabled` | `true` | |
+| `[dns] interval_seconds` / `offset_seconds` / `timeout_seconds` | `30` / `0` / `2` | |
+| `[dns] servers` | router, DHCP DNS + 8 public resolvers, IPv4 and IPv6 | `host = "dhcp"` adds the DNS servers DHCP gave this machine if they differ from the router; IPv6 servers are skipped on IPv4-only networks |
+| `[dns] domains` | 5 domains | the names each resolver is asked for |
 
-All schedules follow the wall clock (local time), so `interval_minutes = 30` with `offset_minutes = 6` runs at :06 and :36 whenever the service started.
+</details>
+
+<details open>
+<summary><b>[speedtest] [isp] [traceroute] [system]</b></summary>
+
+| Option | Default | |
+|---|---|---|
+| `[speedtest] enabled` | `true` | |
+| `[speedtest] interval_minutes` / `offset_minutes` | `60` / `0` | e.g. `offset_minutes = 6` runs at :06 every hour |
+| `[speedtest] servers` | `[]` | empty = Ookla picks the closest; or server IDs from `speedtest -L`, each tested in turn |
+| `[speedtest] regions` | `[]` | cities to speedtest, e.g. `["Sydney", "Singapore", "London"]` |
+| `[speedtest] regions_interval_minutes` / `regions_offset_minutes` | `1440` / `30` | once a day, at 00:30 |
+| `[speedtest] binary` | `"auto"` | path to the Ookla CLI, or `auto` to find it |
+| `[speedtest] timeout_seconds` | `300` | |
+| `[isp] enabled` | `true` | each connection's public IP and ISP, from ipinfo.io |
+| `[isp] interval_minutes` / `offset_minutes` | `10` / `0` | |
+| `[isp] main_name` | `"Main"` | what to call your main connection |
+| `[traceroute] enabled` | `true` | |
+| `[traceroute] interval_hours` / `offset_minutes` | `12` / `15` | |
+| `[traceroute] max_hops` / `parallel` | `25` / `6` | traces at once |
+| `[system] interval_seconds` / `offset_seconds` | `30` / `0` | CPU, RAM, load, temperature, storage |
+| `[system] disk_path` | `"/"` | the filesystem shown in storage usage |
+
+</details>
+
+<details open>
+<summary><b>[public] [[connections]]</b></summary>
+
+| Option | Default | |
+|---|---|---|
+| `[public] enabled` | `false` | a read-only copy of the dashboard for sharing, see [below](#sharing-a-public-dashboard) |
+| `[public] host` / `port` | `"0.0.0.0"` / `8080` | `"127.0.0.1"` when the tunnel runs on this machine (`netbae tunnel` sets it) |
+| `[public] requests_per_minute` | `120` | per visitor; an open dashboard needs about 20 |
+| `[public] total_requests_per_minute` | `1200` | all visitors together |
+| `[public] hide` | `[]` | more addresses, prefixes or domains to hide, e.g. `["198.51.100.0/24", "example.com"]` |
+| `[public] show_hostname` | `false` | show this machine's name (often includes yours, e.g. `Sams-Pi`) |
+| `[public] show_city` | `true` | `false` shows only the country of your ISP location |
+| `[[connections]] name` / `bind` | | a secondary connection: its name and the IP or interface to send from, see [below](#monitoring-a-secondary-connection) |
+| `[[connections]] targets` | `1.1.1.1`, `8.8.8.8`, `google.com` | what to ping over it, or `"all"` for every main target |
+| `[[connections]] speedtest` | `true` | |
+| `[[connections]] speedtest_interval_minutes` / `speedtest_offset_minutes` | `1440` / `45` | daily (`0` = only when you press Run) |
+
+</details>
 
 ### Game servers
 
@@ -235,6 +304,80 @@ speedtest_interval_minutes = 1440   # daily, to save data on mobile plans (0 = o
 
 The connection gets its own group of ping tiles and its own row in the speedtest table, with its ISP and data used, so you can compare it with your main line.
 
+## Sharing a public dashboard
+
+netBae can serve a read-only copy of your dashboard for people outside your home. It's off by default.
+
+It isn't a separate app: it's the same dashboard, served by the same netBae service on a second port (8080), with a stricter set of rules. You keep full control on port 80 while visitors use port 8080, and every answer on the public port is checked and masked before it leaves. Your own dashboard shows, under the ISP line in the header, whether the public one is shared, its address, whether it's reachable from the internet and how many people visited in the last hour (visits from your own network aren't counted, and the count restarts with netBae).
+
+### The easy way: `netbae tunnel`
+
+One command turns on the public dashboard and shares it through a tunnel, so you don't open any port on your router:
+
+```bash
+netbae tunnel
+```
+
+It asks which kind you want:
+
+| | Address | Needs |
+|---|---|---|
+| `netbae tunnel quick` | a random `https://....trycloudflare.com`, new each time | nothing; stops when you press Ctrl-C |
+| `netbae tunnel cloudflare netbae.example.com` | your own hostname, permanent | a free Cloudflare account with your domain on it |
+| `netbae tunnel tailscale` | `https://<machine>.<tailnet>.ts.net`, permanent | a free Tailscale account |
+
+netBae installs `cloudflared` or Tailscale from their official sources if needed, sets `[public] enabled = true` and `host = "127.0.0.1"` (so only the tunnel can reach it), restarts netBae and prints your public address. The only step it can't do for you is the first sign-in: it shows a link to open in your browser, then carries on. Cloudflare tunnels run as the `netbae-tunnel` service (a `netBae tunnel` scheduled task on Windows) under the same unprivileged account as netBae, and start at boot. Tailscale Funnel runs inside Tailscale itself.
+
+- `netbae tunnel status` shows what's shared and where.
+- `netbae tunnel off` stops sharing and turns the public dashboard off (your Cloudflare login is kept, so turning it back on is one command).
+- Made a tunnel in the Cloudflare dashboard instead? `netbae tunnel cloudflare --token <token>` runs it. Give it a public hostname with service `http://127.0.0.1:8080`.
+- Docker: uncomment the `cloudflared` service in [docker-compose.yml](docker-compose.yml) instead.
+
+### What visitors see
+
+The same charts and tables as on your own dashboard, with these differences:
+
+- **Read-only.** Visitors can browse every chart, range and route, but the Run buttons are gone and the server refuses every request that would start something (`POST` returns `403`). Speedtests and traces only run on their normal schedule.
+- **Rate-limited.** Each visitor gets `requests_per_minute` (120) and everyone together `total_requests_per_minute` (1200). An open dashboard needs about 20 a minute, and the public page refreshes every 30 seconds instead of 15. Past the limit visitors get `429` with a `Retry-After`. At most 32 public requests are worked on at once, and stalled connections are dropped after 20 seconds. Behind a tunnel or proxy on your network, the visitor's real address (`CF-Connecting-IP`, `X-Real-IP` or `X-Forwarded-For`) is what's limited.
+- **You're hidden.** This applies to everything the public page shows: ISP history, DNS servers, routes, hostnames and errors.
+  - Your public IPv4 addresses show only the first half (`203.0.x.x`). Hostnames that carry them in any common form (`203-0-113-5`, `5.113.0.203`, `203000113005`, hex) show as `(hidden)`.
+  - IPv6 addresses in your /48, including your router's, show only the ISP's /32 (`2403:5800:x:x:x:x:x:x`). Matching on the /48 covers every subnet you have, whether your ISP hands out a /48, /56, /60 or /64. netBae remembers every prefix it has seen on this machine's interfaces, so addresses from an old prefix stay hidden after your ISP changes it.
+  - Any name on your own domain shows as `(hidden)`, e.g. a router called `unifi.home.example.com`. Your domains are found from the router's and this machine's names and the DNS search domain (names ending in `.lan`, `.local` or `.home.arpa` aren't treated as domains, since they don't identify you).
+  - Hops inside your network keep their address but lose their name.
+  - This machine's name (often includes yours, e.g. `Sams-Pi`) is hidden. Set `show_hostname = true` to show it.
+  - The ISP location shows the city, as on your own dashboard. Set `show_city = false` to show only the country (speedtest servers still show their city, and the nearest one is usually in or near yours).
+  - Add anything else to `hide`, e.g. `hide = ["198.51.100.0/24", "example.com"]`.
+
+  Internal addresses (router, this machine) and the DNS servers are shown as on your own dashboard.
+
+### By hand
+
+```toml
+[public]
+enabled = true
+host = "127.0.0.1"   # if the tunnel runs on the same machine; "0.0.0.0" if it runs elsewhere on your LAN
+port = 8080
+```
+
+Restart netBae (`sudo systemctl restart netbae`, or `docker compose restart`) and the log shows both ports.
+
+**Don't port-forward it on your router.** Visitors would connect to your home IP, so they'd see it in full whatever the page hides, and the Pi would be straight on the internet without HTTPS. netBae logs a warning (`netbae logs`) when a visitor reaches the public port straight from the internet. Use a tunnel instead (`netbae tunnel` sets these up for you):
+
+#### Cloudflare Tunnel (free, needs a domain on Cloudflare)
+
+A small program, `cloudflared`, runs on the Pi and makes an outgoing connection to Cloudflare. Visitors go to a hostname like `netbae.example.com`, Cloudflare passes their requests down that connection to `http://127.0.0.1:8080`, and the answers go back the same way. Nothing on your router is opened, visitors only ever see Cloudflare's addresses, and Cloudflare absorbs floods and bots before they reach your connection.
+
+1. Add your domain to Cloudflare (any registrar works, the free plan is enough).
+2. In [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) go to **Networks → Tunnels → Create a tunnel**, choose **Cloudflared**, and run the install command it shows on the Pi (Debian, Ubuntu, Raspberry Pi OS, Docker and others are listed).
+3. Add a **public hostname**: e.g. `netbae.example.com`, service type `HTTP`, URL `127.0.0.1:8080` (use the Pi's LAN IP if `cloudflared` runs on another machine).
+4. Open `https://netbae.example.com`. Cloudflare adds HTTPS automatically.
+
+Point the tunnel at the public port (8080), never at port 80. Want only invited people to see it? Add a **Cloudflare Access** application for the hostname with an email one-time-PIN rule. It's free for up to 50 users.
+
+#### Tailscale Funnel (no domain needed)
+
+If you use [Tailscale](https://tailscale.com/), run `sudo tailscale funnel --bg 8080` on the Pi. The dashboard appears at `https://<machine>.<tailnet>.ts.net` for anyone with the link. Turn it off with `sudo tailscale funnel reset`.
+
 ## How it measures
 
 - **Ping:** one ICMP echo per host per interval, using the system `ping`. Hosts that block ping can use a timed TCP connect instead.
@@ -246,14 +389,14 @@ The connection gets its own group of ping tiles and its own row in the speedtest
 - **Speedtests:** the official Ookla CLI, auto-selecting the closest server unless you choose one.
 - **System:** the model name comes from the device tree on a Raspberry Pi (`/proc/device-tree/model`), DMI/BIOS info on PCs and VMs, `sysctl` on a Mac and the registry on Windows.
 
-## Averages
+## Averages and storage
 
 Averages ignore large outliers, so one bad spike doesn't skew them. Min, max and P95 still show every spike:
 
 - **Ping and DNS:** the fastest and slowest 5% of samples are left out of each average once there are at least 10 samples.
 - **Speedtests:** download, upload, ping and jitter averages leave out results beyond 1.5× the interquartile range (e.g. one test that hit a congested server). Packet loss is never trimmed.
 
-## Data storage
+### Storage
 
 History is kept in SQLite at three resolutions:
 
@@ -273,16 +416,16 @@ netbae.home.lan {
 }
 ```
 
-There's no login, so keep it on your LAN. If you need auth, add it at the proxy.
+There's no login, so keep it on your LAN. If you need auth, add it at the proxy. To let other people see it, use the [public dashboard](#sharing-a-public-dashboard) instead.
 
 ## API
 
 Everything on the dashboard comes from a small JSON API you can use from Home Assistant, Grafana or scripts:
-`/api/summary`, `/api/config`, `/api/system`, `/api/system/history`, `/api/ping`, `/api/dns`, `/api/speedtest`, `/api/isp` (query: `from`, `to` in Unix seconds, plus `targets` / `servers` / `domain`), `/api/traceroute?target=<id>` (hops and route history, with each network's relationship to the one before it), and `POST /api/speedtest/run?scope=main|regions|conn:<name>`.
+`/api/summary`, `/api/config`, `/api/system`, `/api/system/history`, `/api/ping`, `/api/dns`, `/api/speedtest`, `/api/isp` (query: `from`, `to` in Unix seconds, plus `targets` / `servers` / `domain`), `/api/traceroute?target=<id>` (hops and route history, with each network's relationship to the one before it), and `POST /api/speedtest/run?scope=main|regions|conn:<name>`. `/api/sharing` (your own dashboard only) reports the public dashboard's tunnels and visitors. The [public dashboard](#sharing-a-public-dashboard) serves the same `GET` API, rate-limited and masked, and refuses `POST`.
 
 ## FAQ
 
-**Does it run on Windows?** Yes, Windows 10 and 11, with `install.ps1` (see [Quick start](#quick-start)). Windows can't run `install.sh` because it has no bash, so it has its own installer.
+**Does it run on Windows?** Yes, Windows 10 and 11, with `install.ps1` (see [Install](#install)). Windows can't run `install.sh` because it has no bash, so it has its own installer.
 
 **How much data does it use?** Pings and DNS are tiny (a few MB a day). Speedtests are what count: each uses roughly what your connection can move in about 20 seconds. On a gigabit line that's about 1 GB per test, so hourly tests add up. The dashboard shows data used per test and per day.
 
