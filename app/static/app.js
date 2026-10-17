@@ -642,8 +642,14 @@ async function refreshSystem() {
     ['Load', s.load ? s.load.map((l) => l.toFixed(2)).join('  ') : '-', '1 · 5 · 15 min'],
     ['CPU', fmtPct(s.cpu), bar(s.cpu)],
     ['Memory', s.mem ? fmtPct(s.mem.percent) : '-', s.mem ? `${fmtBytes(s.mem.used)} / ${fmtBytes(s.mem.total)}${bar(s.mem.percent)}` : ''],
-    ['Storage', s.disk ? fmtPct(s.disk.percent) : '-', s.disk ? `${fmtBytes(s.disk.used)} / ${fmtBytes(s.disk.total)} (${esc(s.disk.path)})${bar(s.disk.percent)}` : ''],
+    // the drive in [system] disk_path ("/" = the boot drive), then every local drive added up when there's more than one
+    [/^(\/|[A-Za-z]:\\?)$/.test(s.disk?.path || '/') ? 'Boot drive' : 'Storage', s.disk ? fmtPct(s.disk.percent) : '-',
+      s.disk ? `${fmtBytes(s.disk.used)} / ${fmtBytes(s.disk.total)} (${esc(s.disk.path)})${bar(s.disk.percent)}` : ''],
   ];
+  if (s.drives && s.drives.count > 1) {
+    items.push(['All drives', fmtPct(s.drives.percent),
+      `${fmtBytes(s.drives.used)} / ${fmtBytes(s.drives.total)} (${s.drives.count} drives)${bar(s.drives.percent)}`]);
+  }
   if (s.temp != null) items.push(['Temperature', `${s.temp.toFixed(1)} °C`, bar(s.temp)]);
   if (s.mem && s.mem.swap_total) items.push(['Swap', fmtBytes(s.mem.swap_used), `of ${fmtBytes(s.mem.swap_total)}`]);
   const keep = +CONFIG.retention_days ? `kept ${CONFIG.retention_days} days` : 'history kept forever';
@@ -880,15 +886,43 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     setXRange(chart, r);
     chart.update();
 
-    const rows = series.map((it) => {
-      const s = d.stats[it.key] || {};
+    lastTable = { series, stats: d.stats };
+    renderTable();
+    return r.live;
+  };
+
+  // The stats table. Click a column heading to sort by it: ascending, then descending, then back to the list order.
+  let lastTable = null;
+  let sort = store.get(`sort:${id}`, null);  // {key, dir: 1 | -1} or null
+  const COLS = [['avg', 'Avg ms'], ['min', 'Min'], ['p5', 'P5'], ['p95', 'P95'], ['max', 'Max'], ['loss', lossLabel], ['samples', 'Samples']];
+  function renderTable() {
+    if (!lastTable) return;
+    const { series, stats } = lastTable;
+    const rows = sort ? [...series].sort((a, b) => {
+      const x = (stats[a.key] || {})[sort.key], y = (stats[b.key] || {})[sort.key];
+      if (x == null || y == null) return (x == null) - (y == null);  // no data: always last
+      return (x - y) * sort.dir;
+    }) : series;
+    const th = ([key, label]) => {
+      const on = sort?.key === key;
+      return `<th class="sortable${key === 'avg' ? ' avg' : ''}${on ? ' sorted' : ''}" data-sort="${key}" title="Sort by ${esc(label)}">`
+        + `${esc(label)}${on ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
+    };
+    const body = rows.map((it) => {
+      const s = stats[it.key] || {};
       return `<tr><td><span class="dot" style="background:${it.color}"></span> ${esc(it.label)}</td>
         <td class="avg">${fmtMs(s.avg)}</td><td>${fmtMs(s.min)}</td><td>${fmtMs(s.p5)}</td><td>${fmtMs(s.p95)}</td><td>${fmtMs(s.max)}</td>
         <td>${fmtPct(s.loss, 2)}</td><td>${(s.samples ?? 0).toLocaleString()}</td>${endpoint === 'ping' ? `<td style="text-align:left">${routeHtml(it.key)}</td>` : ''}</tr>`;
     }).join('');
-    $('.stats', root).innerHTML = `<thead><tr><th>Host</th><th class="avg">Avg ms</th><th>Min</th><th>P5</th><th>P95</th><th>Max</th><th>${lossLabel}</th><th>Samples</th>${endpoint === 'ping' ? '<th style="text-align:left">Route</th>' : ''}</tr></thead><tbody>${rows}</tbody>`;
-    return r.live;
-  };
+    $('.stats', root).innerHTML = `<thead><tr><th>Host</th>${COLS.map(th).join('')}${endpoint === 'ping' ? '<th style="text-align:left">Route</th>' : ''}</tr></thead><tbody>${body}</tbody>`;
+  }
+  $('.stats', root).addEventListener('click', (e) => {
+    const key = e.target.closest('th[data-sort]')?.dataset.sort;
+    if (!key) return;
+    sort = sort?.key !== key ? { key, dir: 1 } : sort.dir > 0 ? { key, dir: -1 } : null;
+    store.set(`sort:${id}`, sort);
+    renderTable();
+  });
   const chips = chipFilter($('.chips', root), id, items, refresh, defaultOff);
   const range = rangeControl($('.range', root), id, defaultRange, refresh);
   metricSel.addEventListener('change', () => { store.set(`metric:${id}`, metricSel.value); refresh(); });

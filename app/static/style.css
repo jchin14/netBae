@@ -148,6 +148,9 @@ table.stats tr.total td { border-top: 1px solid var(--border); }
 @media (max-width: 600px) { .speed-details { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .flag { margin-right: 5px; }
 .tile.member { cursor: pointer; }
+table.stats th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+table.stats th.sortable:hover { color: var(--text); }
+table.stats th.sorted { color: var(--accent); }
 #cdn-table td { vertical-align: top; }
 #cdn-table .route { margin-top: 2px; font-size: 11.5px; white-space: nowrap; max-width: 210px; overflow: hidden; text-overflow: ellipsis; }
 .cdn-intro { margin: 0 0 10px; }

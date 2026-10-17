@@ -167,7 +167,8 @@ ipv6 = true            # also trace IPv6 routes to the sites pinged over IPv6 ([
 [system]
 interval_seconds = 30
 offset_seconds = 0
-disk_path = "/"        # filesystem shown in storage usage
+disk_path = "/"        # the drive shown as Boot drive ("/" = the one the system runs from); the dashboard
+                       # also adds up every local drive when there's more than one
 
 # --------------------------------------------------------------------------------------------
 # Secondary internet connections (e.g. a 5G/4G link next to your main one). netBae sends their

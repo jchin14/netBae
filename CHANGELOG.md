@@ -2,6 +2,13 @@
 
 What's new in each netBae release. Update with `netbae update`, by re-running the install command, or with `docker compose pull && docker compose up -d`.
 
+## 1.11.0 - 2026-10-18
+
+Sortable latency tables and storage for every drive.
+
+- **Sort the latency tables:** click a column heading in the ping or DNS table (Avg ms, Min, P5, P95, Max, Loss, Samples) to sort the hosts by it. Click again for descending, and a third time to go back to the usual order. Each browser remembers its choice.
+- System: storage shows the boot drive and, when there's more than one, all local drives added up (extra partitions, USB and internal disks, ZFS pools; not network shares, RAM disks or snap images). Not in Docker, which only sees the container's own mounts.
+
 ## 1.10.0 - 2026-10-18
 
 DNS and CDN test, IPv6 for regions and dashboard improvements.

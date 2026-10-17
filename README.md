@@ -266,7 +266,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[traceroute] max_hops` / `parallel` | `25` / `6` | traces at once |
 | `[traceroute] ipv6` | `true` | also trace the IPv6 route to every site pinged over IPv6 |
 | `[system] interval_seconds` / `offset_seconds` | `30` / `0` | CPU, RAM, load, temperature, storage |
-| `[system] disk_path` | `"/"` | the filesystem shown in storage usage |
+| `[system] disk_path` | `"/"` | the drive shown as Boot drive. The dashboard also shows every local drive added up (partitions, USB and extra disks, ZFS pools; not network shares) when there's more than one |
 
 </details>
 

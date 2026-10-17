@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.10.0"
+VERSION = "1.11.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -1941,22 +1941,79 @@ class SystemStats:
             "swap_total": swap_total, "swap_used": swap_used,
         }
 
+    # local filesystems that live on a drive (not RAM, snaps, containers or network shares)
+    DRIVE_FS = {"ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "vfat", "exfat", "ntfs", "ntfs3", "fuseblk",
+                "hfsplus", "jfs", "reiserfs", "bcachefs", "apfs", "hfs", "msdos"}
+
+    def drive_mounts(self):
+        """[(mount point, drive key)] for every local drive, one per drive (cached 5 minutes). Partitions of
+        one disk count separately; volumes sharing one pool or container (btrfs subvolumes, ZFS datasets,
+        APFS volumes) count once."""
+        if time.time() - getattr(self, "_mounts_ts", 0) < 300:
+            return self._mounts
+        found = {}
+        if IS_WINDOWS:
+            try:
+                k32 = ctypes.windll.kernel32
+                mask = k32.GetLogicalDrives()
+                for i in range(26):
+                    root = f"{chr(65 + i)}:\\"
+                    if mask >> i & 1 and k32.GetDriveTypeW(ctypes.c_wchar_p(root)) == 3:  # DRIVE_FIXED
+                        found.setdefault(root, root)
+            except (AttributeError, OSError):
+                pass
+        elif IS_MAC:
+            out = run_cmd(["/sbin/mount"]) or ""
+            for line in out.splitlines():
+                m = re.match(r"/dev/disk(\d+)\S* on (.+) \((\w+),(.*)\)$", line)
+                # "nobrowse" mounts are ones Finder hides: system volumes and disk images (simulators, installers)
+                if m and m.group(3) in self.DRIVE_FS and "nobrowse" not in m.group(4):
+                    found.setdefault("disk" + m.group(1), m.group(2))  # APFS volumes share their container
+        else:
+            for line in (read_file("/proc/self/mounts") or "").splitlines():
+                f = line.split()
+                if len(f) < 3 or f[2] not in self.DRIVE_FS or f[0].startswith("/dev/loop"):
+                    continue
+                key = f[0].split("/")[0] if f[2] == "zfs" else f[0]  # ZFS datasets share their pool
+                found.setdefault(key, f[1].replace("\\040", " "))
+        self._mounts = [(path, key) for key, path in found.items()]
+        self._mounts_ts = time.time()
+        return self._mounts
+
+    def all_drives(self):
+        """Every local drive added up: {count, total, used, free, percent}, or None in Docker (only the
+        container's own mounts are visible there)."""
+        if os.environ.get("NETBAE_DOCKER"):
+            return None
+        total = used = free = n = 0
+        for path, _ in self.drive_mounts():
+            d = self.usage(path)
+            if d and d["total"]:
+                total, used, free, n = total + d["total"], used + d["used"], free + d["free"], n + 1
+        return {"count": n, "total": total, "used": used, "free": free,
+                "percent": round(100.0 * used / (used + free), 1) if (used + free) else None} if n else None
+
     def disk(self):
+        d = self.usage(self.disk_path)
+        return dict(d, path=self.disk_path) if d else None
+
+    @staticmethod
+    def usage(path):
         if not hasattr(os, "statvfs"):  # Windows
             try:
-                total, used, free = shutil.disk_usage(self.disk_path)
+                total, used, free = shutil.disk_usage(path)
             except OSError:
                 return None
-            return {"path": self.disk_path, "total": total, "used": used, "free": free,
+            return {"total": total, "used": used, "free": free,
                     "percent": round(100.0 * used / total, 1) if total else None}
         try:
-            st = os.statvfs(self.disk_path)
+            st = os.statvfs(path)
         except OSError:
             return None
         total = st.f_blocks * st.f_frsize
         free = st.f_bavail * st.f_frsize
         used = total - st.f_bfree * st.f_frsize
-        return {"path": self.disk_path, "total": total, "used": used, "free": free,
+        return {"total": total, "used": used, "free": free,
                 "percent": round(100.0 * used / (used + free), 1) if (used + free) else None}
 
     @staticmethod
@@ -2063,6 +2120,7 @@ class SystemStats:
             "cpu": self.cpu_percent(),
             "mem": mem,
             "disk": disk,
+            "drives": self.all_drives(),
             "temp": self.temperature(),
             "load": load,
         }
