@@ -16,6 +16,12 @@ The main steps so far, with the full details per version below.
 | 1.8 - 1.9 | IPv6 pings and routes, built-in targets in their own file, a database about 40% smaller |
 | 1.10 - 1.12 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs |
 
+## 1.12.1 - 2026-10-18
+
+Windows Defender fixes.
+
+- **Windows Defender:** the Windows scripts no longer do the things Defender treats as malware-like. Asking for admin rights re-runs the installer from a readable script file in Temp instead of an encoded command line, `netbae update` downloads the installer to a file instead of piping it into Invoke-Expression, `netbae uninstall` deletes the folder directly instead of from a hidden delayed window, and netBae's own scripts run under the standard RemoteSigned policy instead of Bypass.
+
 ## 1.12.0 - 2026-10-18
 
 Look back at any day, compare ISPs, and clearer warnings.

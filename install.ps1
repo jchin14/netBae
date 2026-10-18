@@ -60,14 +60,14 @@ function Install-NetBae {
     $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         Info 'Administrator rights are needed - asking Windows for them'
-        $envs = "`$env:NETBAE_REPO='$Repo'; `$env:NETBAE_REF='$Ref'; "
-        if ($PSCommandPath) {
-            $cmd = "$envs & '$PSCommandPath'"
-        } else {
-            $cmd = "$envs irm '$InstallUrl' | iex"
-        }
-        $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
-        Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -NoExit -EncodedCommand $enc"
+        # Re-run this installer as admin from a plain script file in Temp that you can open and read (the same
+        # installer, with the repo and branch you chose set at the top), rather than an encoded command line.
+        $body = if ($PSCommandPath) { Get-Content -Raw $PSCommandPath } else { (Invoke-WebRequest -UseBasicParsing $InstallUrl).Content }
+        $sets = @("`$env:NETBAE_REPO = '$Repo'", "`$env:NETBAE_REF = '$Ref'")
+        if ($env:NETBAE_SRC) { $sets += "`$env:NETBAE_SRC = '$($env:NETBAE_SRC)'" }
+        $file = Join-Path $env:TEMP 'netbae-install.ps1'
+        Set-Content -Path $file -Encoding UTF8 -Value (($sets -join "`r`n") + "`r`n" + $body)
+        Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy RemoteSigned -NoExit -File `"$file`""
         return
     }
     if ([Environment]::OSVersion.Version.Major -lt 10) { throw 'netBae needs Windows 10 or 11' }
@@ -229,6 +229,8 @@ function Install-NetBae {
         $mgr = [IO.File]::ReadAllText("$Src\bin\netbae.ps1", $utf8).Replace('__NETBAE_REPO__', $Repo)
         [IO.File]::WriteAllText("$AppDir\bin\netbae.ps1", $mgr, $utf8)
         Copy-Item "$Src\bin\netbae.cmd" "$AppDir\bin\netbae.cmd" -Force
+        # clear any "downloaded from the internet" mark so the RemoteSigned policy runs netBae's own scripts
+        Get-ChildItem $AppDir -Recurse -File -Include *.ps1, *.cmd | Unblock-File
         [IO.File]::WriteAllText("$AppDir\python.txt", $Py, $utf8)
         New-Item -ItemType Directory -Force "$AppDir\static\vendor" | Out-Null
         if ($vendorBackup) {

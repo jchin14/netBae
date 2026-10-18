@@ -20,7 +20,7 @@ function Test-Admin {
 }
 # Re-run this command in an elevated window (UAC prompt) and wait for it.
 function Invoke-Elevated([switch]$KeepOpen) {
-    $a = "-NoProfile -ExecutionPolicy Bypass $(if ($KeepOpen) { '-NoExit ' })-File `"$PSCommandPath`" $Command $($Rest -join ' ')"
+    $a = "-NoProfile -ExecutionPolicy RemoteSigned $(if ($KeepOpen) { '-NoExit ' })-File `"$PSCommandPath`" $Command $($Rest -join ' ')"
     $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $a -Wait -PassThru
     exit $p.ExitCode
 }
@@ -49,7 +49,10 @@ switch ($Command) {
         Write-Host "Installed: netBae $(Get-Version). Fetching the latest from github.com/$Repo ..."
         $env:NETBAE_REPO = $Repo
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-        Invoke-RestMethod "https://raw.githubusercontent.com/$Repo/main/install.ps1" | Invoke-Expression
+        # download the latest installer to a file and run that (rather than piping it into Invoke-Expression)
+        $file = Join-Path $env:TEMP 'netbae-install.ps1'
+        Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/$Repo/main/install.ps1" -OutFile $file
+        & $file
     }
     'status' {
         $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -92,7 +95,7 @@ switch ($Command) {
     }
     'check' { if (-not (Invoke-Check)) { exit 1 } }
     'version' { Write-Host "netBae $(Get-Version)" }
-    'tunnel' { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$AppDir\tunnel.ps1" @Rest; exit $LASTEXITCODE }
+    'tunnel' { & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "$AppDir\tunnel.ps1" @Rest; exit $LASTEXITCODE }
     'uninstall' {
         $purge = $Rest | Where-Object { $_ -in '-purge', '--purge', '/purge' }
         $tmp = Join-Path $env:TEMP 'netbae-uninstall.ps1'   # run from outside the folder it deletes
