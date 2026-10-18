@@ -143,6 +143,13 @@ regions_offset_minutes = 30       # e.g. 00:30 - with 1440, the offset is the ti
 # in a random city around the world (~45 cities). Shown in their own section and not counted in your averages.
 # Each uses about as much data as a normal test. 0 = off.
 global_every = 5
+# Busy check: before a scheduled test, measure other traffic for 5 seconds (the router's own counters
+# over UPnP if it offers them, which see every device; otherwise only this machine's traffic).
+# Above busy_percent of the last result, wait and check again every 3 minutes; after busy_wait_minutes
+# test anyway and mark the result "busy". Run now buttons never wait.
+busy_check = true
+busy_percent = 10
+busy_wait_minutes = 30
 binary = "auto"       # auto = official Ookla CLI in /usr/bin, /usr/local/bin or /opt/homebrew/bin
 timeout_seconds = 300
 

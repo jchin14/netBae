@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>netBae - Internet Monitor</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233b82f6' stroke-width='2.5' stroke-linecap='round'%3E%3Cpolyline points='2 12 6 12 9 4 15 20 18 12 22 12'/%3E%3C/svg%3E">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="description" content="Self-hosted dashboard for your home internet connection: ping, DNS, speedtests and routes.">
+  <meta property="og:title" content="netBae - Internet Monitor">
+  <meta property="og:description" content="Self-hosted dashboard for your home internet connection: ping, DNS, speedtests and routes.">
+  <meta property="og:image" content="og-image.png">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="stylesheet" href="style.css">
   <script>try { const t = JSON.parse(localStorage.getItem('netbae:theme')); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}</script>
 </head>
@@ -113,7 +119,7 @@
       </div>
       <p class="muted small cdn-intro">CDNs like Akamai send you to a server near the DNS resolver that asked, so a resolver far away,
         or one that hides where you are, can send you to a distant server. Each resolver looks up the names below and the
-        addresses it hands out are pinged: the resolver whose answers are closest to you is first. <b>CDN ping</b> is the
+        addresses it hands out are pinged: the resolver whose answers are closest to you is first. <b>Avg CDN ping</b> is the
         average ping to those servers (the ranking); <b>DNS lookup</b> is how long the DNS server took to answer.</p>
       <div class="table-wrap"><table class="stats" id="cdn-table"></table></div>
     </section>

@@ -80,8 +80,18 @@ function Restart-NetBae {
 function Test-Public {
     try { (Invoke-WebRequest "http://127.0.0.1:$PPort/api/config" -UseBasicParsing -TimeoutSec 2).Content -like '*"public":true*' } catch { $false }
 }
+function Test-PortFree($p) {
+    $c = New-Object Net.Sockets.TcpClient
+    try { $c.Connect('127.0.0.1', [int]$p); $false } catch { $true } finally { $c.Close() }
+}
 function Enable-Public {
     $before = [IO.File]::ReadAllText($Conf)
+    if (-not (Test-Public) -and -not (Test-PortFree $PPort)) {
+        $p = ([int]$PPort + 1..100 | Where-Object { Test-PortFree $_ } | Select-Object -First 1)
+        if (-not $p) { Fail "port $PPort is used by another program and no free port was found near it" }
+        Warn "port $PPort is used by another program, so the public dashboard uses port $p"
+        $script:PPort = "$p"
+    }
     Set-ConfValue 'public' 'enabled' 'true'
     Set-ConfValue 'public' 'host' '"127.0.0.1"'   # only the tunnel (on this machine) can reach it
     Set-ConfValue 'public' 'port' $PPort
@@ -107,9 +117,16 @@ function Find-Cloudflared {
     }
     $null
 }
+function Update-Cloudflared([string]$Cf) {  # cloudflared's own updater; never fatal
+    Info 'Checking for a cloudflared update'
+    $old = (& $Cf --version 2>$null) | Select-Object -First 1
+    try { & $Cf update 2>&1 | Out-Null } catch { }
+    $new = (& $Cf --version 2>$null) | Select-Object -First 1
+    if ($new -ne $old) { Info "Updated to $new" } else { Info "$old is up to date" }
+}
 function Install-Cloudflared {
     $cf = Find-Cloudflared
-    if ($cf) { return $cf }
+    if ($cf) { Update-Cloudflared $cf; return $cf }
     Info "Installing cloudflared (Cloudflare's tunnel program)"
     $dir = "$AppDir\cloudflared"
     New-Item -ItemType Directory -Force $dir | Out-Null
@@ -200,6 +217,7 @@ function Invoke-Cloudflare {
     if (-not (Test-Path $cert)) {
         Info "Sign in to Cloudflare: a browser opens; choose the domain for $h"
         $home2 = "$CfDir\.home"; Remove-Item $home2 -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force "$home2\.cloudflared" | Out-Null
         $oldHome, $oldProfile = $env:HOME, $env:USERPROFILE
         $env:HOME = $home2; $env:USERPROFILE = $home2
         try { & $cf tunnel login } finally { $env:HOME = $oldHome; $env:USERPROFILE = $oldProfile }
@@ -211,6 +229,7 @@ function Invoke-Cloudflare {
     $creds = "$CfDir\credentials.json"
     $list = (& $cf tunnel --origincert $cert list -o json -n $name) | Out-String | ConvertFrom-Json
     $id = if ($list) { @($list)[0].id } else { $null }
+    Remove-Item $creds -Force -ErrorAction SilentlyContinue   # cloudflared won't overwrite it
     if ($id) {
         Info "Using your existing tunnel '$name'"
         & $cf tunnel --origincert $cert token --cred-file $creds $id | Out-Null
@@ -226,6 +245,7 @@ function Invoke-Cloudflare {
             & $cf tunnel --origincert $cert route dns --overwrite-dns $id $h | Out-Null
         } else { Write-Host $route; Fail "couldn't point $h at the tunnel" }
     }
+    Enable-Public
     $yml = @"
 # Written by netbae tunnel. The tunnel only reaches netBae's read-only public port.
 tunnel: $id
@@ -236,7 +256,6 @@ ingress:
   - service: http_status:404
 "@
     [IO.File]::WriteAllText("$CfDir\config.yml", $yml, $utf8)
-    Enable-Public
     Register-Tunnel $cf "--config `"$CfDir\config.yml`" run"
     Wait-Url "https://$h"
     Write-Host "    Only invited people? Add a Cloudflare Access application for $h (free for up to 50 users)."

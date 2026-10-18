@@ -17,6 +17,34 @@ The main steps so far, with the full details per version below.
 | 1.10 - 1.14 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs, route change history, charts grouped by category |
 | 1.15 | An Update button on the dashboard and weekly automatic updates |
 
+## 1.16.0 - 2026-10-18
+
+Speedtests that wait for a quiet network, faster charts on a Raspberry Pi, and a first speedtest straight after install.
+
+- A new install runs its first speedtest a few minutes after starting, once the first routes are traced, instead of waiting for the next scheduled one.
+- `netbae tunnel` now updates cloudflared to the latest version each time it runs, if it's already installed.
+- The bottom of the dashboard lists how often pings and speedtests run (including region, secondary connection and random-city tests), taken from your config.
+- Scheduled speedtests now wait while your network is busy (other traffic over 10% of your last result), checking again every 3 minutes. After 30 minutes they run anyway and the result is marked "busy". netBae uses your router's traffic counters when it offers them over UPnP, so it sees every device; otherwise it sees only its own machine's traffic. Run now never waits. Change it with `busy_check`, `busy_percent` and `busy_wait_minutes` under `[speedtest]`.
+- Hovering a row in the ping or DNS table highlights that host's line in the chart.
+- The DNS and CDN table's "CDN ping" column is now called "Avg CDN ping".
+- The ISP check markers moved from the ping, DNS and speedtest charts to the System history chart, so the busy charts stay easier to read.
+- The ping and DNS charts load much faster over ranges longer than 2 days (a 7-day chart went from about 1 second to well under a tenth on a test machine, and more on a Raspberry Pi).
+- The ping and DNS tables also load about twice as fast for ranges up to 6 hours, with exactly the same numbers.
+- Changing the dropdowns on the ping and DNS charts quickly no longer piles up requests or briefly shows an older choice.
+- On a Mac, the dashboard's Update button could stop partway through the update. Fixed for updates from this version on.
+- Links to your dashboard now show the netBae icon and a preview card in iMessage, Slack and other apps, and adding it to an iPhone home screen gives it a proper icon.
+- `netbae update` and the Update button do nothing when the installed version is newer than the latest release, instead of going back to it.
+- A security policy (`SECURITY.md`): report security problems privately from the repo's Security tab.
+
+## 1.15.1 - 2026-10-18
+
+Fixes for route tracing on some Linux systems and for `netbae tunnel` on your own domain.
+
+- Fixed routes showing no hops and every route labelled "direct" on Linux systems where `traceroute` is the GNU inetutils version (e.g. Armbian). A trace that fails now shows its error instead of an empty route.
+- Fixed `netbae tunnel` stopping at the Cloudflare sign-in for your own domain with "mkdir .../.cloudflared: no such file or directory".
+- `netbae tunnel` now uses another port for the public dashboard when its port (8080 by default) is taken by another program, instead of stopping with "the public dashboard didn't come up".
+- Running `netbae tunnel` again for your own domain no longer stops with "credentials.json already exists".
+
 ## 1.15.0 - 2026-10-18
 
 One-click and automatic updates.

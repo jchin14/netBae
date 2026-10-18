@@ -37,6 +37,32 @@ function fmtBytes(b) {
   while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
   return `${b.toFixed(b >= 100 || i === 0 ? 0 : 1)} ${u[i]}`;
 }
+// 5 -> "5 s", 90 -> "90 s", 3600 -> "hour", 86400 -> "day", 5400 -> "90 min", 172800 -> "2 days"
+function fmtEvery(s) {
+  if (s % 86400 === 0) return s === 86400 ? 'day' : `${s / 86400} days`;
+  if (s % 3600 === 0) return s === 3600 ? 'hour' : `${s / 3600} h`;
+  if (s % 60 === 0 && s >= 120) return `${s / 60} min`;
+  return `${s} s`;
+}
+// How often pings and speedtests run, from the config, for the footer.
+function scheduleText() {
+  const p = CONFIG.ping, sp = CONFIG.speedtest;
+  const parts = [`pings every ${fmtEvery(p.interval_seconds)}`
+    + (p.targets.some((t) => t.method === 'region') ? ` (regions every ${fmtEvery(p.region_interval_seconds)})` : '')];
+  if (!sp.enabled) parts.push('speedtests off');
+  else {
+    let t = `speedtest every ${fmtEvery(sp.interval_minutes * 60)}`;
+    if (sp.offset_minutes) t += ` at +${sp.offset_minutes} min`;
+    if (sp.global_every) t += ` (plus one to a random city ${sp.global_every === 1 ? 'after each' : `every ${sp.global_every} tests`})`;
+    if (sp.regions.length) t += `, regions every ${fmtEvery(sp.regions_interval_minutes * 60)}`;
+    const conns = CONFIG.connections.filter((c) => c.speedtest && c.speedtest_interval_minutes > 0);
+    for (const c of conns) {
+      t += `, secondary connection${conns.length > 1 ? ` ${c.name}` : ''} every ${fmtEvery(c.speedtest_interval_minutes * 60)}`;
+    }
+    parts.push(t);
+  }
+  return esc(parts.join(' · '));
+}
 function fmtDuration(s) {
   if (s == null) return '-';
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
@@ -600,6 +626,10 @@ async function refreshSummary() {
   btn.hidden = !!CONFIG.public || !CONFIG.speedtest.manual;  // the public dashboard is read-only
   btn.disabled = running;
   btn.textContent = running ? `Running ${st.status.label && st.status.label !== 'Auto' ? st.status.label : ''}…`.replace(' …', '…') : 'Run now';
+  btn.title = st.status.waiting
+    ? `A scheduled test is waiting: the network is busy (${fmtMbps(st.status.busy_mbps)} Mbps on ${st.status.busy_source}). Run now starts one straight away.`
+    : '';
+  if (st.status.waiting && !running) btn.textContent = 'Run now (waiting: network busy)';
   const rbtn = $('#run-regions');
   rbtn.hidden = !CONFIG.speedtest.manual || !CONFIG.speedtest.regions.length || !!CONFIG.public;
   rbtn.disabled = running;
@@ -686,7 +716,7 @@ function renderCdn() {
   };
   $('#cdn-table').innerHTML = `
     <thead><tr><th>#</th><th style="text-align:left">DNS server</th>${d.hostnames.map((h) => th('h:' + h, h, true)).join('')}
-      ${th('score', 'CDN ping', false, 'Average ping to the CDN servers this DNS server sent you to (what the ranking uses)')}
+      ${th('score', 'Avg CDN ping', false, 'Average ping to the CDN servers this DNS server sent you to (what the ranking uses)')}
       ${th('avg7d', 'CDN ping, 7 days', false, 'The same average over the last 7 days')}
       ${th('dns', 'DNS lookup', false, 'How long this DNS server took to answer the lookups')}</tr></thead>
     <tbody>${rows.map((x) => `<tr><td>${x.score == null ? '' : d.servers.indexOf(x) + 1}</td>
@@ -845,8 +875,8 @@ function yZoom(root, key, chart) {
 }
 
 // ------------------------------------------------------------------ ISP markers
-// Each connection's ISP checks are drawn as a row of markers along the top of the time charts:
-// one colour per connection, one shape per ISP, so a failover shows up next to the latency it caused.
+// Each connection's ISP checks are drawn as a row of markers along the top of the System history chart:
+// one colour per connection, one shape per ISP, so a failover stands out.
 const ISP_SHAPES = [['circle', '●'], ['triangle', '▲'], ['rect', '■'], ['rectRot', '◆'], ['star', '★'], ['crossRot', '✕']];
 const ISP_COLORS = ['#fbbf24', '#22d3ee', '#f472b6', '#a3e635', '#c084fc'];
 const ispShapeIndex = {};
@@ -957,9 +987,11 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     return ` ${ctx.dataset.label}: ${fmtMs(p.y)} ms${band}`;
   };
 
+  let seq = 0;  // only the newest request draws: quick dropdown changes don't pile up or land out of order
   const refresh = async () => {
     const r = range.get();
     if (!r) return;
+    const mine = ++seq;
     const sel = chips.selected();
     const metric = metricSel.value;
     const band = bandSel.value;
@@ -995,6 +1027,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     if (ispSel.value) params.isp = ispSel.value;
     params[keyParam] = wanted.join(',') || '__none__';
     const d = await api(endpoint, params);
+    if (mine !== seq) return r.live;  // a newer refresh has started
     // point layout: [t, avg, min, max, loss%, p5, p95]
     const [loI, hiI, bandName] = band === 'minmax' ? [2, 3, 'min–max'] : [5, 6, 'p5–p95'];
     chart.options.scales.y.title.text = metric === 'loss' ? '%' : 'ms';
@@ -1009,30 +1042,31 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
       const pts = d.series[it.key] || [];
       if (metric === 'loss') {
         datasets.push({
-          label: it.label, unit: '%', borderColor: it.color, backgroundColor: it.color, borderDash: it.dash || [],
+          key: it.key, label: it.label, unit: '%', borderColor: it.color, backgroundColor: it.color, borderDash: it.dash || [],
           stepped: 'middle', spanGaps: false, data: pts.map((p) => ({ x: p[0], y: p[4] })),
         });
         continue;
       }
       if (drawBand) {
-        const edge = { role: 'band', label: it.label, borderColor: it.color + '73', borderWidth: 1, borderDash: [4, 3], spanGaps: false, pointHoverRadius: 0, pointHitRadius: 0 };
+        const edge = { role: 'band', key: it.key, label: it.label, borderColor: it.color + '73', borderWidth: 1, borderDash: [4, 3], spanGaps: false, pointHoverRadius: 0, pointHitRadius: 0 };
         // upper edge fills down to the lower edge (the next dataset)
         datasets.push({ ...edge, fill: '+1', backgroundColor: it.color + '1f', data: pts.map((p) => ({ x: p[0], y: p[hiI] })) });
         datasets.push({ ...edge, fill: false, data: pts.map((p) => ({ x: p[0], y: p[loI] })) });
       }
       datasets.push({
-        role: 'avg', label: it.label, unit: 'ms', borderColor: it.color, backgroundColor: it.color, borderWidth: 2, spanGaps: false,
+        role: 'avg', key: it.key, label: it.label, unit: 'ms', borderColor: it.color, backgroundColor: it.color, borderWidth: 2, spanGaps: false,
         borderDash: it.dash || [],
         data: pts.map((p) => ({ x: p[0], y: p[1], lo: band === 'none' ? null : p[loI], hi: p[hiI], bandName })),
       });
     }
     zoom.fit(datasets.filter((ds) => ds.role !== 'band').flatMap((ds) => ds.data.map((p) => p.y)), metric === 'loss' ? 5 : 1);
-    chart.data.datasets = datasets.concat(await ispOverlay(root, r, refresh));
+    chart.data.datasets = datasets;
     setXRange(chart, r);
     chart.update();
 
     lastTable = { blocks, stats: d.stats };
     renderTable();
+    const k = hoverKey; hoverKey = null; highlight(k);  // keep the highlight across live refreshes
     return r.live;
   };
 
@@ -1061,7 +1095,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
       const name = kind === 'cat'
         ? `<span class="caret">${it.open ? '▾' : '▸'}</span> <i class="host-sq" style="background:${it.color}"></i> <b>${esc(it.label)}</b> <span class="muted">${it.count} ${memberNoun}</span>`
         : `<i class="host-sq" style="background:${it.color}"></i> ${esc(it.label)}`;
-      return `<tr class="${kind === 'cat' ? 'cat-row' : kind === 'member' ? 'member-row' : ''}"${kind === 'cat' ? ` data-cat="${esc(it.cat)}" title="${it.open ? 'Collapse' : 'Show each host in'} ${esc(it.cat)}"` : ''}>
+      return `<tr data-key="${esc(it.key)}" class="${kind === 'cat' ? 'cat-row' : kind === 'member' ? 'member-row' : ''}"${kind === 'cat' ? ` data-cat="${esc(it.cat)}" title="${it.open ? 'Collapse' : 'Show each host in'} ${esc(it.cat)}"` : ''}>
         <td>${name}</td>
         <td class="avg">${fmtMs(s.avg)}</td><td>${fmtMs(s.min)}</td><td>${fmtMs(s.p5)}</td><td>${fmtMs(s.p95)}</td><td>${fmtMs(s.max)}</td>
         <td>${fmtLoss(s.loss, 2)}</td><td>${(s.samples ?? 0).toLocaleString()}</td>${endpoint === 'ping' ? `<td style="text-align:left">${kind === 'cat' ? '' : routeHtml(it.key)}</td>` : ''}</tr>`;
@@ -1088,6 +1122,25 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     store.set(`sort:${id}`, sort);
     renderTable();
   });
+  // Hovering a table row picks out its line in the chart: thicker, with the others faded.
+  let hoverKey = null;
+  function highlight(key) {
+    if (key === hoverKey) return;
+    hoverKey = key;
+    const on = key && chart.data.datasets.some((ds) => ds.key === key);
+    for (const ds of chart.data.datasets) {
+      if (!ds.key) continue;
+      ds.baseColor ??= ds.borderColor;
+      ds.baseWidth ??= ds.borderWidth ?? 1.75;
+      const me = ds.key === key;
+      ds.borderColor = on && !me ? ds.baseColor.slice(0, 7) + '33' : ds.baseColor;
+      ds.borderWidth = on && me && ds.role !== 'band' ? ds.baseWidth + 1.5 : ds.baseWidth;
+      ds.order = on && me ? -1 : 0;
+    }
+    chart.update('none');
+  }
+  $('.stats', root).addEventListener('mouseover', (e) => highlight(e.target.closest('tr[data-key]')?.dataset.key || null));
+  $('.stats', root).addEventListener('mouseleave', () => highlight(null));
   const chips = chipFilter($('.chips', root), id, items, refresh, defaultOff);
   const range = rangeControl($('.range', root), id, defaultRange, refresh);
   metricSel.addEventListener('change', () => { store.set(`metric:${id}`, metricSel.value); refresh(); });
@@ -1099,6 +1152,10 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
 // ------------------------------------------------------------------ speedtest panel
 const flagChar = (cc) => (cc && /^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map((c) => 0x1f1a5 + c.charCodeAt(0))) + ' ' : '');
 const testName = (label) => (label === 'Auto' ? 'Closest server' : flag(CONFIG.speedtest.flags?.[label]) + esc(label));
+
+// A scheduled test that ran anyway after waiting for a busy network: its numbers may be low.
+const busyTag = (x) => (x.busy_mbps == null ? ''
+  : ` <span class="busy-tag" title="The network was busy (${fmtMbps(x.busy_mbps)} Mbps of other traffic) when this test ran, so it may read low">busy</span>`);
 
 function speedPanel() {
   const root = $('#panel-speed');
@@ -1149,7 +1206,6 @@ function speedPanel() {
       chart.options.scales.y.title.text = 'Mbps';
       chart.options.scales.y1.display = sel.includes('ping') || sel.includes('jitter');
     }
-    chart.data.datasets = chart.data.datasets.concat(await ispOverlay(root, r, refresh));
     setXRange(chart, r);
     chart.update();
 
@@ -1162,7 +1218,7 @@ function speedPanel() {
           <td><b>${fmtMs(avg('ping_ms'))}</b></td><td><b>${fmtMs(avg('jitter_ms'))}</b></td><td></td><td><b>${fmtBytes(ok.reduce((a, x) => a + (x.data_bytes || 0), 0))}</b></td><td></td><td></td><td></td></tr>
         ${recent.map((x) => x.error
           ? `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}</td><td colspan="9" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
-          : `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td>
+          : `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}${busyTag(x)}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td>
              <td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td>
              <td style="text-align:left">${esc(x.isp || '')}</td>
              <td style="text-align:left">${esc(x.server_name)}${x.server_location ? ', ' + esc(x.server_location) : ''}</td>
@@ -1195,7 +1251,7 @@ function systemPanel() {
       label: s.label, unit: s.unit, yAxisID: s.axis, borderColor: s.color, backgroundColor: s.color,
       borderDash: s.axis === 'y1' ? [4, 3] : [], spanGaps: false,
       data: d.series[s.id].map((p) => ({ x: p[0], y: p[1] })),
-    }));
+    })).concat(await ispOverlay(root, r, refresh));
     chart.options.scales.y.max = 100;
     setXRange(chart, r);
     chart.update();
@@ -1398,8 +1454,7 @@ async function main() {
   $('#footer').innerHTML = `<a href="${esc(CONFIG.repo || '#')}" target="_blank" rel="noopener">netBae ${esc(CONFIG.version)}</a> by `
     + '<a href="https://github.com/jchin14" target="_blank" rel="noopener">jchin14</a> · '
     + '<a href="https://buymeacoffee.com/jchin14" target="_blank" rel="noopener">buy me a coffee</a> · '
-    + `ping every ${CONFIG.ping.interval_seconds}s · `
-    + (sp.enabled ? `speedtest every ${sp.interval_minutes} min${sp.offset_minutes ? ` (+${sp.offset_minutes} min offset)` : ''} · ` : '')
+    + `${scheduleText()} · `
     + 'tip: double-click a chip to show only that series';
 
   await refreshAll(true);

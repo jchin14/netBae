@@ -70,6 +70,7 @@ h1 .logo { width: 24px; height: 24px; fill: none; stroke: var(--accent); stroke-
 .share-now[hidden] { display: none; }
 .badge-public { border: 1px solid var(--border); color: var(--muted); border-radius: 999px; padding: 1px 8px; margin-right: 8px; }
 .badge-public[hidden] { display: none; }
+.busy-tag { border: 1px solid var(--border); color: var(--muted); border-radius: 999px; padding: 0 6px; font-size: .85em; }
 .repo { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); text-decoration: none; margin-left: 10px;
   border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
 .repo:hover { color: var(--text); border-color: var(--muted); }

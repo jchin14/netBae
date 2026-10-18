@@ -54,7 +54,14 @@ svc() {
 
 case "${1:-help}" in
   update|upgrade)
-    echo "Installed: netBae $(version). Fetching the latest from github.com/$REPO …"
+    cur=$(version)
+    latest=$(curl -fsSL "https://raw.githubusercontent.com/$REPO/main/app/netbae.py" 2>/dev/null | sed -n 's/^VERSION = "\(.*\)"/\1/p' || true)
+    if [[ -n $latest && $cur != unknown && $cur != "$latest" \
+          && $(printf '%s\n%s\n' "$cur" "$latest" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1) == "$cur" ]]; then
+      echo "netBae $cur is newer than the latest release ($latest): nothing to update."
+      exit 0
+    fi
+    echo "Installed: netBae $cur. Fetching the latest from github.com/$REPO …"
     curl -fsSL "https://raw.githubusercontent.com/$REPO/main/install.sh" | as_root env NETBAE_REPO="$REPO" bash
     ;;
   status)  svc status ;;

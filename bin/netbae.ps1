@@ -46,9 +46,14 @@ function Start-NetBae { Start-ScheduledTask -TaskName $TaskName }
 switch ($Command) {
     { $_ -in 'update', 'upgrade' } {
         if (-not (Test-Admin)) { Invoke-Elevated -KeepOpen }
-        Write-Host "Installed: netBae $(Get-Version). Fetching the latest from github.com/$Repo ..."
-        $env:NETBAE_REPO = $Repo
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $cur = Get-Version; $latest = ''
+        try { if ((Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/$Repo/main/app/netbae.py").Content -match '(?m)^VERSION = "(.*)"') { $latest = $Matches[1] } } catch { }
+        $newer = $false
+        try { $newer = $latest -and ([version]$cur -gt [version]$latest) } catch { }
+        if ($newer) { Write-Host "netBae $cur is newer than the latest release ($latest): nothing to update."; exit 0 }
+        Write-Host "Installed: netBae $cur. Fetching the latest from github.com/$Repo ..."
+        $env:NETBAE_REPO = $Repo
         # download the latest installer to a file and run that (rather than piping it into Invoke-Expression)
         $file = Join-Path $env:TEMP 'netbae-install.ps1'
         Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/$Repo/main/install.ps1" -OutFile $file

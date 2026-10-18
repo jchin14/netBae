@@ -62,9 +62,16 @@ PPORT=$(conf_get public port); PPORT=${PPORT:-8080}
 restart_netbae() {
   if [[ $OS == Darwin ]]; then launchctl kickstart -k "system/$LABEL"; else systemctl restart netbae; fi
 }
+port_free() { ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 public_on() {
-  local before
+  local before p
   before=$(cat "$CONF")
+  if ! curl -fsS --max-time 2 "http://127.0.0.1:$PPORT/api/config" 2>/dev/null | grep -q '"public":true' && ! port_free "$PPORT"; then
+    for p in $(seq $((PPORT + 1)) $((PPORT + 100))); do port_free "$p" && break; done
+    port_free "$p" || die "port $PPORT is used by another program and no free port was found near it"
+    c_warn "port $PPORT is used by another program, so the public dashboard uses port $p"
+    PPORT=$p
+  fi
   conf_set public enabled true
   conf_set public host '"127.0.0.1"'   # only the tunnel (on this machine) can reach it
   conf_set public port "$PPORT"
@@ -90,7 +97,7 @@ app_dir() { if [[ $OS == Darwin ]]; then echo /usr/local/lib/netbae; else echo /
 find_cf() { command -v cloudflared 2>/dev/null || ls /opt/homebrew/bin/cloudflared /usr/local/bin/cloudflared 2>/dev/null | head -1; }
 install_cloudflared() {
   CF=$(find_cf || true)
-  [[ -n $CF ]] && return
+  if [[ -n $CF ]]; then update_cloudflared; return; fi
   c_info "Installing cloudflared (Cloudflare's tunnel program)"
   if [[ $OS == Darwin ]]; then
     local brew
@@ -112,6 +119,23 @@ install_cloudflared() {
   CF=$(find_cf || true)
   [[ -n $CF ]] || die "couldn't install cloudflared - see https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
   c_info "Installed $("$CF" --version 2>/dev/null | head -1)"
+}
+update_cloudflared() {  # bring an installed cloudflared up to date from wherever it came from (never fatal)
+  local old new brew
+  old=$("$CF" --version 2>/dev/null | head -1)
+  c_info "Checking for a cloudflared update"
+  brew=$(ls /opt/homebrew/bin/brew /usr/local/bin/brew 2>/dev/null | head -1)
+  if [[ $OS == Darwin && -n $brew && -n ${SUDO_USER:-} ]] && sudo -u "$SUDO_USER" "$brew" list cloudflared >/dev/null 2>&1; then
+    sudo -u "$SUDO_USER" "$brew" upgrade cloudflared >/dev/null 2>&1 || true
+  elif [[ $OS != Darwin ]] && command -v dpkg >/dev/null && dpkg -s cloudflared >/dev/null 2>&1; then
+    { apt-get update -qq && apt-get install -y -qq --only-upgrade cloudflared; } >/dev/null 2>&1 || true
+  elif [[ $OS != Darwin ]] && command -v rpm >/dev/null && rpm -q cloudflared >/dev/null 2>&1; then
+    "$(command -v dnf || command -v yum)" upgrade -y -q cloudflared >/dev/null 2>&1 || true
+  else
+    "$CF" update >/dev/null 2>&1 || true  # Cloudflare's own build replaces itself
+  fi
+  new=$("$CF" --version 2>/dev/null | head -1)
+  if [[ $new != "$old" ]]; then c_info "Updated to $new"; else c_info "${old:-cloudflared} is up to date"; fi
 }
 install_cloudflared_binary() {  # Cloudflare's own release build, for distros without their package repo
   local m
@@ -247,7 +271,7 @@ cmd_cloudflare() {
   local cert="$CF_DIR/cert.pem" name id
   if [[ ! -f $cert ]]; then
     c_info "Sign in to Cloudflare: open the link below and choose the domain for $host"
-    rm -rf "$CF_DIR/.home"
+    rm -rf "$CF_DIR/.home"; install -d -m 0700 "$CF_DIR/.home/.cloudflared"
     HOME="$CF_DIR/.home" "$CF" tunnel login
     mv "$CF_DIR/.home/.cloudflared/cert.pem" "$cert"; rm -rf "$CF_DIR/.home"
     chmod 0600 "$cert"
@@ -255,6 +279,7 @@ cmd_cloudflare() {
   name="netbae-$(uname -n | cut -d. -f1 | tr '[:upper:]' '[:lower:]')"
   cfj() { "$CF" tunnel --origincert "$cert" "$@"; }
   id=$(cfj list -o json -n "$name" 2>/dev/null | "$PY" -c 'import json,sys; t=json.load(sys.stdin) or []; print(t[0]["id"] if t else "")')
+  rm -f "$CF_DIR/credentials.json"  # cloudflared won't overwrite it
   if [[ -n $id ]]; then
     c_info "Using your existing tunnel '$name'"
     cfj token --cred-file "$CF_DIR/credentials.json" "$id" >/dev/null
@@ -272,6 +297,7 @@ cmd_cloudflare() {
     fi
   fi
   rm -f /tmp/netbae-route.$$
+  public_on
   cat >"$CF_DIR/config.yml" <<EOF
 # Written by netbae tunnel. The tunnel only reaches netBae's read-only public port.
 tunnel: $id
@@ -282,7 +308,6 @@ ingress:
   - service: http_status:404
 EOF
   chmod 0644 "$CF_DIR/config.yml"
-  public_on
   cf_service --config "$CF_DIR/config.yml" run
   wait_for_url "https://$host"
   echo "    Only invited people? Add a Cloudflare Access application for $host (free for up to 50 users)."

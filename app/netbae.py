@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.15.0"
+VERSION = "1.16.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -149,6 +149,11 @@ DEFAULT_CONFIG = {
         "regions_interval_minutes": 1440,
         "regions_offset_minutes": 30,
         "global_every": 5,  # after every 5th main test, one to a random server somewhere in the world (0 = off)
+        # before a scheduled test, wait while the connection is busy: traffic above busy_percent of the last
+        # result, checked again every few minutes, then test anyway (marked busy) after busy_wait_minutes
+        "busy_check": True,
+        "busy_percent": 10,
+        "busy_wait_minutes": 30,
         "binary": "auto",
         "timeout_seconds": 300,
     },
@@ -663,6 +668,10 @@ def load_config(path):
         raise SystemExit("duplicate ping targets in config")
     if str(cfg["web"]["auto_update"]).lower() not in ("weekly", "daily", "off"):
         raise SystemExit('[web] auto_update must be "weekly", "daily" or "off"')
+    if not 0 < float(cfg["speedtest"]["busy_percent"]) <= 100:
+        raise SystemExit("[speedtest] busy_percent must be between 1 and 100")
+    if float(cfg["speedtest"]["busy_wait_minutes"]) < 0:
+        raise SystemExit("[speedtest] busy_wait_minutes must be 0 or more")
     if int(cfg["speedtest"]["global_every"] or 0) < 0:
         raise SystemExit("[speedtest] global_every must be 0 (off) or more")
     for sec, key in (("ping", "interval_seconds"), ("ping", "region_interval_seconds"), ("dns", "interval_seconds"),
@@ -770,6 +779,7 @@ SERIES = {
     "dns": {"raw": "dns", "rollup": "dns_1m", "hourly": "dns_1h", "keys": ["server", "domain"], "val": "ms"},
 }
 ROLLUP_ABOVE_SECONDS = 6 * 3600  # whole-range stats longer than this come from the 1-minute table
+STATS_HOURLY_ABOVE_SECONDS = 2 * 86400  # ... and longer than this from the hourly table
 
 
 # Averages ignore the fastest and slowest 5% of samples once there are at least 10, so a few
@@ -845,6 +855,30 @@ def pct_select(val, bucket_expr, keys, table, where, hist=False):
         f" GROUP BY {', '.join(keys)}, b")
 
 
+def raw_stats(rows):
+    """pct_select's numbers for one bucket per key, from (key, value) rows: (key, 0, n, ok, trimmed avg, min,
+    max, p5, p95) with nearest-rank percentiles."""
+    groups = {}
+    for k, v in rows:
+        g = groups.get(k)
+        if g is None:
+            g = groups[k] = [0, []]
+        g[0] += 1
+        if v is not None:
+            g[1].append(v)
+    out = []
+    for k, (n, vs) in groups.items():
+        cnt = len(vs)
+        if not cnt:
+            out.append((k, 0, n, 0, None, None, None, None, None))
+            continue
+        vs.sort()
+        kept = vs if cnt < 10 else [v for i, v in enumerate(vs, 1) if 0.05 * cnt < i <= 0.95 * cnt]
+        rank = lambda q: vs[max(1, math.ceil(q * cnt - 1e-9)) - 1]  # noqa: E731
+        out.append((k, 0, n, cnt, sum(kept) / len(kept) if kept else None, vs[0], vs[-1], rank(0.05), rank(0.95)))
+    return out
+
+
 # p5/p95 of a summary row from before histograms; 1-minute rows from 1.8 on leave them out, since with
 # ~12 samples a minute they're just the minute's min and max
 COMBINE = ("SUM(n), SUM(ok), SUM(avg * ok) / NULLIF(SUM(ok), 0), MIN(mn), MAX(mx),"
@@ -879,7 +913,7 @@ class DB:
         self.conn().executescript(SCHEMA)
         cols = {r[1] for r in self.query("PRAGMA table_info(speedtest)")}
         for col, typ in (("kind", "TEXT"), ("label", "TEXT"), ("data_bytes", "INTEGER"),
-                         ("server_host", "TEXT")):  # added in 1.1-1.4
+                         ("server_host", "TEXT"), ("busy_mbps", "REAL")):  # added in 1.1-1.4, busy in 1.16
             if col not in cols:
                 self.conn().execute(f"ALTER TABLE speedtest ADD COLUMN {col} {typ}")
         for t in ("ping_1m", "dns_1m", "ping_1h", "dns_1h"):  # latency histograms, added in 1.8
@@ -1569,6 +1603,23 @@ def with_rels(path):
 HOP_RE = re.compile(r"^\s*(\d+)[:?]*\s+(.*)$")
 
 
+_INETUTILS = []
+
+
+def _inetutils_traceroute():
+    """The GNU inetutils traceroute (Debian's default on some systems), unless the usual Linux one is
+    installed too, as /usr/bin/traceroute.db next to it. None when traceroute isn't the inetutils one."""
+    if not _INETUTILS:
+        exe = None if IS_WINDOWS or IS_MAC else shutil.which("traceroute")
+        try:
+            gnu = exe and "inetutils" in subprocess.run([exe, "--version"], capture_output=True, text=True,
+                                                        timeout=5, **SUBPROCESS_FLAGS).stdout
+        except (OSError, subprocess.SubprocessError):
+            gnu = False
+        _INETUTILS.append(exe if gnu and not os.path.exists("/usr/bin/traceroute.db") else None)
+    return _INETUTILS[0]
+
+
 def traceroute(host, max_hops=25, bind=None):
     """[(hop, ip or None, rtt_ms or None)] using the system traceroute (or tracepath / tracert)."""
     if IS_WINDOWS:
@@ -1577,8 +1628,13 @@ def traceroute(host, max_hops=25, bind=None):
         cmd = ["/usr/sbin/traceroute6", "-n", "-q", "1", "-w", "1", "-m", str(max_hops)]
         if bind:
             cmd += ["-s", bind] if is_ip(bind) else []
+    elif _inetutils_traceroute():  # GNU inetutils: no -n (it never resolves names), no -s or -i
+        if bind:
+            raise OSError("this traceroute (GNU inetutils) can't trace from a chosen interface; install the 'traceroute' package")
+        cmd = [_inetutils_traceroute(), "-q", "1", "-w", "1", "-m", str(max_hops)]
     elif shutil.which("traceroute") or os.path.exists("/usr/sbin/traceroute"):
-        exe = shutil.which("traceroute") or "/usr/sbin/traceroute"
+        exe = "/usr/bin/traceroute.db" if os.path.exists("/usr/bin/traceroute.db") else \
+            shutil.which("traceroute") or "/usr/sbin/traceroute"
         cmd = [exe, "-n", "-q", "1", "-w", "1", "-m", str(max_hops)]
         if bind:
             cmd += ["-s", bind] if is_ip(bind) else ["-i", bind]
@@ -1586,8 +1642,11 @@ def traceroute(host, max_hops=25, bind=None):
         cmd = ["tracepath", "-n", "-m", str(max_hops)]
     else:
         raise OSError("no traceroute command found (install the 'traceroute' package)")
-    out = subprocess.run(cmd + [host], capture_output=True, text=True, errors="replace",
-                         timeout=max_hops * 6 + 10, **SUBPROCESS_FLAGS).stdout
+    res = subprocess.run(cmd + [host], capture_output=True, text=True, errors="replace",
+                         timeout=max_hops * 6 + 10, **SUBPROCESS_FLAGS)
+    out = res.stdout
+    if res.returncode and not any(HOP_RE.match(line) for line in out.splitlines()):
+        raise OSError((res.stderr.strip() or f"{cmd[0]} exited with code {res.returncode}").splitlines()[0])
     hops = {}
     for line in out.splitlines():
         m = HOP_RE.match(line)
@@ -1991,6 +2050,133 @@ class WinStats:
         return model or None, name or f"Windows {platform.release()} ({platform.version()})", cpu
 
 
+# --------------------------------------------------------------------------- network traffic (busy check)
+
+SKIP_IFACES = re.compile(r"^(lo|docker|veth|br-|virbr|vmnet|utun|awdl|llw|bridge|gif|stf|anpi|ap\d|tun|tap|wg)")
+
+
+def local_byte_counters():
+    """(received, sent) bytes so far over this machine's network interfaces, or None."""
+    raw = read_file("/proc/net/dev")
+    if raw:
+        rx = tx = 0
+        for line in raw.splitlines()[2:]:
+            name, _, rest = line.partition(":")
+            f = rest.split()
+            if len(f) >= 9 and not SKIP_IFACES.match(name.strip()):
+                rx, tx = rx + int(f[0]), tx + int(f[8])
+        return rx, tx
+    if IS_WINDOWS:
+        out = run_cmd(["netstat", "-e"]) or ""
+        for line in out.splitlines():  # "Bytes   123456   7890" (the first row of two big numbers)
+            nums = re.findall(r"\d+", line)
+            if len(nums) == 2 and re.match(r"^\s*\D", line):
+                return int(nums[0]), int(nums[1])
+        return None
+    out = run_cmd(["/usr/sbin/netstat", "-ibn"])  # macOS: one <Link#n> row per interface
+    if not out:
+        return None
+    rx = tx = 0
+    for line in out.splitlines()[1:]:
+        f = line.split()
+        if len(f) >= 10 and f[2].startswith("<Link") and not SKIP_IFACES.match(f[0]):
+            # the Address column is empty on some interfaces, so count from the right
+            rx, tx = rx + int(f[-5]), tx + int(f[-2])
+    return rx, tx
+
+
+class RouterCounters:
+    """The router's own WAN byte counters over UPnP (WANCommonInterfaceConfig), which see every device's
+    traffic. Many home routers offer them; when this one doesn't, read() returns None."""
+    SERVICE = "urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1"
+
+    def __init__(self):
+        self.control, self.checked = None, 0.0
+
+    def discover(self):
+        """The control URL of the router's traffic counters, or None. Asks for the gateway device as well as the
+        service itself: some routers (e.g. UniFi's MiniUPnPd) only answer searches for the device."""
+        self.checked = time.time()
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        locations = []
+        try:
+            s.settimeout(1)
+            for st in ("urn:schemas-upnp-org:device:InternetGatewayDevice:1",
+                       "urn:schemas-upnp-org:device:InternetGatewayDevice:2", self.SERVICE):
+                msg = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\n"
+                       f"MX: 2\r\nST: {st}\r\n\r\n").encode()
+                s.sendto(msg, ("239.255.255.250", 1900))
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                try:
+                    data = s.recv(4096).decode(errors="replace")
+                except socket.timeout:
+                    continue
+                loc = re.search(r"(?im)^location:\s*(\S+)", data)
+                if loc and loc.group(1) not in locations:
+                    locations.append(loc.group(1))
+        except OSError:
+            pass
+        finally:
+            s.close()
+        for url in locations:
+            try:
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    xml = r.read(200_000).decode(errors="replace")
+            except (OSError, ValueError):
+                continue
+            for svc in re.findall(r"<service>(.*?)</service>", xml, re.S):
+                if "WANCommonInterfaceConfig" in svc:
+                    ctl = re.search(r"<controlURL>\s*(.*?)\s*</controlURL>", svc)
+                    if ctl:
+                        return urllib.parse.urljoin(url, ctl.group(1))
+        return None
+
+    def call(self, action):
+        body = (f'<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"'
+                f' s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
+                f'<u:{action} xmlns:u="{self.SERVICE}"/></s:Body></s:Envelope>').encode()
+        req = urllib.request.Request(self.control, body, {"Content-Type": 'text/xml; charset="utf-8"',
+                                                           "SOAPAction": f'"{self.SERVICE}#{action}"'})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            m = re.search(r"<\w*:?NewTotalBytes\w*>\s*(\d+)", r.read(20_000).decode(errors="replace"))
+        return int(m.group(1)) if m else None
+
+    def read(self):
+        """(received, sent) bytes, or None. Looks for the router at most once an hour."""
+        if not self.control and time.time() - self.checked > 3600:
+            self.control = self.discover()
+            if self.control:
+                log.info("busy check: using the router's traffic counters (%s)", self.control)
+        if not self.control:
+            return None
+        try:
+            rx, tx = self.call("GetTotalBytesReceived"), self.call("GetTotalBytesSent")
+        except (OSError, ValueError):
+            self.control = None
+            return None
+        return (rx, tx) if rx is not None and tx is not None else None
+
+
+def measure_traffic(router, seconds=5):
+    """(down Mbps, up Mbps, "router" | "this machine") over a few seconds, or None."""
+    for source, read in (("router", router.read), ("this machine", local_byte_counters)):
+        a = read()
+        if a is None:
+            continue
+        t0 = time.time()
+        time.sleep(seconds)
+        b = read()
+        if b is None:
+            continue
+        dt = time.time() - t0
+        # router counters are often 32-bit and wrap around at 4 GiB
+        rate = [((y - x) % 2 ** 32 if source == "router" and y < x else max(0, y - x)) * 8 / dt / 1e6
+                for x, y in zip(a, b)]
+        return rate[0], rate[1], source
+    return None
+
+
 class SystemStats:
     def __init__(self, disk_path):
         if IS_WINDOWS and disk_path in ("/", "\\"):  # the shipped config's "/" means the system drive
@@ -2280,10 +2466,13 @@ class Monitor:
         self.pool = ThreadPoolExecutor(max_workers=32, thread_name_prefix="probe")
         self.st_lock = threading.Lock()
         self.st_status = {"running": False}
+        self.router_counters = RouterCounters()
+        self.st_busy = None  # traffic (Mbps) when the running scheduled test went ahead on a busy network
         self.region_cache = {}
         self.region_lookups = set()
         self.game_cache = {}
         self.trace_lock = threading.Lock()
+        self.first_traces_done = threading.Event()
         self.hop_geo = HopGeo(self.db)
         self.docker_bridge = docker_bridge()
         if self.docker_bridge:
@@ -2318,18 +2507,21 @@ class Monitor:
             run_aligned("traceroute", c["traceroute"]["interval_hours"] * 3600,
                         c["traceroute"]["offset_minutes"] * 60, self.collect_traceroutes)
             threading.Thread(target=self.first_traces, name="traceroute-first", daemon=True).start()
+        else:
+            self.first_traces_done.set()
         if c["speedtest"]["enabled"]:
+            threading.Thread(target=self.first_speedtest, name="speedtest-first", daemon=True).start()
             run_aligned("speedtest", c["speedtest"]["interval_minutes"] * 60,
-                        c["speedtest"]["offset_minutes"] * 60, self.run_speedtest)
+                        c["speedtest"]["offset_minutes"] * 60, self.scheduled_speedtest)
             if c["speedtest"]["regions"]:
                 run_aligned("speedtest-regions", c["speedtest"]["regions_interval_minutes"] * 60,
                             c["speedtest"]["regions_offset_minutes"] * 60,
-                            lambda: self.run_speedtest(scope="regions"))
+                            lambda: self.scheduled_speedtest("regions"))
             for conn in c["connections"]:
                 if conn["speedtest"] and conn["speedtest_interval_minutes"] > 0:
                     run_aligned(f"speedtest-{conn['name']}", conn["speedtest_interval_minutes"] * 60,
                                 conn["speedtest_offset_minutes"] * 60,
-                                lambda n=conn["name"]: self.run_speedtest(scope=f"conn:{n}"))
+                                lambda n=conn["name"]: self.scheduled_speedtest(f"conn:{n}"))
         if c["cdn"]["enabled"] and c["cdn"]["hostnames"] and c["dns"]["servers"]:
             run_aligned("cdn", c["cdn"]["interval_minutes"] * 60, c["cdn"]["offset_minutes"] * 60, self.collect_cdn)
             t = threading.Timer(60, self.collect_cdn)  # a first result soon after starting
@@ -2499,6 +2691,21 @@ class Monitor:
             self.collect_traceroutes(skip=fresh)
         except Exception:
             log.exception("traceroute collector failed")
+        finally:
+            self.first_traces_done.set()
+
+    def first_speedtest(self):
+        """If no main speedtest has ever run, run one once startup has settled: game/region servers looked up
+        and the first traces done, so neither competes with it (waits at most ~10 min)."""
+        main = "SELECT COUNT(*) FROM speedtest WHERE COALESCE(kind, 'main') = 'main'"
+        if self.db.scalar(main):
+            return
+        self.first_traces_done.wait(600)
+        if not self.db.scalar(main):  # the scheduled test may have run meanwhile
+            try:
+                self.scheduled_speedtest()
+            except Exception:
+                log.exception("speedtest collector failed")
 
     def collect_traceroutes(self, skip=()):
         targets = [x for x in self.trace_targets() if x[0] not in skip]
@@ -2762,10 +2969,53 @@ class Monitor:
         self.db.conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     # -- speedtest
-    def run_speedtest(self, blocking=True, scope="main"):
-        """Run the main test(s) or the region tests. Tests always run one at a time."""
+    def wait_until_quiet(self):
+        """Before a scheduled test: while other traffic is over busy_percent of the last result, wait and check
+        again every few minutes. Returns the traffic (Mbps) if it's still busy when the wait runs out, else None."""
+        st = self.cfg["speedtest"]
+        if not st["busy_check"]:
+            return None
+        last = self.db.query("SELECT download_mbps, upload_mbps FROM speedtest WHERE COALESCE(kind, 'main') = 'main'"
+                             " AND error IS NULL ORDER BY ts DESC LIMIT 1")
+        if not last:
+            return None  # nothing to compare with yet
+        down_max, up_max = (v * float(st["busy_percent"]) / 100 for v in last[0])
+        deadline = time.time() + float(st["busy_wait_minutes"]) * 60
+        while True:
+            m = measure_traffic(self.router_counters)
+            if not m:
+                return None
+            down, up, source = m
+            if down <= down_max and up <= up_max:
+                return None
+            if time.time() >= deadline:
+                log.info("speedtest: network still busy (%.1f down / %.1f up Mbps), testing anyway", down, up)
+                return round(max(down, up), 1)
+            if self.st_lock.locked():  # someone pressed Run now meanwhile: that result will do
+                return False
+            log.info("speedtest: network busy (%.1f down / %.1f up Mbps, %s), checking again in 3 min",
+                     down, up, source)
+            self.st_status = {"running": False, "waiting": True, "busy_mbps": round(max(down, up), 1),
+                              "busy_source": source}
+            time.sleep(min(180, max(0, deadline - time.time())))
+            if self.st_lock.locked():
+                return False
+
+    def scheduled_speedtest(self, scope="main"):
+        try:
+            busy = self.wait_until_quiet()
+        finally:
+            if self.st_status.get("waiting") and not self.st_lock.locked():
+                self.st_status = {"running": False}
+        if busy is not False:
+            self.run_speedtest(blocking=False, scope=scope, busy=busy)
+
+    def run_speedtest(self, blocking=True, scope="main", busy=None):
+        """Run the main test(s) or the region tests. Tests always run one at a time. busy: the traffic in
+        Mbps when a scheduled test ran despite a busy network, stored with the results."""
         if not self.st_lock.acquire(blocking=blocking):
             return False
+        self.st_busy = busy
         try:
             if scope == "regions":
                 for region in self.cfg["speedtest"]["regions"]:
@@ -2784,7 +3034,7 @@ class Monitor:
                 if self.global_due() == 0:
                     self._global_test()
         finally:
-            self.st_status = {"running": False}
+            self.st_status, self.st_busy = {"running": False}, None
             self.st_lock.release()
         return True
 
@@ -2889,6 +3139,7 @@ class Monitor:
         return row
 
     def _save_speedtest(self, ts, kind, label, row):
+        row = dict(row, busy_mbps=self.st_busy)
         cols = ["ts", "kind", "label"] + list(row)
         self.db.insert_many(f"INSERT INTO speedtest ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
                             [[ts, kind, label] + list(row.values())])
@@ -2965,7 +3216,9 @@ def aggregate_keys(m, name, frm, to, bucket, keys=None, extra=("", ()), combined
     span = to - frm
     # raw samples for short ranges, 1-minute summaries for days, hourly summaries for months/years
     if bucket is None:
-        level = "hourly" if span > 31 * 86400 else "rollup" if span > ROLLUP_ABOVE_SECONDS else "raw"
+        # whole-range stats over more than 2 days come from the hourly table: the same numbers to within a
+        # fraction of a percent, but ~50x faster than adding up a week of 1-minute rows (slow on a Pi)
+        level = "hourly" if span > STATS_HOURLY_ABOVE_SECONDS else "rollup" if span > ROLLUP_ABOVE_SECONDS else "raw"
     else:
         level = "hourly" if bucket >= 3600 else "rollup" if bucket >= 60 else "raw"
     if frm < now - float(st["minute_retention_days"]) * 86400:
@@ -2984,6 +3237,9 @@ def aggregate_keys(m, name, frm, to, bucket, keys=None, extra=("", ()), combined
         where += " AND " + extra[0]
         params += list(extra[1])
     name_of = (lambda k: k) if combined else m.db.name_of
+    if level == "raw" and bucket is None:  # whole-range stats: sorting in Python is ~2x faster than SQL windows
+        rows = raw_stats(m.db.conn().execute(f"SELECT {kexpr}, {spec['val']} FROM {spec['raw']} WHERE {where}", params))
+        return [(name_of(r[0]),) + tuple(r[1:]) for r in rows]
     if level == "raw":
         rows = m.db.query(pct_select(spec["val"], bexpr, [kexpr], spec["raw"], where) + " ORDER BY b", params)
         return [(name_of(r[0]),) + tuple(r[1:]) for r in rows]
@@ -3046,6 +3302,7 @@ def api_config(m, q):
                       "regions": [r["name"] for r in c["speedtest"]["regions"]],
                       "flags": {r["name"]: r.get("flag", "") for r in c["speedtest"]["regions"] + c["ping"]["regions"]},
                       "regions_interval_minutes": c["speedtest"]["regions_interval_minutes"],
+                      "global_every": int(c["speedtest"]["global_every"] or 0),
                       "next_regions_run": next_aligned(c["speedtest"]["regions_interval_minutes"] * 60,
                                                        c["speedtest"]["regions_offset_minutes"] * 60)
                       if c["speedtest"]["enabled"] and c["speedtest"]["regions"] else None},
@@ -3122,7 +3379,7 @@ def api_speedtest(m, q):
     to = q_time(q, "to", now)
     frm = q_time(q, "from", to - 7 * 86400)
     cols = ["ts", "kind", "label", "server_id", "server_name", "server_location", "isp", "ping_ms", "jitter_ms",
-            "download_mbps", "upload_mbps", "packet_loss", "data_bytes", "result_url", "error"]
+            "download_mbps", "upload_mbps", "packet_loss", "data_bytes", "result_url", "error", "busy_mbps"]
     rows = m.db.query(f"SELECT ts, COALESCE(kind, 'main'), COALESCE(label, 'Auto'), {','.join(cols[3:])}"
                       " FROM speedtest WHERE ts >= ? AND ts <= ? ORDER BY ts", (frm, to))
     return {"from": frm, "to": to, "results": [dict(zip(cols, r)) for r in rows], "status": m.st_status}
@@ -3423,7 +3680,7 @@ def api_summary(m, q):
 
 
 ST_COLS = ["ts", "server_name", "server_location", "isp", "ping_ms", "jitter_ms", "download_mbps", "upload_mbps",
-           "packet_loss", "data_bytes", "result_url", "error"]
+           "packet_loss", "data_bytes", "result_url", "error", "busy_mbps"]
 
 
 def global_summary(m, now):

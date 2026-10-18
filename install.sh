@@ -414,8 +414,10 @@ EOF
 
   # The dashboard's Update button: the service can't run the installer itself, so it creates
   # $DATA_DIR/update-request and this root job runs `netbae update` (then removes the request).
-  local up=/Library/LaunchDaemons/$LABEL.update.plist
-  launchctl bootout "system/$LABEL.update" 2>/dev/null || true
+  local up=/Library/LaunchDaemons/$LABEL.update.plist up_self
+  # Run by that job (the Update button)? Then leave it loaded: booting it out would kill this script.
+  if [[ ${XPC_SERVICE_NAME:-} == "$LABEL.update" ]]; then up_self=1; else up_self=""; fi
+  [[ -n $up_self ]] || launchctl bootout "system/$LABEL.update" 2>/dev/null || true
   cat >"$up" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -433,7 +435,7 @@ EOF
 EOF
   chown root:wheel "$up"
   chmod 644 "$up"
-  plutil -lint "$up" >/dev/null && launchctl bootstrap system "$up" \
+  plutil -lint "$up" >/dev/null && { [[ -n $up_self ]] || launchctl bootstrap system "$up"; } \
     || c_warn "couldn't set up the dashboard's Update button ($up)"
 
   # The application firewall would silently drop dashboard connections to a daemon; allow python.
