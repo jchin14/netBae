@@ -86,11 +86,13 @@ h2 { font-size: 15px; margin: 0; font-weight: 600; }
 .num { font-variant-numeric: tabular-nums; }
 
 .top {
-  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 12px;
   padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--card);
   position: sticky; top: 0; z-index: 10;
 }
-.top-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 0; }
+.top > div:first-child { flex: 1 1 320px; min-width: 0; }  /* the name and subtitle narrow down to 320px before the buttons wrap */
+/* never shrinks into the name: when the buttons don't fit beside it they wrap onto the next line */
+.top-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; margin-left: auto; max-width: 100%; }
 .share-now { text-align: right; }
 .top-right { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; flex: none; }
@@ -173,6 +175,9 @@ table.stats tr.cat-row { cursor: pointer; }
 table.stats tr.cat-row:hover td { background: rgba(127, 127, 127, .08); }
 table.stats tr.cat-row .caret { display: inline-block; width: 1em; color: var(--muted); }
 table.stats tr.member-row td:first-child { padding-left: 2.2em; }
+table.stats tr.host-row, table.stats tr.member-row { cursor: pointer; }
+table.stats tr.line-off td { opacity: .45; }
+table.stats tr.line-off td:first-child { text-decoration: line-through; }
 .loss-warn { color: var(--warn); font-weight: 600; }
 .loss-bad { color: var(--bad); font-weight: 600; }
 table.stats th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
@@ -318,6 +323,10 @@ footer a { color: var(--muted); text-decoration: underline; text-decoration-colo
   .speed-summary .big { font-size: 22px; }
   #updated { display: none; }
   .repo.coffee span { display: none; }  /* icon only on phones */
+  /* the buttons go on their own line under the name instead of overlapping it */
+  .top-side { width: 100%; align-items: flex-start; margin-left: 0; }
+  .top-right { flex-wrap: wrap; row-gap: 6px; }
+  .share-now { text-align: left; }
 }
 .rel { color: var(--muted); font-size: 12px; white-space: nowrap; cursor: help; }
 

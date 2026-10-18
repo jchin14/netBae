@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.18.1"
+VERSION = "1.18.4"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -127,7 +127,7 @@ DEFAULT_CONFIG = {
         "extra_targets": [],
         "disable": [],
         # Latency to the fastest Ookla speedtest server in each region (TCP connect), shown as a "Regions" group.
-        "regions": ["Sydney", "Perth", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Guam", "Delhi", "Oman",
+        "regions": ["Nearest", "Sydney", "Melbourne", "Perth", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Guam", "Delhi", "Oman",
                     "Los Angeles", "Toronto", "New York", "São Paulo", "London", "Amsterdam", "Paris", "Milan",
                     "Cape Town"],
         "region_interval_seconds": 60,
@@ -403,12 +403,14 @@ def normalize_connection(c, all_targets=None):
 # Built-in speedtest regions: name -> (Ookla search term, server city name or None for any, country).
 # Ookla has no public servers in mainland China; Hong Kong is the closest.
 REGIONS = {
+    "Nearest": ("", None, None),  # whatever Ookla lists as closest to this connection: its base latency
     "London": ("London", "London", "United Kingdom"),
     "New York": ("New York", "New York, NY", "United States"),
     "Tokyo": ("Tokyo", "Tokyo", "Japan"),
     "Amsterdam": ("Amsterdam", "Amsterdam", "Netherlands"),
     "Singapore": ("Singapore", "Singapore", "Singapore"),
     "Sydney": ("Sydney", "Sydney", "Australia"),
+    "Melbourne": ("Melbourne", "Melbourne", "Australia"),
     "Auckland": ("Auckland", "Auckland", "New Zealand"),
     "Los Angeles": ("Los Angeles", "Los Angeles, CA", "United States"),
     "Hong Kong": ("Hong Kong", "Hong Kong", "Hong Kong"),
@@ -425,7 +427,7 @@ REGIONS = {
 REGION_FLAGS = {"London": "GB", "New York": "US", "Tokyo": "JP", "Amsterdam": "NL", "Singapore": "SG",
                 "Sydney": "AU", "Auckland": "NZ", "Los Angeles": "US", "Hong Kong": "HK", "Milan": "IT", "Paris": "FR",
                 "Oman": "OM", "Delhi": "IN", "Guam": "GU", "Perth": "AU", "São Paulo": "BR", "Cape Town": "ZA",
-                "Toronto": "CA"}
+                "Toronto": "CA", "Melbourne": "AU"}
 REGION_ALIASES = {"sao paulo": "São Paulo", "new delhi": "Delhi", "muscat": "Oman", "milano": "Milan",
                   "nyc": "New York", "la": "Los Angeles", "hk": "Hong Kong"}
 OOKLA_SEARCH = "https://www.speedtest.net/api/js/servers?engine=js&limit=100&https_functional=true&search="
@@ -487,7 +489,7 @@ def find_region_servers(region):
     city = (region.get("city") or "").lower()
     found = []
     for x in servers:
-        if str(x.get("country", "")).lower() != region["country"].lower():
+        if region["country"] and str(x.get("country", "")).lower() != region["country"].lower():
             continue
         if city and x["name"].lower() != city and not x["name"].lower().startswith(city + ","):
             continue
@@ -782,7 +784,7 @@ CREATE TABLE IF NOT EXISTS speedtest (
     result_url TEXT, error TEXT);
 CREATE INDEX IF NOT EXISTS speedtest_ts ON speedtest(ts);
 CREATE TABLE IF NOT EXISTS system (ts REAL NOT NULL, cpu REAL, mem REAL, disk REAL, temp REAL, load1 REAL,
-                                   rx REAL, tx REAL);
+                                   rx REAL, tx REAL, fan REAL, fan_pct REAL);
 CREATE TABLE IF NOT EXISTS isp (ts REAL NOT NULL, connection TEXT NOT NULL, ip TEXT, isp TEXT, asn TEXT,
     location TEXT, error TEXT);
 CREATE INDEX IF NOT EXISTS isp_ts ON isp(ts);
@@ -972,7 +974,7 @@ class DB:
                 if col not in have:
                     self.conn().execute(f"ALTER TABLE {t} ADD COLUMN {col} INTEGER")
         have = {r[1] for r in self.query("PRAGMA table_info(system)")}
-        for col in ("rx", "tx"):  # network traffic in Mbps, added in 1.17
+        for col in ("rx", "tx", "fan", "fan_pct"):  # network traffic in Mbps, added in 1.17; fan RPM and % in 1.18.2
             if col not in have:
                 self.conn().execute(f"ALTER TABLE system ADD COLUMN {col} REAL")
         self.migrate_to_name_ids()
@@ -2492,6 +2494,44 @@ class SystemStats:
         return round(best, 1) if best is not None else None
 
     @staticmethod
+    def fan_rpm():
+        # the fastest fan hwmon reports (Linux only: macOS and Windows don't expose fan speed without extra tools)
+        best = None
+        try:
+            hwmons = os.listdir("/sys/class/hwmon")
+        except OSError:
+            return None
+        for h in hwmons:
+            try:
+                names = [f for f in os.listdir(f"/sys/class/hwmon/{h}") if re.fullmatch(r"fan\d+_input", f)]
+            except OSError:
+                continue
+            for f in names:
+                v = read_file(f"/sys/class/hwmon/{h}/{f}")
+                if v and v.isdigit() and int(v) < 100000:
+                    best = int(v) if best is None else max(best, int(v))
+        return best
+
+    @staticmethod
+    def fan_percent():
+        # how hard the fastest fan is driven, 0-100 %, for fans with no speed sensor (e.g. the Raspberry Pi 5 / Rock 5 pwm-fan)
+        best = None
+        try:
+            hwmons = os.listdir("/sys/class/hwmon")
+        except OSError:
+            return None
+        for h in hwmons:
+            try:
+                names = [f for f in os.listdir(f"/sys/class/hwmon/{h}") if re.fullmatch(r"pwm\d+", f)]
+            except OSError:
+                continue
+            for f in names:
+                v = read_file(f"/sys/class/hwmon/{h}/{f}")
+                if v and v.isdigit() and int(v) <= 255:
+                    best = int(v) if best is None else max(best, int(v))
+        return round(best * 100 / 255, 1) if best is not None else None
+
+    @staticmethod
     def loadavg():
         raw = read_file("/proc/loadavg")
         if raw:
@@ -2570,6 +2610,8 @@ class SystemStats:
             "disk": disk,
             "drives": self.all_drives(),
             "temp": self.temperature(),
+            "fan": self.fan_rpm(),
+            "fan_pct": self.fan_percent(),
             "load": load,
         }
         return self.latest
@@ -2788,6 +2830,12 @@ class Monitor:
                             " AND server_host IS NOT NULL ORDER BY ts DESC LIMIT 1")
         if row:
             out.append(("speedtest:Auto", row[0][0], None))
+        # public DNS servers as "dns:<id>", unless a ping target already traces the same address
+        traced = {(h, b) for _, h, b in out}
+        v6 = self.cfg["traceroute"]["ipv6"] and self.ipv6_available()
+        for sv in self.cfg["dns"]["servers"] if self.cfg["dns"]["enabled"] else []:
+            if dns_trace_host(sv) and (sv["family"] == 4 or v6) and (sv["host"], None) not in traced:
+                out.append(("dns:" + sv["id"], sv["host"], None))
         return out
 
     def lookups_done(self):
@@ -3049,13 +3097,14 @@ class Monitor:
         rate = (None, None)
         if prev and cur and all(y >= x for x, y in zip(prev[1], cur)) and now > prev[0]:
             rate = tuple(round((y - x) * 8 / (now - prev[0]) / 1e6, 3) for x, y in zip(prev[1], cur))
-        self.db.insert_many("INSERT INTO system (ts, cpu, mem, disk, temp, load1, rx, tx) VALUES (?,?,?,?,?,?,?,?)", [(
+        self.db.insert_many("INSERT INTO system (ts, cpu, mem, disk, temp, load1, rx, tx, fan, fan_pct) VALUES (?,?,?,?,?,?,?,?,?,?)", [(
             s["ts"], s["cpu"],
             s["mem"]["percent"] if s["mem"] else None,
             s["disk"]["percent"] if s["disk"] else None,
             s["temp"],
             s["load"][0] if s["load"] else None,
             *rate,
+            s["fan"], s["fan_pct"],
         )])
 
     def rollup_all(self):
@@ -3530,9 +3579,9 @@ def api_system(m, q):
 def api_system_history(m, q):
     frm, to, bucket = parse_range(q, m.cfg["system"]["interval_seconds"])
     rows = m.db.query(
-        "SELECT CAST(ts / ? AS INTEGER) b, AVG(cpu), AVG(mem), AVG(disk), AVG(temp), AVG(load1), AVG(rx), AVG(tx)"
+        "SELECT CAST(ts / ? AS INTEGER) b, AVG(cpu), AVG(mem), AVG(disk), AVG(temp), AVG(load1), AVG(rx), AVG(tx), AVG(fan), AVG(fan_pct)"
         " FROM system WHERE ts >= ? AND ts <= ? GROUP BY b ORDER BY b", (bucket, frm, to))
-    keys = ["cpu", "mem", "disk", "temp", "load1", "rx", "tx"]
+    keys = ["cpu", "mem", "disk", "temp", "load1", "rx", "tx", "fan", "fan_pct"]
     series = {k: [] for k in keys}
     for b, *vals in rows:
         for k, v in zip(keys, vals):
@@ -3558,8 +3607,17 @@ def isp_current(m):
     return out
 
 
+def dns_trace_host(sv):
+    """A DNS server's address if it's on the internet (the router and resolvers on your network aren't traced)."""
+    try:
+        return sv["host"] if ipaddress.ip_address(sv["host"]).is_global else None
+    except ValueError:
+        return None
+
+
 def latest_routes(m):
-    """Latest successful route per target: {id: {ts, kind, path, cities}}."""
+    """Latest successful route per target: {id: {ts, kind, path, cities}}, with "dns:<id>" for each public
+    DNS server (the ping target's route when one pings the same address)."""
     out = {}
     for tid, ts, kind, path, hops in m.db.query(
             "SELECT target, MAX(ts), kind, path, hops FROM traceroute WHERE error IS NULL"
@@ -3569,6 +3627,11 @@ def latest_routes(m):
         out[tid] = {"ts": ts, "kind": fix_route_kind(kind, p), "path": with_rels(p),
                     "cities": route_cities(detailed),  # the public dashboard may hide the first hops' cities
                     "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
+    by_host = {(V6_TWIN.get(t["host"]) if t.get("family") == 6 and ":" not in t["host"] else t["host"]): t["id"]
+               for t in m.cfg["ping"]["targets"] if not t.get("bind") and t["id"] in out}
+    for sv in m.cfg["dns"]["servers"]:
+        if "dns:" + sv["id"] not in out and by_host.get(dns_trace_host(sv)):
+            out["dns:" + sv["id"]] = out[by_host[sv["host"]]]
     return out
 
 
@@ -3641,6 +3704,11 @@ def api_cdn(m, q):
                                   "path": with_rels(json.loads(path or "[]")),
                                   "cities": route_cities(detailed),
                                   "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
+    by_host = {(V6_TWIN.get(t["host"]) if t.get("family") == 6 and ":" not in t["host"] else t["host"]): t["id"]
+               for t in m.cfg["ping"]["targets"] if not t.get("bind") and t["id"] in out}
+    for sv in m.cfg["dns"]["servers"]:
+        if "dns:" + sv["id"] not in out and by_host.get(dns_trace_host(sv)):
+            out["dns:" + sv["id"]] = out[by_host[sv["host"]]]
     return out
 
 

@@ -13,6 +13,7 @@ host = "0.0.0.0"       # 0.0.0.0 = reachable from other machines on your network
 port = 80             # dashboard at http://<this-machine>/ ; if it's taken, the next free port is used
 update_check = true   # check GitHub for new releases (every 6 hours) and show an Update button on the dashboard
 auto_update = "weekly"  # install new releases automatically at 3:30 am: "weekly" (at most once a week), "daily" or "off"
+                        # (does nothing in Docker or on installs without the Update button: update with netbae update)
 chart_band = "none"   # spread band on the latency charts by default: "none", "p5-p95" or "min-max"
                       # (each browser remembers its own choice; drawn with 12 or fewer lines)
 
@@ -63,7 +64,8 @@ disable = []           # e.g. ["Streaming AU", "China cloud & CDN", "Hetzner Fal
 
 # Region pings: latency to the fastest Ookla speedtest server in each city (TCP connect to
 # the server, found automatically and refreshed daily). Same names as [speedtest] regions.
-regions = ["Sydney", "Perth", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Guam", "Delhi", "Oman",
+# "Nearest" is the closest servers to you wherever you are: the summary bar shows it as Internet latency.
+regions = ["Nearest", "Sydney", "Melbourne", "Perth", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Guam", "Delhi", "Oman",
            "Los Angeles", "Toronto", "New York", "São Paulo", "London", "Amsterdam", "Paris", "Milan",
            "Cape Town"]
 region_interval_seconds = 60
@@ -111,7 +113,7 @@ offset_minutes = 0     # e.g. 6 -> runs at hh:06 instead of hh:00
 servers = []
 
 # Region speedtests: test against servers in other cities on their own (slower) schedule.
-# Built-in: London, New York, Tokyo, Amsterdam, Singapore, Sydney, Auckland, Los Angeles,
+# Built-in: Nearest, London, New York, Tokyo, Amsterdam, Singapore, Sydney, Melbourne, Auckland, Los Angeles,
 # Hong Kong, Milan, Paris, Oman, Delhi, Guam, Perth, São Paulo, Cape Town, Toronto.
 # (Ookla has no public servers in mainland China, so Beijing isn't available.)
 # Custom: { name = "Frankfurt", city = "Frankfurt", country = "Germany" } or { name = "Work", server_id = 12345 }

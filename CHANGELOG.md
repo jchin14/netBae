@@ -17,6 +17,18 @@ The main steps so far, with the full details per version below.
 | 1.10 - 1.14 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs, route change history, charts grouped by category |
 | 1.15 | An Update button on the dashboard and weekly automatic updates |
 
+## 1.18.4 - 2026-10-19
+
+Internet latency to the nearest servers, sortable speedtest tables, click a table row to hide its line, routes to DNS servers, and fan speed.
+
+- **Internet latency** in the summary bar: the latency to the Ookla servers closest to you (a new built-in region, `Nearest`, pinged by default), so it's your connection's own latency wherever you are. It replaces Nearest city, which could only pick from the region list. Existing installs: add `"Nearest"` to `[ping] regions`.
+- Melbourne is a built-in region city, and pinged by default. Existing installs keep their own `[ping] regions` list: add `"Melbourne"` to it to see Melbourne as the nearest city.
+- Speedtest tables sort by any column: click Down, Up, Ping, Jitter, Loss, Data, Time or the server. The first click puts the best first (fastest, or lowest latency), the second reverses it, the third goes back to the usual order.
+- System (Linux): fan speed in RPM, or fan power % where that's all the machine reports, with its history on the System chart.
+- Click a host in the table under a latency or DNS chart to hide its line on the chart (the row stays, dimmed); click again to bring it back. Reset view shows them all again.
+- The DNS table shows the route to each public DNS server, like the ping table does for sites. Resolvers that aren't already ping targets are traced along with the sites.
+- Fixed: on phones and narrow windows, the buttons at the top (Public view, theme, GitHub) overlapped the machine name and ISP. They now move onto their own line.
+
 ## 1.18.1 - 2026-10-19
 
 A Show all / Hide all button on the charts.
@@ -24,6 +36,8 @@ A Show all / Hide all button on the charts.
 - Charts have a Show all / Hide all button next to Reset view, to turn every line off or back on at once
 
 ## 1.18.0 - 2026-10-19
+
+Not released on its own: these changes shipped in 1.18.1.
 
 DNS and CDN scores by CDN, built-in DNS and CDN lists that update with netBae, network traffic in the system history, and tidier ping charts and summary bar.
 

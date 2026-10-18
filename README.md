@@ -84,7 +84,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 | **Grouped overview** | one card per category with its average ping; click a card to see every host in it |
 | **Charts that show jitter** | the average as a line with a shaded P5-P95 (or min-max) band; zoom and drag the y-axis |
 | **Speedtests** | the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages |
-| **Worldwide view** | latency to 18 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them |
+| **Worldwide view** | latency to 19 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them |
 | **Which ISP you're on** | each connection's public IP and ISP, checked every 10 minutes and marked on the System history chart, so failovers stand out |
 | **Routes** | every 12 hours, the route to each target: **on-net**, **direct**, via an **IX** (named) or **transit** through carriers like Cogent, Arelion or GTT, with each hand-over labelled **peering** or **paid transit** |
 | **Secondary connection** | test a second internet connection (e.g. a 5G failover link) alongside your main one |
@@ -241,7 +241,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[ping] extra_targets` | none | your own hosts, added to the built-in list: `{ name, host, group }`; `host = "gateway"` = your router; `method = "tcp"` (with `port`) for hosts that block ping; game servers below. One with the same host as a built-in target replaces it |
 | `[ping] disable` | none | built-in targets to switch off, by name or group, e.g. `["Streaming AU", "Hetzner Falkenstein"]` |
 | `[ping] targets` | not set | set it to use only your own list instead of the built-in one |
-| `[ping] regions` | 18 cities | latency to the fastest Ookla server in each city, see [Regions](#region-speedtests-and-pings) |
+| `[ping] regions` | Nearest + 19 cities | latency to the fastest Ookla server in each city (Nearest: the closest to you), see [Regions](#region-speedtests-and-pings) |
 | `[ping] region_interval_seconds` | `60` | |
 | `[ping] ipv6` | `true` | also ping each site over IPv6 (a separate line) when this machine and the site have IPv6, and each region over IPv6 to a speedtest server there that has it. Not the router, game servers or secondary connections |
 | `[dns] enabled` | `true` | |
@@ -335,7 +335,7 @@ Battle.net (Blizzard's login service, TCP 1119) and Minecraft (the Hypixel serve
 
 ### Region speedtests and pings
 
-Built-in cities: 🇦🇺 Sydney, Perth · 🇳🇿 Auckland · 🇸🇬 Singapore · 🇭🇰 Hong Kong · 🇯🇵 Tokyo · 🇬🇺 Guam · 🇮🇳 Delhi · 🇴🇲 Oman · 🇺🇸 Los Angeles, New York · 🇨🇦 Toronto · 🇧🇷 São Paulo · 🇬🇧 London · 🇳🇱 Amsterdam · 🇫🇷 Paris · 🇮🇹 Milan · 🇿🇦 Cape Town.
+Built-in cities: **Nearest** (the Ookla servers closest to you, wherever you are; the summary bar shows it as **Internet latency**) · 🇦🇺 Sydney, Melbourne, Perth · 🇳🇿 Auckland · 🇸🇬 Singapore · 🇭🇰 Hong Kong · 🇯🇵 Tokyo · 🇬🇺 Guam · 🇮🇳 Delhi · 🇴🇲 Oman · 🇺🇸 Los Angeles, New York · 🇨🇦 Toronto · 🇧🇷 São Paulo · 🇬🇧 London · 🇳🇱 Amsterdam · 🇫🇷 Paris · 🇮🇹 Milan · 🇿🇦 Cape Town.
 
 netBae looks up the Ookla servers in each city, measures them and uses the fastest. It retries the next one if a server fails and refreshes the list daily. Add your own with `{ name = "Frankfurt", city = "Frankfurt", country = "Germany", flag = "DE" }` or `{ name = "Work", server_id = 12345 }`. Ookla has no public servers in mainland China, so Hong Kong is the closest.
 
