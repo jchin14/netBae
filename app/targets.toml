@@ -3,10 +3,12 @@
 #  Change your hosts in config.toml instead (run `netbae config` to open it), under [ping].
 # ======================================================================================================
 #
-# netBae's built-in ping targets. Being replaced on update is how new default targets arrive by themselves.
-# To change the list, use [ping] in your config.toml:
-#   extra_targets = [ ... ]   your own hosts (one with the same host as a target here replaces it)
-#   disable = [ ... ]         built-in targets to switch off, by name or group, e.g. ["Streaming AU"]
+# netBae's built-in hosts: ping targets, DNS servers and domains, and the CDN test's names. Being replaced on
+# update is how new defaults arrive by themselves. To change them, use your config.toml:
+#   [ping] extra_targets = [ ... ]   your own hosts (one with the same host as a target here replaces it)
+#   [ping] disable = [ ... ]         built-in targets to switch off, by name or group, e.g. ["Streaming AU"]
+#   [dns]  extra_servers / extra_domains / disable (server names, hosts or domains)
+#   [cdn]  extra_hostnames / disable (CDN names or hostnames)
 #
 # Fields: name, host, group (how the dashboard groups targets), and optionally method = "tcp" with a
 # port for hosts that block ping (times a TCP connect instead). host = "gateway" is your router.
@@ -115,4 +117,48 @@ targets = [
   { name = "Frugal Usenet",  host = "news.frugalusenet.com",   group = "Usenet US" },
   { name = "Eweka",          host = "news.eweka.nl",           group = "Usenet EU" },   # Amsterdam
   { name = "Usenet.Farm",    host = "news.usenet.farm",        group = "Usenet EU" },   # Netherlands
+]
+
+# DNS servers: every one is asked for every domain on each run. IPv6 servers are only queried when this
+# machine has IPv6 internet. host = "gateway" is your router; host = "dhcp" is the DNS servers this machine
+# was given by DHCP, if they're not the router (e.g. your ISP's resolvers, or the router's IPv6 address).
+# A name with one IPv4 and one IPv6 address also pairs them for the ping charts' IPv6 lines.
+dns_servers = [
+  { name = "Router",        host = "gateway" },
+  { name = "DHCP DNS",      host = "dhcp" },
+  { name = "Cloudflare",    host = "1.1.1.1" },
+  { name = "Cloudflare",    host = "2606:4700:4700::1111" },
+  { name = "Google",        host = "8.8.8.8" },
+  { name = "Google",        host = "2001:4860:4860::8888" },
+  { name = "Quad9",         host = "9.9.9.9" },
+  { name = "Quad9",         host = "2620:fe::fe" },
+  { name = "Quad9 ECS",     host = "9.9.9.11" },      # with EDNS Client Subnet: CDNs see roughly where you are
+  { name = "Quad9 ECS",     host = "2620:fe::11" },
+  { name = "OpenDNS",       host = "208.67.222.222" },
+  { name = "OpenDNS",       host = "2620:119:35::35" },
+  { name = "CleanBrowsing", host = "185.228.168.9" },        # security filter
+  { name = "CleanBrowsing", host = "2a0d:2a00:1::2" },
+  { name = "AdGuard",       host = "94.140.14.14" },
+  { name = "AdGuard",       host = "2a10:50c0::ad1:ff" },
+  { name = "NextDNS",       host = "45.90.28.0" },           # no account needed; add your profile's IPs to test your own
+  { name = "NextDNS",       host = "2a07:a8c0::" },
+  { name = "Control D",     host = "76.76.2.0" },
+  { name = "Control D",     host = "2606:1a40::" },
+]
+dns_domains = ["google.com", "microsoft.com", "facebook.com", "reddit.com", "netflix.com"]
+
+# The DNS and CDN test: every DNS server looks up these names and the addresses it hands out are pinged.
+# CDNs pick a server near the resolver that asks, so this shows which resolver sends you somewhere close.
+# name = the CDN: names that share one get one column on the dashboard.
+# (Cloudflare uses the same anycast addresses everywhere, so it's a baseline: your ISP's routing, not the
+# resolver, decides which Cloudflare site answers)
+cdn = [
+  { name = "Akamai",     host = "a2.w10.akamai.net" },
+  { name = "Akamai",     host = "a10.w2.akamai.net" },
+  { name = "Google",     host = "google.com" },
+  { name = "Microsoft",  host = "microsoft.com" },
+  { name = "Cloudflare", host = "www.cloudflare.com" },
+  { name = "Amazon",     host = "d1.awsstatic.com" },     # CloudFront
+  { name = "Fastly",     host = "www.fastly.com" },
+  { name = "Meta",       host = "static.xx.fbcdn.net" },
 ]

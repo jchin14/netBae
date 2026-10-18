@@ -246,10 +246,12 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[ping] ipv6` | `true` | also ping each site over IPv6 (a separate line) when this machine and the site have IPv6, and each region over IPv6 to a speedtest server there that has it. Not the router, game servers or secondary connections |
 | `[dns] enabled` | `true` | |
 | `[dns] interval_seconds` / `offset_seconds` / `timeout_seconds` | `30` / `0` / `2` | |
-| `[dns] servers` | router, DHCP DNS + 9 public resolvers, IPv4 and IPv6 | `host = "dhcp"` adds the DNS servers DHCP gave this machine if they differ from the router; IPv6 servers are skipped on IPv4-only networks |
-| `[dns] domains` | 5 domains | the names each resolver is asked for |
+| `[dns] extra_servers` | none | your own DNS servers, added to the built-in ones in `targets.toml` (router, DHCP DNS + 9 public resolvers, IPv4 and IPv6): `{ name, host }`; `host = "dhcp"` adds the DNS servers DHCP gave this machine if they differ from the router; IPv6 servers are skipped on IPv4-only networks |
+| `[dns] extra_domains` | none | more names for each resolver to look up, on top of the 5 built-in ones |
+| `[dns] disable` | `[]` | built-in servers (by name or host) or domains to leave out |
 | `[cdn] enabled` | `true` | the DNS and CDN test: which CDN server each `[dns]` server sends you to |
-| `[cdn] hostnames` | `a2.w10.akamai.net`, `a10.w2.akamai.net`, `google.com`, `microsoft.com`, `www.cloudflare.com` | looked up through every DNS server |
+| `[cdn] extra_hostnames` | none | more names to look up through every DNS server, on top of the built-in CDNs in `targets.toml` (Akamai, Google, Microsoft, Cloudflare, Amazon CloudFront, Fastly, Meta): `{ name, host }`, where names that match share a column |
+| `[cdn] disable` | `[]` | built-in CDNs (by name or hostname) to leave out |
 | `[cdn] interval_minutes` / `offset_minutes` | `30` / `20` | |
 | `[cdn] pings` / `trace_hours` | `5` / `6` | pings per address each run; trace each address at most every 6 hours (`0` = no traces) |
 
@@ -303,7 +305,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 
 ### Ping targets
 
-netBae's built-in list (74 hosts in 15 groups) lives in its own file, [`app/targets.toml`](app/targets.toml), installed next to `netbae.py` (`/opt/netbae/targets.toml` on Linux and in Docker, `/usr/local/lib/netbae` on macOS, `C:\Program Files\netBae` on Windows). It's replaced on every update, so new default targets show up by themselves. Don't edit it: add your own hosts with `extra_targets` and switch built-in ones off with `disable` in `config.toml`:
+netBae's built-in list (74 hosts in 15 groups) lives in its own file, [`app/targets.toml`](app/targets.toml), along with the built-in DNS servers, DNS domains and CDN names, installed next to `netbae.py` (`/opt/netbae/targets.toml` on Linux and in Docker, `/usr/local/lib/netbae` on macOS, `C:\Program Files\netBae` on Windows). It's replaced on every update, so new default targets show up by themselves. Don't edit it: add your own hosts with `extra_targets` and switch built-in ones off with `disable` in `config.toml`:
 
 ```toml
 [ping]

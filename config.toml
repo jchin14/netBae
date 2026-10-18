@@ -78,43 +78,23 @@ enabled = true
 interval_seconds = 30
 offset_seconds = 0
 timeout_seconds = 2
-# Every server is asked for every domain on each run. IPv6 servers are only queried when
-# this machine has IPv6 internet (checked every 10 minutes).
-#   host = "gateway" - your router
-#   host = "dhcp"    - the DNS servers this machine was given by DHCP, if they're not the router
-#                      (e.g. your ISP's resolvers, or the router's IPv6 address)
-servers = [
-  { name = "Router",        host = "gateway" },
-  { name = "DHCP DNS",      host = "dhcp" },
-  { name = "Cloudflare",    host = "1.1.1.1" },
-  { name = "Cloudflare",    host = "2606:4700:4700::1111" },
-  { name = "Google",        host = "8.8.8.8" },
-  { name = "Google",        host = "2001:4860:4860::8888" },
-  { name = "Quad9",         host = "9.9.9.9" },
-  { name = "Quad9",         host = "2620:fe::fe" },
-  { name = "Quad9 ECS",     host = "9.9.9.11" },      # with EDNS Client Subnet: CDNs see roughly where you are
-  { name = "Quad9 ECS",     host = "2620:fe::11" },
-  { name = "OpenDNS",       host = "208.67.222.222" },
-  { name = "OpenDNS",       host = "2620:119:35::35" },
-  { name = "CleanBrowsing", host = "185.228.168.9" },        # security filter
-  { name = "CleanBrowsing", host = "2a0d:2a00:1::2" },
-  { name = "AdGuard",       host = "94.140.14.14" },
-  { name = "AdGuard",       host = "2a10:50c0::ad1:ff" },
-  { name = "NextDNS",       host = "45.90.28.0" },           # no account needed; add your profile's IPs to test your own
-  { name = "NextDNS",       host = "2a07:a8c0::" },
-  { name = "Control D",     host = "76.76.2.0" },
-  { name = "Control D",     host = "2606:1a40::" },
-]
-domains = ["google.com", "microsoft.com", "facebook.com", "reddit.com", "netflix.com"]
+# The built-in DNS servers (router, DHCP DNS and 9 public resolvers, IPv4 and IPv6) and domains are in
+# targets.toml, which updates with netBae. Every server is asked for every domain on each run.
+#   extra_servers = [{ name = "My Pi-hole", host = "192.168.1.2" }]   host = "gateway" is your router
+#   extra_domains = ["example.com"]
+#   disable = ["OpenDNS", "reddit.com"]   built-in servers (by name or host) or domains to leave out
+extra_servers = []
+extra_domains = []
+disable = []
 
 [cdn]
 # Which CDN server each DNS resolver sends you to. CDNs pick a server near the resolver that asks,
-# so every [dns] server looks up these names, the addresses it hands out are pinged (and traced
-# every few hours), and the dashboard ranks the resolvers by the average latency to them.
+# so every [dns] server looks up a name on each CDN, the addresses it hands out are pinged (and traced
+# every few hours), and the dashboard ranks the resolvers by them. The built-in CDNs (Akamai, Google,
+# Microsoft, Cloudflare, Amazon CloudFront, Fastly, Meta) are in targets.toml, which updates with netBae.
 enabled = true
-# (Cloudflare uses the same anycast addresses everywhere, so it's a baseline: your ISP's routing, not the
-# resolver, decides which Cloudflare site answers)
-hostnames = ["a2.w10.akamai.net", "a10.w2.akamai.net", "google.com", "microsoft.com", "www.cloudflare.com"]
+extra_hostnames = []   # e.g. [{ name = "Bunny", host = "www.bunny.net" }] (same name = same column)
+disable = []           # built-in CDNs (by name or hostname) to leave out, e.g. ["Meta"]
 interval_minutes = 30
 offset_minutes = 20
 pings = 5              # pings per address each run

@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.17.2"
+VERSION = "1.18.1"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -58,46 +58,57 @@ DEFAULT_CONFIG_PATH = os.path.join(WIN_DATA_DIR, "config.toml") if IS_WINDOWS el
 SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW,
                     "cwd": os.environ.get("SystemRoot", r"C:\Windows")} if IS_WINDOWS else {}
 
-# Popular public resolvers: (name, IPv4, IPv6). NextDNS and Control D answer without an account.
-PUBLIC_RESOLVERS = [
-    ("Cloudflare", "1.1.1.1", "2606:4700:4700::1111"),
-    ("Google", "8.8.8.8", "2001:4860:4860::8888"),
-    ("Quad9", "9.9.9.9", "2620:fe::fe"),
-    ("Quad9 ECS", "9.9.9.11", "2620:fe::11"),  # passes part of your address on, so CDNs answer for where you are
-    ("OpenDNS", "208.67.222.222", "2620:119:35::35"),
-    ("CleanBrowsing", "185.228.168.9", "2a0d:2a00:1::2"),
-    ("AdGuard", "94.140.14.14", "2a10:50c0::ad1:ff"),
-    ("NextDNS", "45.90.28.0", "2a07:a8c0::"),
-    ("Control D", "76.76.2.0", "2606:1a40::"),
-]
-
-# IPv6 address of a public resolver's IPv4 address, so pings to 1.1.1.1 get an IPv6 twin too
-V6_TWIN = {v4: v6 for _, v4, v6 in PUBLIC_RESOLVERS}
-
 TARGETS_FILE = os.path.join(HERE, "targets.toml")
 # used only if targets.toml is missing or unreadable
-FALLBACK_TARGETS = [{"name": "Router", "host": "gateway", "group": "Network"},
-                    {"name": "Cloudflare DNS", "host": "1.1.1.1", "group": "DNS"},
-                    {"name": "Google DNS", "host": "8.8.8.8", "group": "DNS"},
-                    {"name": "Google", "host": "google.com", "group": "Google"}]
+FALLBACK_BUILTIN = {
+    "targets": [{"name": "Router", "host": "gateway", "group": "Network"},
+                {"name": "Cloudflare DNS", "host": "1.1.1.1", "group": "DNS"},
+                {"name": "Google DNS", "host": "8.8.8.8", "group": "DNS"},
+                {"name": "Google", "host": "google.com", "group": "Google"}],
+    "dns_servers": [{"name": "Router", "host": "gateway"}, {"name": "Cloudflare", "host": "1.1.1.1"},
+                    {"name": "Google", "host": "8.8.8.8"}],
+    "dns_domains": ["google.com"],
+    "cdn": [{"name": "Akamai", "host": "a2.w10.akamai.net"}, {"name": "Google", "host": "google.com"}],
+}
 
 
 def load_builtin_targets(path=TARGETS_FILE):
-    """netBae's own ping targets, shipped (and replaced on every update) as targets.toml next to this file."""
+    """netBae's own hosts (ping targets, DNS servers and domains, CDN names), shipped (and replaced on every
+    update) as targets.toml next to this file."""
     try:
         if tomllib is None:
             raise OSError("Python 3.11+ (or the 'tomli' package) is needed to read it")
         with open(path, "rb") as f:
-            targets = tomllib.load(f)["targets"]
-        if not isinstance(targets, list):
-            raise ValueError("'targets' isn't a list")
-        return targets
+            data = tomllib.load(f)
+        out = {}
+        for key, default in FALLBACK_BUILTIN.items():
+            out[key] = data.get(key, default) if key != "targets" else data["targets"]
+            if not isinstance(out[key], list):
+                raise ValueError(f"'{key}' isn't a list")
+        return out
     except (OSError, ValueError, KeyError) as e:
         log.warning("couldn't read the built-in targets from %s (%s); using a minimal list", path, e)
-        return list(FALLBACK_TARGETS)
+        return copy.deepcopy(FALLBACK_BUILTIN)
 
 
-BUILTIN_TARGETS = load_builtin_targets()
+BUILTIN = load_builtin_targets()
+BUILTIN_TARGETS = BUILTIN["targets"]
+
+# IPv6 address of a public resolver's IPv4 address (same name in dns_servers), so pings to 1.1.1.1 get an IPv6 twin
+def resolver_twins(servers):
+    by_name = {}
+    for s in servers:
+        by_name.setdefault(s.get("name"), []).append(str(s.get("host", "")))
+    out = {}
+    for hosts in by_name.values():
+        v4 = [h for h in hosts if h.count(".") == 3 and h.replace(".", "").isdigit()]
+        v6 = [h for h in hosts if ":" in h]
+        if len(v4) == 1 and len(v6) == 1:
+            out[v4[0]] = v6[0]
+    return out
+
+
+V6_TWIN = resolver_twins(BUILTIN["dns_servers"])
 
 DEFAULT_CONFIG = {
     "web": {"host": "0.0.0.0", "port": 80, "chart_band": "none", "update_check": True, "auto_update": "weekly"},
@@ -128,16 +139,16 @@ DEFAULT_CONFIG = {
         "interval_seconds": 30,
         "offset_seconds": 0,
         "timeout_seconds": 2,
-        "servers": [
-            {"name": "Router", "host": "gateway"},
-            {"name": "DHCP DNS", "host": "dhcp"},  # resolvers this machine got from DHCP, if not the router
-        ] + [{"name": name, "host": ip} for name, v4, v6 in PUBLIC_RESOLVERS for ip in (v4, v6)],
-        "domains": ["google.com", "microsoft.com", "facebook.com", "reddit.com", "netflix.com"],
+        "servers": BUILTIN["dns_servers"],  # from targets.toml; config.toml adds extra_servers and disable
+        "domains": BUILTIN["dns_domains"],
+        "extra_servers": [],
+        "extra_domains": [],
+        "disable": [],
     },
     # which CDN server each DNS resolver sends you to: look up these names through every resolver, then ping
     # (and trace) the addresses it hands out. CDNs pick a server near the resolver, so the best resolver is the
     # one whose answers are closest to you.
-    "cdn": {"enabled": True, "hostnames": ["a2.w10.akamai.net", "a10.w2.akamai.net", "google.com", "microsoft.com", "www.cloudflare.com"], "interval_minutes": 30,
+    "cdn": {"enabled": True, "hostnames": BUILTIN["cdn"], "extra_hostnames": [], "disable": [], "interval_minutes": 30,
             "offset_minutes": 20, "pings": 5, "trace_hours": 6},
     "speedtest": {
         "enabled": True,
@@ -562,6 +573,42 @@ def migrate_old_targets(user_targets, builtin=None):
     return extras, disable
 
 
+def drop_old_default_lists(user):
+    """Configs from before 1.18 carry a copy of the built-in [dns] servers and domains and [cdn] hostnames.
+    One that's exactly a list netBae shipped is dropped, so today's list in targets.toml is used instead."""
+    try:
+        with open(OLD_TARGETS_FILE, encoding="utf-8") as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        return
+    for sec, key, olds in (("dns", "servers", "dns_servers"), ("dns", "domains", "dns_domains"),
+                           ("cdn", "hostnames", "cdn_hostnames")):
+        section = user.get(sec)
+        if isinstance(section, dict) and key in section and section[key] in old.get(olds, []):
+            del section[key]
+            log.info("config.toml [%s] %s is a list netBae shipped before: using the built-in list in targets.toml "
+                     "(updated with netBae). You can delete it from config.toml.", sec, key)
+
+
+def merge_dns_cdn(cfg):
+    """[dns] servers and domains and [cdn] hostnames: the built-in (or listed) ones, minus disable (names, hosts
+    or domains), plus the extra_ ones. CDN hostnames become plain names, with the CDN's name in [cdn] names."""
+    def name_host(x):
+        return (x.get("name"), str(x.get("host", ""))) if isinstance(x, dict) else (None, str(x))
+
+    dns, cdn = cfg["dns"], cfg["cdn"]
+    off = {str(x).strip().lower() for x in dns.get("disable") or []}
+    dns["servers"] = [s for s in dns["servers"]
+                      if not {str(name_host(s)[0] or "").lower(), name_host(s)[1].lower()} & off] \
+        + list(dns.get("extra_servers") or [])
+    dns["domains"] = [d for d in dns["domains"] if str(d).lower() not in off] + list(dns.get("extra_domains") or [])
+    off = {str(x).strip().lower() for x in cdn.get("disable") or []}
+    sites = [name_host(h) for h in list(cdn["hostnames"]) + list(cdn.get("extra_hostnames") or [])]
+    sites = [(n, h) for n, h in sites if h and not {str(n or "").lower(), h.lower()} & off]
+    cdn["hostnames"] = list(dict.fromkeys(h for _, h in sites))
+    cdn["names"] = {h: n for n, h in sites if n}
+
+
 def merge_targets(ping):
     """(raw, normalized) ping targets: the built-in or listed targets, minus [ping] disable (names or groups),
     plus [ping] extra_targets (one with the same host, method and port replaces the built-in one)."""
@@ -592,6 +639,7 @@ def load_config(path):
             raise SystemExit("Python 3.11+ (or the 'tomli' package) is required to read the config file")
         with open(path, "rb") as f:
             user = tomllib.load(f)
+        drop_old_default_lists(user)
         if "targets" in (user.get("ping") or {}):  # a full list of its own (configs from before 1.8 have one)
             ping = user["ping"]
             moved = migrate_old_targets(ping["targets"])
@@ -636,6 +684,7 @@ def load_config(path):
                 t["family"] = 4
                 cfg["ping"]["targets"].append(dict(t, id=t["id"] + "#v6", name=f'{t["name"]} (IPv6)', family=6,
                                                    twin=t["id"]))
+    merge_dns_cdn(cfg)
     servers = []
     for t in cfg["dns"]["servers"]:
         if isinstance(t, dict) and str(t.get("host", "")).lower() == "dhcp":
@@ -732,7 +781,8 @@ CREATE TABLE IF NOT EXISTS speedtest (
     ping_ms REAL, jitter_ms REAL, download_mbps REAL, upload_mbps REAL, packet_loss REAL,
     result_url TEXT, error TEXT);
 CREATE INDEX IF NOT EXISTS speedtest_ts ON speedtest(ts);
-CREATE TABLE IF NOT EXISTS system (ts REAL NOT NULL, cpu REAL, mem REAL, disk REAL, temp REAL, load1 REAL);
+CREATE TABLE IF NOT EXISTS system (ts REAL NOT NULL, cpu REAL, mem REAL, disk REAL, temp REAL, load1 REAL,
+                                   rx REAL, tx REAL);
 CREATE TABLE IF NOT EXISTS isp (ts REAL NOT NULL, connection TEXT NOT NULL, ip TEXT, isp TEXT, asn TEXT,
     location TEXT, error TEXT);
 CREATE INDEX IF NOT EXISTS isp_ts ON isp(ts);
@@ -921,6 +971,10 @@ class DB:
             for col in HIST_COLS:
                 if col not in have:
                     self.conn().execute(f"ALTER TABLE {t} ADD COLUMN {col} INTEGER")
+        have = {r[1] for r in self.query("PRAGMA table_info(system)")}
+        for col in ("rx", "tx"):  # network traffic in Mbps, added in 1.17
+            if col not in have:
+                self.conn().execute(f"ALTER TABLE system ADD COLUMN {col} REAL")
         self.migrate_to_name_ids()
         for k, b in ISP_BRANDS.items():  # 1.16.2: older checks stored the registry's name
             for t in ("isp", "speedtest"):
@@ -1301,15 +1355,19 @@ def isp_logo(name):
     if hit and time.time() - hit[0] < (7 * 86400 if hit[1] else 3600):
         return hit[1]
     logo = None
-    try:
-        req = urllib.request.Request(f"https://icons.duckduckgo.com/ip3/{domain}.ico", headers={"User-Agent": f"netBae/{VERSION}"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            body = r.read(200_000)
-            ctype = r.headers.get("Content-Type", "image/x-icon").split(";")[0]
-            if r.status == 200 and body and ctype.startswith("image/"):
-                logo = (ctype, body)
-    except (OSError, ValueError) as e:
-        log.debug("no logo for %s: %s", domain, e)
+    # DuckDuckGo's icon service first, then the ISP's own site (some networks block one or the other)
+    for url in (f"https://icons.duckduckgo.com/ip3/{domain}.ico", f"https://www.{domain}/favicon.ico",
+                f"https://{domain}/favicon.ico"):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": f"netBae/{VERSION}"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                body = r.read(200_000)
+                ctype = r.headers.get("Content-Type", "image/x-icon").split(";")[0]
+                if r.status == 200 and body and ctype.startswith("image/"):
+                    logo = (ctype, body)
+                    break
+        except (OSError, ValueError) as e:
+            log.debug("no logo for %s from %s: %s", domain, url, e)
     with _logos_lock:
         _logos[domain] = (time.time(), logo)
     return logo
@@ -2530,6 +2588,7 @@ class Monitor:
         self.st_lock = threading.Lock()
         self.st_status = {"running": False}
         self.router_counters = RouterCounters()
+        self.net_prev = None  # (time, (received, sent) bytes) at the last system sample
         self.st_busy = None  # traffic (Mbps) when the running scheduled test went ahead on a busy network
         self.region_cache = {}
         self.region_lookups = set()
@@ -2984,12 +3043,19 @@ class Monitor:
 
     def collect_system(self):
         s = self.sys.sample()
-        self.db.insert_many("INSERT INTO system VALUES (?,?,?,?,?,?)", [(
+        # this machine's network traffic (down, up) in Mbps since the last sample
+        now, cur = time.time(), local_byte_counters()
+        prev, self.net_prev = self.net_prev, (now, cur) if cur else None
+        rate = (None, None)
+        if prev and cur and all(y >= x for x, y in zip(prev[1], cur)) and now > prev[0]:
+            rate = tuple(round((y - x) * 8 / (now - prev[0]) / 1e6, 3) for x, y in zip(prev[1], cur))
+        self.db.insert_many("INSERT INTO system (ts, cpu, mem, disk, temp, load1, rx, tx) VALUES (?,?,?,?,?,?,?,?)", [(
             s["ts"], s["cpu"],
             s["mem"]["percent"] if s["mem"] else None,
             s["disk"]["percent"] if s["disk"] else None,
             s["temp"],
             s["load"][0] if s["load"] else None,
+            *rate,
         )])
 
     def rollup_all(self):
@@ -3352,6 +3418,7 @@ def api_config(m, q):
             " WHERE connection = ? AND isp IS NOT NULL) WHERE prev IS NOT NULL AND isp != prev ORDER BY ts DESC LIMIT 100",
             (c["isp"]["main_name"],))] if c["isp"]["enabled"] else [],
         "info": m.static_info,
+        "data_since": m.db.scalar("SELECT MIN(ts) FROM system"),  # when this install started recording
         "ping": {"interval_seconds": c["ping"]["interval_seconds"], "offset_seconds": c["ping"]["offset_seconds"],
                  "region_interval_seconds": c["ping"]["region_interval_seconds"],
                  "ipv6": c["ping"]["ipv6"] and m.ipv6_available(),
@@ -3463,9 +3530,9 @@ def api_system(m, q):
 def api_system_history(m, q):
     frm, to, bucket = parse_range(q, m.cfg["system"]["interval_seconds"])
     rows = m.db.query(
-        "SELECT CAST(ts / ? AS INTEGER) b, AVG(cpu), AVG(mem), AVG(disk), AVG(temp), AVG(load1)"
+        "SELECT CAST(ts / ? AS INTEGER) b, AVG(cpu), AVG(mem), AVG(disk), AVG(temp), AVG(load1), AVG(rx), AVG(tx)"
         " FROM system WHERE ts >= ? AND ts <= ? GROUP BY b ORDER BY b", (bucket, frm, to))
-    keys = ["cpu", "mem", "disk", "temp", "load1"]
+    keys = ["cpu", "mem", "disk", "temp", "load1", "rx", "tx"]
     series = {k: [] for k in keys}
     for b, *vals in rows:
         for k, v in zip(keys, vals):
@@ -3534,7 +3601,8 @@ def api_cdn(m, q):
     now = time.time()
     last = m.db.scalar("SELECT MAX(ts) FROM cdn")
     names = {s["id"]: s for s in m.cfg["dns"]["servers"]}
-    out = {"enabled": m.cfg["cdn"]["enabled"], "hostnames": m.cfg["cdn"]["hostnames"], "ts": last,
+    out = {"enabled": m.cfg["cdn"]["enabled"], "hostnames": m.cfg["cdn"]["hostnames"], "names": m.cfg["cdn"]["names"],
+           "ts": last,
            "interval_minutes": m.cfg["cdn"]["interval_minutes"], "servers": [], "routes": {}}
     if not last:
         return out
@@ -3559,8 +3627,10 @@ def api_cdn(m, q):
                                "avg7d": r2(sum(a7) / len(a7)) if a7 else None,
                                # how long the DNS server took to answer, averaged over the hostnames
                                "resolve_ms": r2(mean_or_none([al[0]["resolve_ms"] for al in hosts.values()]))})
+    for x in out["servers"]:  # the ranking: CDN ping plus how long the lookup took
+        x["total"] = r2(x["score"] + x["resolve_ms"]) if x["score"] is not None and x["resolve_ms"] is not None else None
     # a server that left any hostname unanswered ranks below every server that answered them all
-    out["servers"].sort(key=lambda x: (x["score"] is None, x["failed"], x["score"] or 0))
+    out["servers"].sort(key=lambda x: (x["total"] is None, x["failed"], x["total"] or 0))
     ips = {a["ip"] for x in out["servers"] for al in x["results"].values() for a in al if a["ip"]}
     for tid, ts, kind, path, hops in m.db.query(
             "SELECT target, MAX(ts), kind, path, hops FROM traceroute WHERE error IS NULL AND target LIKE 'cdn:%'"
@@ -3745,6 +3815,9 @@ def api_summary(m, q):
     flags = {r["name"]: r.get("flag", "") for r in m.cfg["speedtest"]["regions"]}
     return {
         "now": now, "ping": ping, "dns": dns, "isp": isp_current(m), "routes": latest_routes(m),
+        # average CPU and memory use over the last 24 hours, for the summary bar (the System tile shows them live)
+        "system": dict(zip(("cpu", "mem"), (m.db.query(
+            "SELECT AVG(cpu), AVG(mem) FROM system WHERE ts > ?", (now - 86400,)) or [(None, None)])[0])),
         "speedtest": {
             "last_ok": dict(zip(ST_COLS, ok[0])) if ok else None,
             "latest": dict(zip(ST_COLS, latest[0])) if latest else None,

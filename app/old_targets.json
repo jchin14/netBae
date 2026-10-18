@@ -1,5 +1,5 @@
 {
- "note": "Built-in ping target lists shipped in config.toml before 1.8 (see scripts/old-default-targets.py)",
+ "note": "Built-in lists shipped in config.toml: ping targets before 1.8, DNS and CDN before 1.18 (see scripts/old-default-targets.py)",
  "lists": [
   {
    "commit": "daaee4a",
@@ -1352,5 +1352,250 @@
     }
    ]
   }
+ ],
+ "dns_servers": [
+  [
+   {
+    "name": "Router",
+    "host": "gateway"
+   },
+   {
+    "name": "DHCP DNS",
+    "host": "dhcp"
+   },
+   {
+    "name": "Cloudflare",
+    "host": "1.1.1.1"
+   },
+   {
+    "name": "Cloudflare",
+    "host": "2606:4700:4700::1111"
+   },
+   {
+    "name": "Google",
+    "host": "8.8.8.8"
+   },
+   {
+    "name": "Google",
+    "host": "2001:4860:4860::8888"
+   },
+   {
+    "name": "Quad9",
+    "host": "9.9.9.9"
+   },
+   {
+    "name": "Quad9",
+    "host": "2620:fe::fe"
+   },
+   {
+    "name": "Quad9 ECS",
+    "host": "9.9.9.11"
+   },
+   {
+    "name": "Quad9 ECS",
+    "host": "2620:fe::11"
+   },
+   {
+    "name": "OpenDNS",
+    "host": "208.67.222.222"
+   },
+   {
+    "name": "OpenDNS",
+    "host": "2620:119:35::35"
+   },
+   {
+    "name": "CleanBrowsing",
+    "host": "185.228.168.9"
+   },
+   {
+    "name": "CleanBrowsing",
+    "host": "2a0d:2a00:1::2"
+   },
+   {
+    "name": "AdGuard",
+    "host": "94.140.14.14"
+   },
+   {
+    "name": "AdGuard",
+    "host": "2a10:50c0::ad1:ff"
+   },
+   {
+    "name": "NextDNS",
+    "host": "45.90.28.0"
+   },
+   {
+    "name": "NextDNS",
+    "host": "2a07:a8c0::"
+   },
+   {
+    "name": "Control D",
+    "host": "76.76.2.0"
+   },
+   {
+    "name": "Control D",
+    "host": "2606:1a40::"
+   }
+  ],
+  [
+   {
+    "name": "Router",
+    "host": "gateway"
+   },
+   {
+    "name": "DHCP DNS",
+    "host": "dhcp"
+   },
+   {
+    "name": "Cloudflare",
+    "host": "1.1.1.1"
+   },
+   {
+    "name": "Cloudflare",
+    "host": "2606:4700:4700::1111"
+   },
+   {
+    "name": "Google",
+    "host": "8.8.8.8"
+   },
+   {
+    "name": "Google",
+    "host": "2001:4860:4860::8888"
+   },
+   {
+    "name": "Quad9",
+    "host": "9.9.9.9"
+   },
+   {
+    "name": "Quad9",
+    "host": "2620:fe::fe"
+   },
+   {
+    "name": "OpenDNS",
+    "host": "208.67.222.222"
+   },
+   {
+    "name": "OpenDNS",
+    "host": "2620:119:35::35"
+   },
+   {
+    "name": "CleanBrowsing",
+    "host": "185.228.168.9"
+   },
+   {
+    "name": "CleanBrowsing",
+    "host": "2a0d:2a00:1::2"
+   },
+   {
+    "name": "AdGuard",
+    "host": "94.140.14.14"
+   },
+   {
+    "name": "AdGuard",
+    "host": "2a10:50c0::ad1:ff"
+   },
+   {
+    "name": "NextDNS",
+    "host": "45.90.28.0"
+   },
+   {
+    "name": "NextDNS",
+    "host": "2a07:a8c0::"
+   },
+   {
+    "name": "Control D",
+    "host": "76.76.2.0"
+   },
+   {
+    "name": "Control D",
+    "host": "2606:1a40::"
+   }
+  ],
+  [
+   {
+    "name": "Router",
+    "host": "gateway"
+   },
+   {
+    "name": "Cloudflare",
+    "host": "1.1.1.1"
+   },
+   {
+    "name": "Google",
+    "host": "8.8.8.8"
+   },
+   {
+    "name": "Quad9",
+    "host": "9.9.9.9"
+   },
+   {
+    "name": "Cloudflare",
+    "host": "2606:4700:4700::1111"
+   },
+   {
+    "name": "Google",
+    "host": "2001:4860:4860::8888"
+   },
+   {
+    "name": "Quad9",
+    "host": "2620:fe::fe"
+   }
+  ],
+  [
+   {
+    "name": "Router",
+    "host": "gateway"
+   },
+   {
+    "name": "Cloudflare",
+    "host": "1.1.1.1"
+   },
+   {
+    "name": "Google DNS",
+    "host": "8.8.8.8"
+   },
+   {
+    "name": "Quad9",
+    "host": "9.9.9.9"
+   }
+  ]
+ ],
+ "dns_domains": [
+  [
+   "google.com",
+   "microsoft.com",
+   "facebook.com",
+   "reddit.com",
+   "netflix.com"
+  ],
+  [
+   "google.com",
+   "microsoft.com",
+   "facebook.com"
+  ]
+ ],
+ "cdn_hostnames": [
+  [
+   "a2.w10.akamai.net",
+   "a10.w2.akamai.net",
+   "google.com",
+   "microsoft.com",
+   "www.cloudflare.com",
+   "d1.awsstatic.com",
+   "www.fastly.com",
+   "static.xx.fbcdn.net"
+  ],
+  [
+   "a2.w10.akamai.net",
+   "a10.w2.akamai.net",
+   "google.com",
+   "microsoft.com",
+   "www.cloudflare.com"
+  ],
+  [
+   "a2.w10.akamai.net",
+   "a10.w2.akamai.net",
+   "google.com",
+   "microsoft.com"
+  ]
  ]
 }

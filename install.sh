@@ -290,8 +290,11 @@ rm -rf "$APP_DIR/static"
 cp -a "$SRC_DIR/app/." "$APP_DIR/"
 install -m 0755 "$SRC_DIR/uninstall.sh" "$APP_DIR/uninstall.sh"
 install -m 0755 "$SRC_DIR/tunnel.sh" "$APP_DIR/tunnel.sh"
-sed "s#__NETBAE_REPO__#$NETBAE_REPO#" "$SRC_DIR/bin/netbae" >/usr/local/bin/netbae
-chmod 0755 /usr/local/bin/netbae
+# write a new file and rename it over the old one: `netbae update` is still running the old one, and bash
+# reads a script as it goes, so changing it in place makes the old run carry on into the new text
+sed "s#__NETBAE_REPO__#$NETBAE_REPO#" "$SRC_DIR/bin/netbae" >/usr/local/bin/netbae.new
+chmod 0755 /usr/local/bin/netbae.new
+mv -f /usr/local/bin/netbae.new /usr/local/bin/netbae
 mkdir -p "$APP_DIR/static/vendor"
 if [[ -n "$VENDOR_BACKUP" ]]; then cp -a "$VENDOR_BACKUP/." "$APP_DIR/static/vendor/"; rm -rf "$VENDOR_BACKUP"; fi
 

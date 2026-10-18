@@ -17,8 +17,38 @@ The main steps so far, with the full details per version below.
 | 1.10 - 1.14 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs, route change history, charts grouped by category |
 | 1.15 | An Update button on the dashboard and weekly automatic updates |
 
-## Unreleased
+## 1.18.1 - 2026-10-19
 
+A Show all / Hide all button on the charts.
+
+- Charts have a Show all / Hide all button next to Reset view, to turn every line off or back on at once
+
+## 1.18.0 - 2026-10-19
+
+DNS and CDN scores by CDN, built-in DNS and CDN lists that update with netBae, network traffic in the system history, and tidier ping charts and summary bar.
+
+- Ping latency: each category's colour sits next to its name above the chart.
+- DNS and CDN: resolvers that gave no answer stay at the bottom, whichever column the table is sorted by.
+- DNS and CDN: CDN ping 7d sits next to CDN ping and stays in view with it.
+- DNS and CDN: the intro says the lowest score is best and no longer runs wider than the ‹ › buttons.
+- System history also plots this machine's network traffic, down and up in Mbps, on its own axis.
+- The built-in DNS servers, DNS domains and CDN names moved into targets.toml next to the ping targets, so new ones arrive with updates. Add your own with [dns] extra_servers / extra_domains and [cdn] extra_hostnames, and leave built-in ones out with disable. A config that still holds a list netBae shipped switches to the built-in one by itself.
+- The public dashboard status moved to the right side of the header.
+- On a new install the charts start on the smallest time range that holds all the data so far, instead of a mostly empty default range.
+- DNS and CDN: columns are named by CDN (Akamai CDN, Google CDN ...), with Amazon CloudFront, Fastly and Meta added. The resolver, its score, CDN ping and lookup time stay in view while ‹ › scroll through the CDNs.
+- Ping latency: each category is on its own row above the chart with its hosts folded away; ▸ opens it, and opening or closing a category above the chart or in the table does both.
+- DNS and CDN: each resolver gets a score, its average CDN ping plus its lookup time, and the table is ranked by it.
+- The ping and DNS charts zoom so the highest average sits near the top, using more of the chart's height.
+- The DNS and CDN table is narrower, with both Akamai names in one Akamai column.
+- The 30-day average row of the global speedtests is highlighted like the other averages.
+- The Live / Past badge sits next to each chart's title.
+- The speedtest table's average row is highlighted.
+- Reset view also turns every line back on (categories stay collapsed).
+- The summary bar starts with your ISP's logo, ends with this machine's average CPU and memory use over the last 24 hours after a divider (the System tile stays live), and lists packet loss after jitter.
+- The summary bar shows the latency to the nearest region city next to the average latency for all hosts.
+- The speedtest arrows in the summary bar use the download and upload colours from the speed chart.
+- The ISP logo also loads straight from the ISP's own website when DuckDuckGo's icon service can't be reached.
+- `netbae update` on Linux and macOS no longer ends with a stray error like `line 101: e]: command not found` (the update itself always worked).
 - The ping and DNS charts show the last 24 hours by default, instead of 1 hour and 6 hours.
 - Charts always show the whole time range you picked, instead of zooming in when there's only data for part of it.
 - With IPv4 + IPv6 chosen, the latency charts show a key next to the dropdown: solid for IPv4, dashed for IPv6, and the IPv6 dashes are longer so they're easier to tell apart.

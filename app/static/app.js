@@ -118,6 +118,10 @@ async function ensureLibs() {
 
 // ------------------------------------------------------------------ controls
 function rangeControl(el, key, defaultRange, onChange) {
+  // a new install doesn't have the default range's worth of data yet: start on the smallest range that holds it all
+  const age = CONFIG.data_since ? Date.now() / 1000 - CONFIG.data_since : Infinity;
+  const fits = RANGES.find(([k, span]) => span && span >= age)?.[0];
+  if (fits && RANGES.findIndex(([k]) => k === fits) < RANGES.findIndex(([k]) => k === defaultRange)) defaultRange = fits;
   const saved = store.get(`range:${key}`, { r: defaultRange });
   el.innerHTML = `
     <span class="live-badge"></span>
@@ -145,6 +149,7 @@ function rangeControl(el, key, defaultRange, onChange) {
   date.max = ymd(new Date());
   // "Live" while the chart follows the clock, otherwise which past period it shows
   const badge = $('.live-badge', el);
+  el.closest('.panel-head')?.querySelector('h2')?.append(badge);  // next to the chart's title
   const show = () => {
     custom.hidden = sel.value !== 'custom'; dayBox.hidden = sel.value !== 'day';
     const r = ctl.get();
@@ -202,25 +207,46 @@ function rangeControl(el, key, defaultRange, onChange) {
 // Toggle chips, grouped by item.group with a clickable group label that toggles the whole group.
 // Which lines a chart shows. Stored per browser; "v2" started over when charts began showing only a few lines
 // by default (drawing every host on page load was heavy on the CPU).
-function chipFilter(el, key, items, onChange, defaultOff = []) {
+// rows: { isOpen(group), toggle(group) } puts each group on its own row, with its hosts hidden until the ▸ opens it
+function chipFilter(el, key, items, onChange, defaultOff = [], rows = null) {
   const off = new Set(store.get(`off3:${key}`, null) ?? defaultOff);
+  let allBtn = null;
   const sync = () => {
+    if (rows) {
+      el.querySelectorAll('.chip-row').forEach((r) => {
+        const open = rows.isOpen(r.dataset.group);
+        r.classList.toggle('open', open);
+        $('.caret', r).textContent = open ? '▾' : '▸';
+      });
+    }
     el.querySelectorAll('.chip').forEach((c) => c.classList.toggle('off', off.has(c.dataset.id)));
     el.querySelectorAll('.group-label').forEach((b) => b.classList.toggle('off',
       items.filter((x) => x.group === b.dataset.group).every((x) => off.has(x.id))));
+    if (allBtn) allBtn.textContent = items.every((x) => off.has(x.id)) ? 'Show all' : 'Hide all';
   };
   const changed = () => { sync(); store.set(`off3:${key}`, [...off]); onChange(); };
   el.innerHTML = '';
+  el.classList.toggle('chip-rows', !!rows);
   const groups = [...new Set(items.map((it) => it.group ?? ''))];
   for (const g of groups) {
-    const wrap = document.createElement('span');
-    wrap.className = 'chip-group';
+    const wrap = document.createElement(rows ? 'div' : 'span');
+    wrap.className = rows ? 'chip-row' : 'chip-group';
+    wrap.dataset.group = g;
     const members = items.filter((it) => (it.group ?? '') === g);
-    if (g && groups.length > 1) {
+    if (rows) {
+      const caret = document.createElement('button');
+      caret.className = 'caret';
+      caret.title = `Show or hide each of ${g}'s ${members.length} hosts (also opens it in the table)`;
+      caret.addEventListener('click', () => rows.toggle(g));
+      wrap.appendChild(caret);
+    }
+    if (g && (groups.length > 1 || rows)) {
       const label = document.createElement('button');
       label.className = 'group-label';
       label.dataset.group = g;
-      label.textContent = g;
+      // in rows, the category's swatch is its middle host's colour, the same one its combined line is drawn in
+      const sq = rows ? `<i class="host-sq" style="background:${members[Math.floor((members.length - 1) / 2)].color}"></i> ` : '';
+      label.innerHTML = `${sq}${esc(g)}${rows ? ` <span class="count">${members.length}</span>` : ''}`;
       label.title = `Show or hide all of ${g}`;
       label.addEventListener('click', () => {
         const allOff = members.every((x) => off.has(x.id));
@@ -248,7 +274,20 @@ function chipFilter(el, key, items, onChange, defaultOff = []) {
     el.appendChild(wrap);
   }
   sync();
-  return { selected: () => items.filter((i) => !off.has(i.id)).map((i) => i.id) };
+  return {
+    selected: () => items.filter((i) => !off.has(i.id)).map((i) => i.id),
+    showAll() { off.clear(); sync(); store.set(`off3:${key}`, []); },  // the caller refreshes
+    // a panel button that hides every line, or shows them all again once they're all hidden
+    addToggleAll(root) {
+      allBtn = panelButton(root, '', 'Show or hide every line on the chart', () => {
+        const allOff = items.every((x) => off.has(x.id));
+        items.forEach((x) => (allOff ? off.delete(x.id) : off.add(x.id)));
+        changed();
+      });
+      sync();
+    },
+    sync,
+  };
 }
 
 // Colours: each group gets a hue, members get lighter/darker shades of it.
@@ -587,15 +626,28 @@ function renderSummaryBar(s) {
   const dns = mean(Object.values(s.dns || {}).map((d) => d.avg5m));
   const st = s.speedtest && s.speedtest.last_ok;
   const stat = (label, value, title, cls = '') => `<div class="stat" title="${esc(title)}"><div class="label">${label}</div><div class="v ${cls}">${value}</div></div>`;
+  const sys = s.system || {};
+  const pctCls = (v) => (v >= 90 ? 'bad' : v >= 75 ? 'warn' : '');
+  const logo = isp && isp.logo && isp.last_ok
+    ? `<div class="stat isp-stat" title="${esc(isp.connection)}: ${esc(isp.last_ok.isp)}"><img src="api/isp/logo?isp=${encodeURIComponent(isp.last_ok.isp)}" alt="${esc(isp.last_ok.isp)}" onerror="this.parentNode.remove()"></div>` : '';
+  // the region (city) with the lowest latency right now, normally the one you're in or next to
+  const near = lastPing.filter((p) => p.method === 'region' && p.family !== 6 && !p.connection && p.avg5m != null)
+    .sort((x, y) => x.avg5m - y.avg5m)[0];
   const items = [
+    logo,
     stat('Hosts up', `${up(sites)}<small>/ ${sites.length}</small>`, 'Sites whose latest ping answered (not counting regions or IPv6)', upCls(sites)),
     mine.length ? stat('Your hosts up', `${up(mine)}<small>/ ${mine.length}</small>`, 'Your own extra_targets whose latest ping answered', upCls(mine)) : '',
     isp && isp.uptime24h != null ? stat('ISP uptime', `${fmtPct(isp.uptime24h, isp.uptime24h < 100 ? 2 : 0)}<small>24h</small>`, `Share of ${isp.connection}'s ISP checks in the last 24 hours that reached the internet`, isp.uptime24h >= 99.9 ? 'good' : isp.uptime24h >= 99 ? 'warn' : 'bad') : '',
     stat('Avg latency', `${fmtMs(mean(sites.map((p) => p.avg5m)))}<small>ms</small>`, 'Average of every site\'s 5-minute average, not counting regions'),
-    stat('Packet loss', fmtLoss(mean(sites.map((p) => p.loss5m)), 2), 'Average packet loss across sites in the last 5 minutes'),
+    near ? stat('Nearest city', `${fmtMs(near.avg5m)}<small>ms ${esc(near.name)}</small>`, `5-minute average to ${near.name}, the closest of the region cities (the fastest Ookla server there)`) : '',
     stat('Jitter', `${fmtMs(mean(sites.map((p) => p.jitter5m)))}<small>ms</small>`, 'Average change between consecutive pings to each site, last 5 minutes'),
+    stat('Packet loss', fmtLoss(mean(sites.map((p) => p.loss5m)), 2), 'Average packet loss across sites in the last 5 minutes'),
     dns != null ? stat('DNS', `${fmtMs(dns)}<small>ms</small>`, 'Average DNS lookup time in the last 5 minutes') : '',
-    st ? stat('Speed', `${fmtMbps(st.download_mbps)}<small>↓</small> ${fmtMbps(st.upload_mbps)}<small>↑ Mbps</small>`, `Latest speedtest, ${fmtAgo(st.ts)}`) : '',
+    st ? stat('Speed', `${fmtMbps(st.download_mbps)}<small style="color:${PALETTE[0]}">↓</small> ${fmtMbps(st.upload_mbps)}<small><span style="color:${PALETTE[2]}">↑</span> Mbps</small>`, `Latest speedtest, ${fmtAgo(st.ts)}`) : '',
+    // this machine's own stats, set apart from the connection ones
+    sys.cpu != null || sys.mem != null ? '<div class="stat-sep" aria-hidden="true"></div>' : '',
+    sys.cpu != null ? stat('CPU', `${Math.round(sys.cpu)}<small>% 24h</small>`, 'Average CPU use on this machine over the last 24 hours (the System tile below shows it live)', pctCls(sys.cpu)) : '',
+    sys.mem != null ? stat('Memory', `${Math.round(sys.mem)}<small>% 24h</small>`, 'Average memory use on this machine over the last 24 hours (the System tile below shows it live)', pctCls(sys.mem)) : '',
   ].filter(Boolean);
   const bar = $('#summary-bar');
   bar.innerHTML = items.join('') + '<button id="tiles-toggle" class="btn ghost" type="button" title="Open or close every ping group below"></button>';
@@ -710,7 +762,7 @@ function renderGlobal(g) {
     <thead><tr><th>Time</th><th style="text-align:left">City</th><th style="text-align:left">Server</th><th>Down Mbps</th><th>Up Mbps</th>
       <th>Ping ms</th><th>Jitter ms</th><th>Loss</th><th>Data</th><th></th></tr></thead>
     <tbody>
-      <tr class="strong"><td><b>Average (30 days)</b></td><td style="text-align:left" class="muted">${a.tests} test${a.tests === 1 ? '' : 's'}</td><td></td>
+      <tr class="avg-row"><td><b>Average (30 days)</b></td><td style="text-align:left" class="muted">${a.tests} test${a.tests === 1 ? '' : 's'}</td><td></td>
         <td>${fmtMbps(a.download_mbps)}</td><td>${fmtMbps(a.upload_mbps)}</td><td>${fmtMs(a.ping_ms)}</td><td>${fmtMs(a.jitter_ms)}</td>
         <td>${a.packet_loss == null ? '-' : fmtPct(a.packet_loss)}</td><td>${fmtBytes(a.data_bytes)}</td><td></td></tr>
       ${g.recent.map((x) => x.error
@@ -741,26 +793,42 @@ async function refreshCdn() {
 }
 
 // average latency to the addresses one DNS server handed out for one hostname
+// Columns of the CDN table, one per CDN: hostnames with the same CDN name (Akamai's a2.w10 and a10.w2) share one
+const cdnCols = (hostnames) => {
+  const cols = [];
+  for (const h of hostnames) {
+    const name = CDN_DATA?.names?.[h];  // from targets.toml (or extra_hostnames)
+    const label = name ? `${name} CDN` : h.replace(/^www\./, '');
+    const c = cols.find((x) => x.label === label);
+    if (c) c.hosts.push(h); else cols.push({ label, hosts: [h] });
+  }
+  return cols;
+};
+const cdnResults = (x, hosts) => hosts.flatMap((h) => x.results[h] || []);
 const cdnAvg = (al) => mean((al || []).filter((x) => x.ip).map((x) => x.rtt));
 const cdnLoss = (al) => mean((al || []).filter((x) => x.ip).map((x) => x.loss));
 
 function renderCdn() {
   const d = CDN_DATA;
   if (!d?.servers.length) { $('#cdn-table').innerHTML = ''; return; }
-  const value = (x, key) => (key === 'score' ? x.score : key === 'avg7d' ? x.avg7d : key === 'dns' ? x.resolve_ms
-    : cdnAvg(x.results[key.slice(2)]));
+  const value = (x, key) => (key === 'total' ? x.total : key === 'score' ? x.score : key === 'avg7d' ? x.avg7d : key === 'dns' ? x.resolve_ms
+    : cdnAvg(cdnResults(x, key.slice(2).split(' '))));
+  // a resolver that left a name unanswered stays at the bottom, whichever column the table is sorted by
   const rows = cdnSort ? [...d.servers].sort((a, b) => {
+    if (!a.failed !== !b.failed) return a.failed ? 1 : -1;
     const p = value(a, cdnSort.key), q = value(b, cdnSort.key);
     if (p == null || q == null) return (p == null) - (q == null);
     return (p - q) * cdnSort.dir;
   }) : d.servers;
+  const cols = cdnCols(d.hostnames);
   const th = (key, label, left, tip) => {
     const on = cdnSort?.key === key;
-    return `<th class="sortable${on ? ' sorted' : ''}${key === 'score' ? ' avg' : ''}" data-sort="${esc(key)}"${left ? ' style="text-align:left"' : ''} title="${esc(tip || 'Ping to the servers this DNS server gave for ' + label)}. Click to sort">`
+    return `<th class="sortable${on ? ' sorted' : ''}${key === 'total' ? ' avg' : ''}" data-sort="${esc(key)}"${left ? ' style="text-align:left"' : ''} title="${esc(tip || 'Ping to the servers this DNS server gave for ' + label)}. Click to sort">`
       + `${esc(label)}${on ? (cdnSort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
   };
-  const cell = (x, h) => {
-    const al = x.results[h];
+  const cell = (x, c) => {
+    const h = c.hosts.join(' ');
+    const al = cdnResults(x, c.hosts);
     if (!al?.length) return '<td class="muted" style="text-align:left">-</td>';
     const a = al[0];
     if (!a.ip) return `<td style="text-align:left"><span class="error-text">${esc(a.error || 'no answer')}</span></td>`;
@@ -768,24 +836,66 @@ function renderCdn() {
     const avg = cdnAvg(al), loss = cdnLoss(al);
     return `<td class="cdn-cell" data-server="${esc(x.id)}" data-host="${esc(h)}" style="text-align:left" title="Click for the route${ok.length > 1 ? 's to all ' + ok.length + ' addresses' : ''}">
       <div><b>${avg == null ? '<span class="error-text">no reply</span>' : fmtMs(avg) + ' ms'}</b>${loss ? ` ${fmtLoss(loss)}` : ''}
-      <span class="muted">${esc(a.ip)}${ok.length > 1 ? ` +${ok.length - 1}` : ''}</span></div>
+      <div class="muted small">${esc(a.ip)}${ok.length > 1 ? ` +${ok.length - 1}` : ''}</div></div>
       <div class="route">${routeHtml(`cdn:${a.ip}`)}</div></td>`;
   };
+  // the resolver and its numbers stay put on the left; the CDN columns scroll past them
   $('#cdn-table').innerHTML = `
-    <thead><tr><th>#</th><th style="text-align:left">DNS server</th>${d.hostnames.map((h) => th('h:' + h, h, true)).join('')}
-      ${th('score', 'Avg CDN ping', false, 'Average ping to the CDN servers this DNS server sent you to (what the ranking uses)')}
-      ${th('avg7d', 'CDN ping, 7 days', false, 'The same average over the last 7 days')}
-      ${th('dns', 'DNS lookup', false, 'How long this DNS server took to answer the lookups')}</tr></thead>
-    <tbody>${rows.map((x) => `<tr><td>${x.score == null ? '' : d.servers.indexOf(x) + 1}</td>
+    <thead><tr><th>#</th><th style="text-align:left">DNS server</th>
+      ${th('total', 'Score', false, 'CDN ping plus lookup time: lower is better (the ranking)')}
+      ${th('score', 'CDN ping', false, 'Average ping to the CDN servers this DNS server sent you to')}
+      ${th('avg7d', 'CDN ping 7d', false, 'The average CDN ping over the last 7 days')}
+      ${th('dns', 'Lookup', false, 'How long this DNS server took to answer the lookups')}
+      ${cols.map((c) => th('h:' + c.hosts.join(' '), c.label, true, `Ping to the servers this DNS server gave for ${c.hosts.join(' and ')}`)).join('')}</tr></thead>
+    <tbody>${rows.map((x) => `<tr><td>${x.total == null ? '' : d.servers.indexOf(x) + 1}</td>
       <td style="text-align:left"><b>${esc(x.name)}</b>${x.family === 6 ? ' <span class="muted">v6</span>' : ''}<div class="muted small">${esc(x.host)}</div></td>
-      ${d.hostnames.map((h) => cell(x, h)).join('')}
-      <td class="avg">${fmtMs(x.score)}</td><td>${fmtMs(x.avg7d)}</td><td>${fmtMs(x.resolve_ms)}</td></tr>`).join('')}</tbody>`;
+      <td class="avg">${fmtMs(x.total)}</td><td>${fmtMs(x.score)}</td><td>${fmtMs(x.avg7d)}</td><td>${fmtMs(x.resolve_ms)}</td>
+      ${cols.map((c) => cell(x, c)).join('')}</tr>`).join('')}</tbody>`;
+  stickCdn();
+}
+// Pin the first 6 columns (when there's room for them) and show the ‹ › buttons when the CDN columns overflow
+const CDN_FIXED = 6;
+function stickCdn() {
+  const t = $('#cdn-table'), wrap = t.parentElement;
+  const head = t.rows[0];
+  if (!head) return;
+  const lefts = [0];
+  for (let i = 1; i < CDN_FIXED; i++) lefts.push(lefts[i - 1] + head.cells[i - 1].offsetWidth);
+  const fixedW = lefts[CDN_FIXED - 1] + head.cells[CDN_FIXED - 1].offsetWidth;
+  const stick = fixedW < wrap.clientWidth * 0.6;  // phones: everything scrolls
+  for (const r of t.rows) {
+    for (let i = 0; i < CDN_FIXED; i++) {
+      const c = r.cells[i];
+      c.classList.toggle('stick', stick);
+      c.classList.toggle('stick-end', stick && i === CDN_FIXED - 1);
+      c.style.left = stick ? `${lefts[i]}px` : '';
+    }
+  }
+  $('#cdn-scroll').hidden = wrap.scrollWidth <= wrap.clientWidth + 1;
+  syncCdnScroll();
+  fitCdnIntro();
+}
+// The intro text ends where the ‹ › buttons do (or just before Test now), unless that would make it too narrow
+function fitCdnIntro() {
+  const intro = $('#panel-cdn .cdn-intro');
+  intro.style.maxWidth = '';
+  const arrows = $('#cdn-scroll'), run = $('#run-cdn');
+  const right = !arrows.hidden ? arrows.getBoundingClientRect().right : !run.hidden ? run.getBoundingClientRect().left - 12 : null;
+  const w = right == null ? 0 : right - intro.getBoundingClientRect().left;
+  if (w > 320) intro.style.maxWidth = `${w}px`;
+}
+function syncCdnScroll() {
+  const wrap = $('#cdn-table').parentElement;
+  const [prev, next] = $('#cdn-scroll').querySelectorAll('button');
+  prev.disabled = wrap.scrollLeft <= 0;
+  next.disabled = wrap.scrollLeft + wrap.clientWidth >= wrap.scrollWidth - 1;
 }
 
 // Every address a DNS server handed out for a hostname, each with its ping and route (click one for its hops)
 function showCdnRoutes(serverId, host) {
   const x = CDN_DATA?.servers.find((s) => s.id === serverId);
-  const ok = (x?.results[host] || []).filter((a) => a.ip);
+  const ok = cdnResults(x || { results: {} }, host.split(' ')).filter((a) => a.ip);
+  host = cdnCols(host.split(' '))[0].label;
   if (ok.length === 1) return showRoute(`cdn:${ok[0].ip}`, `${host} (${ok[0].ip})`);
   const dlg = $('#route-dialog');
   dlg.innerHTML = `<div class="dlg-head"><h2>${esc(host)} via ${esc(x.name)}${x.family === 6 ? ' v6' : ''}</h2><button class="link" data-close>Close</button></div>
@@ -859,7 +969,7 @@ async function refreshSystem() {
 function niceCeil(v) {
   if (!(v > 0)) return 1;
   const p = 10 ** Math.floor(Math.log10(v));
-  return [1, 2, 2.5, 5, 10].map((m) => m * p).find((x) => x >= v);
+  return [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map((m) => m * p).find((x) => x >= v);
 }
 
 // A small button at the end of a chart panel's controls
@@ -937,7 +1047,8 @@ function yZoom(root, key, chart) {
     // values: the numbers the axis should fit (average lines); floor: minimum axis max
     fit(values, floor = 1) {
       const v = values.filter((x) => x != null).sort((a, b) => a - b);
-      auto = v.length ? niceCeil(Math.max(floor, v[Math.floor((v.length - 1) * 0.98)] * 1.35)) : undefined;
+      // the highest average just under the top, so the lines use most of the chart's height
+      auto = v.length ? niceCeil(Math.max(floor, v[v.length - 1] * 1.05)) : undefined;
       apply();
     },
   };
@@ -1007,7 +1118,7 @@ async function ispOverlay(root, r, onToggle) {
 // collapse: hosts are drawn as one line per category (catOf) until that category's table row is clicked to
 // expand it, which keeps chart rendering light even with a hundred hosts.
 function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams, lossLabel, defaultHide = [],
-  collapse = false, catOf = (it) => it.group, memberNoun = 'hosts' }) {
+  collapse = false, catOf = (it) => it.group, memberNoun = 'hosts', chipRows = false }) {
   const defaultOff = items.filter((it) => defaultHide.includes(it.id)).map((it) => it.id);
   const expanded = new Set(store.get(`expand:${id}`, []));
   const root = $(`#${id}`);
@@ -1063,6 +1174,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     if (!r) return;
     const mine = ++seq;
     syncExpand();
+    chips.sync();
     const sel = chips.selected();
     const metric = metricSel.value;
     const band = bandSel.value;
@@ -1180,13 +1292,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
   }
   $('.stats', root).addEventListener('click', (e) => {
     const catRow = e.target.closest('tr.cat-row');
-    if (catRow) {  // expand or collapse a category
-      const c = catRow.dataset.cat;
-      if (expanded.has(c)) expanded.delete(c); else expanded.add(c);
-      store.set(`expand:${id}`, [...expanded]);
-      refresh();
-      return;
-    }
+    if (catRow) return toggleCat(catRow.dataset.cat);  // expand or collapse a category
     const key = e.target.closest('th[data-sort]')?.dataset.sort;
     if (!key) return;
     sort = sort?.key !== key ? { key, dir: 1 } : sort.dir > 0 ? { key, dir: -1 } : null;
@@ -1212,7 +1318,15 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
   }
   $('.stats', root).addEventListener('mouseover', (e) => highlight(e.target.closest('tr[data-key]')?.dataset.key || null));
   $('.stats', root).addEventListener('mouseleave', () => highlight(null));
-  const chips = chipFilter($('.chips', root), id, items, refresh, defaultOff);
+  // with chipRows, a category opened above the chart is opened in the table too, and the other way round
+  const toggleCat = (c) => {
+    if (expanded.has(c)) expanded.delete(c); else expanded.add(c);
+    store.set(`expand:${id}`, [...expanded]);
+    refresh();
+  };
+  const chips = chipFilter($('.chips', root), id, items, refresh, defaultOff,
+    chipRows ? { isOpen: (g) => expanded.has(g), toggle: toggleCat } : null);
+  chips.addToggleAll(root);
   const range = rangeControl($('.range', root), id, defaultRange, refresh);
   // every category's hosts in the table and chart at once, or back to one line per category
   const cats = [...new Set(items.map(catOf))];
@@ -1224,7 +1338,8 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
   }) : null;
   syncExpand = () => { if (expandBtn) expandBtn.textContent = allOpen() ? 'Collapse all' : 'Expand all'; };
   syncExpand();
-  panelButton(root, 'Reset view', 'Back to the default time range and zoom, with every category collapsed', () => {
+  panelButton(root, 'Reset view', 'Back to the default time range and zoom, with every line on and every category collapsed', () => {
+    chips.showAll();
     zoom.reset();
     expanded.clear();
     store.set(`expand:${id}`, []);
@@ -1312,7 +1427,7 @@ function speedPanel() {
     $('.stats', root).innerHTML = `
       <thead><tr><th>Time</th><th>Test</th><th>Down Mbps</th><th>Up Mbps</th><th>Ping ms</th><th>Jitter ms</th><th>Loss</th><th>Data</th><th>ISP</th><th>Server</th><th></th></tr></thead>
       <tbody>
-        <tr><td><b>Average (${ok.length} tests)</b></td><td></td><td><b>${fmtMbps(avg('download_mbps'))}</b></td><td><b>${fmtMbps(avg('upload_mbps'))}</b></td>
+        <tr class="avg-row"><td><b>Average (${ok.length} tests)</b></td><td></td><td><b>${fmtMbps(avg('download_mbps'))}</b></td><td><b>${fmtMbps(avg('upload_mbps'))}</b></td>
           <td><b>${fmtMs(avg('ping_ms'))}</b></td><td><b>${fmtMs(avg('jitter_ms'))}</b></td><td></td><td><b>${fmtBytes(ok.reduce((a, x) => a + (x.data_bytes || 0), 0))}</b></td><td></td><td></td><td></td></tr>
         ${recent.map((x) => x.error
           ? `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}</td><td colspan="9" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
@@ -1346,8 +1461,9 @@ function speedPanel() {
   $('.prev-page', pager).addEventListener('click', () => { page = Math.max(0, page - 1); refresh(); });
   $('.next-page', pager).addEventListener('click', () => { page += 1; refresh(); });
   const chips = chipFilter($('.chips', root), 'speed', series, refresh);
+  chips.addToggleAll(root);
   const range = rangeControl($('.range', root), 'speed', '7d', refresh);
-  panelButton(root, 'Reset view', 'Back to the default time range', () => range.reset());
+  panelButton(root, 'Reset view', 'Back to the default time range, with every line on', () => { chips.showAll(); range.reset(); });
   viewSel.addEventListener('change', () => { store.set('speed:view', viewSel.value); page = 0; refresh(); });
   return { root, refresh, isLive: () => range.get()?.live, chart };
 }
@@ -1362,15 +1478,21 @@ function systemPanel() {
     { id: 'disk', label: 'Storage %', color: PALETTE[4], unit: '%', axis: 'y' },
     { id: 'temp', label: 'CPU temp (°C)', color: PALETTE[3], unit: '°C', axis: 'y1' },
     { id: 'load1', label: 'CPU load (1 min avg)', color: PALETTE[1], unit: '', axis: 'y1' },
+    { id: 'rx', label: 'Network down', color: PALETTE[5], unit: 'Mbps', axis: 'y2' },
+    { id: 'tx', label: 'Network up', color: PALETTE[6], unit: 'Mbps', axis: 'y2' },
   ];
+  // network traffic gets its own Mbps axis, on the right next to temp and load
+  chart.options.scales.y2 = { position: 'right', beginAtZero: true, title: { display: true, text: 'Mbps' }, grid: { drawOnChartArea: false } };
   const refresh = async () => {
     const r = range.get();
     if (!r) return;
     const d = await api('system/history', { from: r.from.toFixed(0), to: r.to.toFixed(0), points: Math.max(100, Math.min(1000, root.clientWidth)) });
     const sel = chips.selected();
-    chart.data.datasets = series.filter((s) => sel.includes(s.id) && d.series[s.id].some((p) => p[1] != null)).map((s) => ({
+    const shown = series.filter((s) => sel.includes(s.id) && (d.series[s.id] || []).some((p) => p[1] != null));
+    chart.options.scales.y2.display = shown.some((s) => s.axis === 'y2');
+    chart.data.datasets = shown.map((s) => ({
       label: s.label, unit: s.unit, yAxisID: s.axis, borderColor: s.color, backgroundColor: s.color,
-      borderDash: s.axis === 'y1' ? [4, 3] : [], spanGaps: false,
+      borderDash: s.axis === 'y1' ? [4, 3] : s.axis === 'y2' ? [1, 2] : [], spanGaps: false,
       data: d.series[s.id].map((p) => ({ x: p[0], y: p[1] })),
     })).concat(await ispOverlay(root, r, refresh));
     chart.options.scales.y.max = 100;
@@ -1378,8 +1500,9 @@ function systemPanel() {
     chart.update();
   };
   const chips = chipFilter($('.chips', root), 'system', series, refresh);
+  chips.addToggleAll(root);
   const range = rangeControl($('.range', root), 'system', '24h', refresh);
-  panelButton(root, 'Reset view', 'Back to the default time range', () => range.reset());
+  panelButton(root, 'Reset view', 'Back to the default time range, with every line on', () => { chips.showAll(); range.reset(); });
   return { root, refresh, isLive: () => range.get()?.live, chart };
 }
 
@@ -1474,7 +1597,7 @@ async function main() {
   }));
   panels.push(latencyPanel({
     id: 'panel-ping', endpoint: 'ping', keyParam: 'targets', items: pingItems, defaultRange: '24h', lossLabel: 'Loss',
-    collapse: true,
+    collapse: true, chipRows: true,
   }));
   $('#summary-bar').addEventListener('click', (e) => {
     if (!e.target.closest('#tiles-toggle')) return;
@@ -1553,6 +1676,15 @@ async function main() {
     const b = e.target.closest('.run-conn');
     if (b) startTest(`conn:${encodeURIComponent(b.dataset.conn)}`);
   });
+  // ‹ › scroll the CDN columns one at a time
+  $('#cdn-scroll').addEventListener('click', (e) => {
+    const dir = +(e.target.closest('button')?.dataset.dir || 0);
+    const t = $('#cdn-table');
+    if (!dir || !t.rows[0]) return;
+    t.parentElement.scrollBy({ left: dir * t.rows[0].cells[CDN_FIXED].offsetWidth, behavior: 'smooth' });
+  });
+  $('#cdn-table').parentElement.addEventListener('scroll', syncCdnScroll);
+  window.addEventListener('resize', () => { if (!$('#panel-cdn').hidden) stickCdn(); });
   $('#cdn-table').addEventListener('click', (e) => {
     const key = e.target.closest('th[data-sort]')?.dataset.sort;
     if (key) {
