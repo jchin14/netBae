@@ -16,6 +16,12 @@ The main steps so far, with the full details per version below.
 | 1.8 - 1.9 | IPv6 pings and routes, built-in targets in their own file, a database about 40% smaller |
 | 1.10 - 1.13 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs, route change history |
 
+## 1.13.1 - 2026-10-18
+
+Faster dashboard loading.
+
+- **Lighter page load:** the ping chart starts with 5 lines (Router, ISP first hop, Cloudflare DNS, Google, Netflix) and the DNS chart with 4 resolvers, instead of drawing every host, which used a lot of CPU. Click any host or group to add it; your choice is remembered. Selections saved by earlier versions start over once.
+
 ## 1.13.0 - 2026-10-18
 
 Routes record only changes, consistent host colours, and test results in every release.

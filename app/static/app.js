@@ -173,14 +173,16 @@ function rangeControl(el, key, defaultRange, onChange) {
 }
 
 // Toggle chips, grouped by item.group with a clickable group label that toggles the whole group.
+// Which lines a chart shows. Stored per browser; "v2" started over when charts began showing only a few lines
+// by default (drawing every host on page load was heavy on the CPU).
 function chipFilter(el, key, items, onChange, defaultOff = []) {
-  const off = new Set(store.get(`off:${key}`, null) ?? defaultOff);
+  const off = new Set(store.get(`off2:${key}`, null) ?? defaultOff);
   const sync = () => {
     el.querySelectorAll('.chip').forEach((c) => c.classList.toggle('off', off.has(c.dataset.id)));
     el.querySelectorAll('.group-label').forEach((b) => b.classList.toggle('off',
       items.filter((x) => x.group === b.dataset.group).every((x) => off.has(x.id))));
   };
-  const changed = () => { sync(); store.set(`off:${key}`, [...off]); onChange(); };
+  const changed = () => { sync(); store.set(`off2:${key}`, [...off]); onChange(); };
   el.innerHTML = '';
   const groups = [...new Set(items.map((it) => it.group ?? ''))];
   for (const g of groups) {
@@ -901,7 +903,11 @@ async function ispOverlay(root, r, onToggle) {
   return datasets;
 }
 
-function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams, lossLabel, defaultOff = [] }) {
+function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams, lossLabel, defaultOn = null }) {
+  // only a handful of lines on first load: the listed ones that exist, else the first five
+  let on = defaultOn ? items.filter((it) => defaultOn.includes(it.id)) : items;
+  if (on.length < 2) on = items.slice(0, 5);
+  const defaultOff = items.filter((it) => !on.includes(it)).map((it) => it.id);
   const root = $(`#${id}`);
   const metricSel = $('.metric', root);
   const bandSel = $('.band', root);
@@ -1205,7 +1211,7 @@ async function main() {
   }));
   panels.push(latencyPanel({
     id: 'panel-ping', endpoint: 'ping', keyParam: 'targets', items: pingItems, defaultRange: '1h', lossLabel: 'Loss',
-    defaultOff: CONFIG.ping.targets.filter((t) => t.method === 'region').map((t) => t.id),
+    defaultOn: ['gateway', 'isp:first-hop', '1.1.1.1', 'google.com', 'www.netflix.com'],
   }));
   $('#ping-tiles').addEventListener('click', (e) => {
     const card = e.target.closest('.group');
@@ -1232,6 +1238,7 @@ async function main() {
     const p = latencyPanel({
       id: 'panel-dns', endpoint: 'dns', keyParam: 'servers', items: dnsItems, defaultRange: '6h',
       lossLabel: 'Failures', extraParams: () => ({ domain: domainSel.value }),
+      defaultOn: ['gateway', '1.1.1.1', '8.8.8.8', '9.9.9.9'],
     });
     domainSel.addEventListener('change', () => { store.set('dns:domain', domainSel.value); p.refresh(); });
     panels.push(p);
