@@ -11,7 +11,7 @@
 <body>
   <header class="top">
     <div>
-      <h1><svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><polyline points="2 12 6 12 9 4 15 20 18 12 22 12"/></svg>netBae <a id="version" class="version" target="_blank" rel="noopener" title="What's new in this version"></a> <span id="hostname" class="muted"></span></h1>
+      <h1><svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><polyline points="2 12 6 12 9 4 15 20 18 12 22 12"/></svg>netBae <a id="version" class="version" target="_blank" rel="noopener" title="What's new in this version"></a> <button id="update-btn" class="update-btn" type="button" hidden></button> <span id="hostname" class="muted"></span></h1>
       <div id="subtitle" class="muted small"></div>
       <div id="isp-now" class="muted small"></div>
       <div id="share-now" class="muted small share-now" hidden></div>
@@ -113,7 +113,8 @@
       </div>
       <p class="muted small cdn-intro">CDNs like Akamai send you to a server near the DNS resolver that asked, so a resolver far away,
         or one that hides where you are, can send you to a distant server. Each resolver looks up the names below and the
-        addresses it hands out are pinged: the resolver whose answers are closest to you is first.</p>
+        addresses it hands out are pinged: the resolver whose answers are closest to you is first. <b>CDN ping</b> is the
+        average ping to those servers (the ranking); <b>DNS lookup</b> is how long the DNS server took to answer.</p>
       <div class="table-wrap"><table class="stats" id="cdn-table"></table></div>
     </section>
 

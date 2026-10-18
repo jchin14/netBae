@@ -412,6 +412,30 @@ EOF
   launchctl enable "system/$LABEL"
   launchctl bootstrap system "$PLIST" || die "launchctl bootstrap failed (see $LOG_FILE)"
 
+  # The dashboard's Update button: the service can't run the installer itself, so it creates
+  # $DATA_DIR/update-request and this root job runs `netbae update` (then removes the request).
+  local up=/Library/LaunchDaemons/$LABEL.update.plist
+  launchctl bootout "system/$LABEL.update" 2>/dev/null || true
+  cat >"$up" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL.update</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string><string>-c</string>
+    <string>[ -e $DATA_DIR/update-request ] || exit 0; rm -f $DATA_DIR/update-request; /usr/local/bin/netbae update &gt;$DATA_DIR/update.log 2&gt;&amp;1</string>
+  </array>
+  <key>WatchPaths</key><array><string>$DATA_DIR/update-request</string></array>
+</dict>
+</plist>
+EOF
+  chown root:wheel "$up"
+  chmod 644 "$up"
+  plutil -lint "$up" >/dev/null && launchctl bootstrap system "$up" \
+    || c_warn "couldn't set up the dashboard's Update button ($up)"
+
   # The application firewall would silently drop dashboard connections to a daemon; allow python.
   local fw=/usr/libexec/ApplicationFirewall/socketfilterfw py_real app
   if [[ -x $fw ]] && "$fw" --getglobalstate 2>/dev/null | grep -qi enabled; then
@@ -483,8 +507,29 @@ Environment=PYTHONUNBUFFERED=1
 [Install]
 WantedBy=multi-user.target
 EOF
+# The dashboard's Update button: the service can't run the installer itself, so it creates
+# $DATA_DIR/update-request and this root job runs `netbae update` (then removes the request).
+cat >/etc/systemd/system/netbae-update.service <<EOF
+[Unit]
+Description=netBae update, requested from the dashboard
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '[ -e $DATA_DIR/update-request ] || exit 0; rm -f $DATA_DIR/update-request; /usr/local/bin/netbae update >$DATA_DIR/update.log 2>&1'
+EOF
+cat >/etc/systemd/system/netbae-update.path <<EOF
+[Unit]
+Description=Watch for a netBae update request from the dashboard
+
+[Path]
+PathExists=$DATA_DIR/update-request
+
+[Install]
+WantedBy=multi-user.target
+EOF
 systemctl daemon-reload
 systemctl enable netbae >/dev/null 2>&1
+systemctl enable --now netbae-update.path >/dev/null 2>&1 || c_warn "couldn't enable the dashboard's Update button (netbae-update.path)"
 systemctl restart netbae
 
 # Open the firewall if one is active

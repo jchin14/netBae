@@ -11,6 +11,8 @@
 [web]
 host = "0.0.0.0"       # 0.0.0.0 = reachable from other machines on your network
 port = 80             # dashboard at http://<this-machine>/ ; if it's taken, the next free port is used
+update_check = true   # check GitHub for new releases (every 6 hours) and show an Update button on the dashboard
+auto_update = "weekly"  # install new releases automatically at 3:30 am: "weekly" (at most once a week), "daily" or "off"
 chart_band = "none"   # spread band on the latency charts by default: "none", "p5-p95" or "min-max"
                       # (each browser remembers its own choice; drawn with 12 or fewer lines)
 

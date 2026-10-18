@@ -60,6 +60,10 @@ h1 { font-size: 20px; margin: 0; font-weight: 650; display: flex; align-items: c
 h1 .version { font-size: 11px; font-weight: 500; color: var(--muted); text-decoration: none; border: 1px solid var(--border);
   border-radius: 999px; padding: 1px 7px; align-self: center; }
 h1 .version:hover { color: var(--text); border-color: var(--muted); }
+.update-btn { font: inherit; font-size: 11px; font-weight: 600; color: #fff; background: var(--accent); border: none; border-radius: 999px;
+  padding: 2px 9px; cursor: pointer; align-self: center; }
+.update-btn:disabled { opacity: .7; cursor: default; }
+.update-btn[hidden] { display: none; }
 h1 .logo { width: 24px; height: 24px; fill: none; stroke: var(--accent); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .share-now .dot { width: 7px; height: 7px; vertical-align: 1px; }
 .share-now code { font-size: 11px; }

@@ -667,9 +667,9 @@ function renderCdn() {
     if (p == null || q == null) return (p == null) - (q == null);
     return (p - q) * cdnSort.dir;
   }) : d.servers;
-  const th = (key, label, left) => {
+  const th = (key, label, left, tip) => {
     const on = cdnSort?.key === key;
-    return `<th class="sortable${on ? ' sorted' : ''}${key === 'score' ? ' avg' : ''}" data-sort="${esc(key)}"${left ? ' style="text-align:left"' : ''} title="Sort by ${esc(label)}">`
+    return `<th class="sortable${on ? ' sorted' : ''}${key === 'score' ? ' avg' : ''}" data-sort="${esc(key)}"${left ? ' style="text-align:left"' : ''} title="${esc(tip || 'Ping to the servers this DNS server gave for ' + label)}. Click to sort">`
       + `${esc(label)}${on ? (cdnSort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
   };
   const cell = (x, h) => {
@@ -686,7 +686,9 @@ function renderCdn() {
   };
   $('#cdn-table').innerHTML = `
     <thead><tr><th>#</th><th style="text-align:left">DNS server</th>${d.hostnames.map((h) => th('h:' + h, h, true)).join('')}
-      ${th('score', 'Avg ms')}${th('avg7d', '7-day avg')}${th('dns', 'DNS ms')}</tr></thead>
+      ${th('score', 'CDN ping', false, 'Average ping to the CDN servers this DNS server sent you to (what the ranking uses)')}
+      ${th('avg7d', 'CDN ping, 7 days', false, 'The same average over the last 7 days')}
+      ${th('dns', 'DNS lookup', false, 'How long this DNS server took to answer the lookups')}</tr></thead>
     <tbody>${rows.map((x) => `<tr><td>${x.score == null ? '' : d.servers.indexOf(x) + 1}</td>
       <td style="text-align:left"><b>${esc(x.name)}</b>${x.family === 6 ? ' <span class="muted">v6</span>' : ''}<div class="muted small">${esc(x.host)}</div></td>
       ${d.hostnames.map((h) => cell(x, h)).join('')}
@@ -1204,6 +1206,51 @@ function systemPanel() {
 }
 
 // ------------------------------------------------------------------ boot
+// Update button (private dashboard only): shown when GitHub has a newer release. Pressing it asks the system's
+// update job to run `netbae update`; the page reloads itself once the new version is serving.
+function setupUpdateButton() {
+  const u = CONFIG.update, b = $('#update-btn');
+  if (!u || CONFIG.public) return;
+  if (!u.available) {  // up to date: a tick on the version pill, and when it was last checked
+    if (u.latest) {
+      $('#version').textContent = `v${CONFIG.version} ✓`;
+      $('#version').title = `Up to date: ${u.latest} is the latest release (checked ${fmtAgo(u.checked)}). Click for what's new.`;
+    }
+    return;
+  }
+  b.hidden = false;
+  if (u.method !== 'button') {
+    b.textContent = `v${u.latest} available`;
+    b.title = u.method === 'docker' ? 'Update with: docker compose pull && docker compose up -d' : 'Update with: netbae update';
+    b.addEventListener('click', () => window.open(u.url, '_blank', 'noopener'));
+    return;
+  }
+  b.textContent = `Update to v${u.latest}`;
+  b.title = `Install netBae ${u.latest} now (your config and history are kept). Click the version for what's new.`
+    + (u.auto !== 'off' ? ` It also updates itself automatically (${u.auto}, at 3:30 am).` : '');
+  const wait = () => {
+    b.disabled = true; b.textContent = 'Updating…';
+    const until = Date.now() + 10 * 60000;
+    const poll = setInterval(async () => {
+      try {
+        const c = await fetch('api/config', { cache: 'no-store' }).then((r) => r.json());
+        if (c.version !== CONFIG.version) { clearInterval(poll); location.reload(); return; }
+      } catch { /* restarting */ }
+      if (Date.now() > until) {
+        clearInterval(poll);
+        const s = await api('update').catch(() => ({ log: [] }));
+        b.disabled = false; b.textContent = "Update didn't finish";
+        b.title = (s.log || []).join('\n') || 'See update.log in the netBae data folder';
+      }
+    }, 5000);
+  };
+  b.addEventListener('click', async () => {
+    const r = await fetch('api/update/run', { method: 'POST' }).then((x) => x.json()).catch(() => ({}));
+    if (r.started) wait(); else { b.textContent = 'Update failed'; b.title = r.reason || ''; }
+  });
+  if (u.requested) wait();  // already running (e.g. the page was reloaded during an update)
+}
+
 // header note when any chart is showing past data rather than live
 function updatePastBadge() {
   const past = panels.filter((p) => p.isLive() === false).length;
@@ -1345,6 +1392,7 @@ async function main() {
   if (CONFIG.repo) $('#repo-link').href = CONFIG.repo;
   $('#version').textContent = `v${CONFIG.version}`;
   $('#version').href = CONFIG.repo ? `${CONFIG.repo}/releases/tag/v${CONFIG.version}` : '#';
+  setupUpdateButton();
   $('#docker-note').hidden = !CONFIG.docker_bridge || !!CONFIG.public;
   $('#public-badge').hidden = !CONFIG.public;
   $('#footer').innerHTML = `<a href="${esc(CONFIG.repo || '#')}" target="_blank" rel="noopener">netBae ${esc(CONFIG.version)}</a> by `

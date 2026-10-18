@@ -312,6 +312,23 @@ function Install-NetBae {
             -Description 'netBae internet connection monitor (https://github.com/jchin14/netBae)' -Force | Out-Null
         Start-ScheduledTask -TaskName $TaskName
 
+        # The dashboard's Update button: a SYSTEM task that runs `netbae update`, which netBae's own account
+        # (LOCAL SERVICE) is allowed to start but not change. The service itself never gets admin rights.
+        $upArgs = "-NoProfile -ExecutionPolicy RemoteSigned -Command `"& '$AppDir\bin\netbae.ps1' update *>&1 | Out-File -Encoding utf8 '$DataDir\update.log'`""
+        $upAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $upArgs -WorkingDirectory $DataDir
+        $upPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        $upSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -MultipleInstances IgnoreNew
+        Register-ScheduledTask -TaskName 'netBae update' -Action $upAction -Principal $upPrincipal -Settings $upSettings `
+            -Description "Updates netBae when you press Update on its dashboard" -Force | Out-Null
+        try {
+            $ts = New-Object -ComObject Schedule.Service
+            $ts.Connect()
+            $t = $ts.GetFolder('\').GetTask('netBae update')
+            $sddl = $t.GetSecurityDescriptor(4)   # the access list
+            if ($sddl -notlike '*;;;LS)*') { $t.SetSecurityDescriptor($sddl + '(A;;GRGX;;;LS)', 0) }  # LOCAL SERVICE: read + run
+        } catch { Warn "The dashboard's Update button won't work: couldn't let netBae start its update task ($_)" }
+
         # Windows Firewall: allow the dashboard from the local network only.
         Remove-NetFirewallRule -Name $FirewallRule -ErrorAction SilentlyContinue
         New-NetFirewallRule -Name $FirewallRule -DisplayName "netBae dashboard (TCP $Port)" -Direction Inbound -Action Allow `

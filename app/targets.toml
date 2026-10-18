@@ -1,7 +1,10 @@
-# netBae's built-in ping targets.
+# ======================================================================================================
+#  DON'T EDIT THIS FILE: it's replaced on every update, so any changes here will be lost.
+#  Change your hosts in config.toml instead (run `netbae config` to open it), under [ping].
+# ======================================================================================================
 #
-# This file is replaced on every update, so new default targets arrive by themselves: don't edit it.
-# To change the list, use [ping] in your config.toml instead:
+# netBae's built-in ping targets. Being replaced on update is how new default targets arrive by themselves.
+# To change the list, use [ping] in your config.toml:
 #   extra_targets = [ ... ]   your own hosts (one with the same host as a target here replaces it)
 #   disable = [ ... ]         built-in targets to switch off, by name or group, e.g. ["Streaming AU"]
 #

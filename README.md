@@ -181,7 +181,7 @@ Images: `ghcr.io/jchin14/netbae` for amd64, arm64 (Pi 3/4/5 on 64-bit) and arm/v
 
 ## Everyday use
 
-The `netbae` command does everything day to day; the full list is in the [TL;DR](#tldr) and `netbae help`. On Windows it works in cmd and PowerShell, and commands that change something (update, restart, config, tunnel, uninstall) ask for admin rights. Updates never overwrite your config.
+The `netbae` command does everything day to day; the full list is in the [TL;DR](#tldr) and `netbae help`. On Windows it works in cmd and PowerShell, and commands that change something (update, restart, config, tunnel, uninstall) ask for admin rights. Updates never overwrite your config. When a new version is out, the private dashboard shows an **Update to vX** button in the header: it runs the same update as `netbae update` and reloads the page once the new version is running. The dashboard itself has no admin rights; the button asks a small system job the installer sets up (a systemd path unit on Linux, a launchd job on a Mac, a SYSTEM scheduled task on Windows), which only runs the official update. netBae also updates itself automatically, at most once a week at 3:30 am when a new release is out (`[web] auto_update`). In Docker the header shows the new version with the `docker compose pull` command instead.
 
 The ping chart draws one line per category (the average of its hosts) and the DNS chart one line per resolver (IPv4 and IPv6 together); click a row in the table under a chart to expand it into its hosts or addresses. On the dashboard, each chart's time menu has the last 15 minutes to a year, **A day…** (pick a date, then step with ◀ ▶) and a custom range. A badge shows whether a chart is **Live** or showing past data, and the header says when any chart isn't live. Once your connection has been on more than one ISP, the ping and DNS charts get an **ISP** selector that keeps only the times you were on that ISP, so you can compare providers.
 
@@ -221,6 +221,8 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | Option | Default | |
 |---|---|---|
 | `[web] host` | `"0.0.0.0"` | `0.0.0.0` = reachable from your network; `"::"` for IPv6 too |
+| `[web] update_check` | `true` | check GitHub for a newer release every 6 hours and show an **Update** button in the dashboard's header |
+| `[web] auto_update` | `"weekly"` | install new releases automatically at 3:30 am local time: `"weekly"` (at most once a week), `"daily"` or `"off"`. Not in Docker |
 | `[web] chart_band` | `"none"` | the latency charts' spread band by default: `"none"`, `"p5-p95"` or `"min-max"`. Each browser remembers its own choice, and the band is drawn when 12 or fewer lines are showing |
 | `[web] port` | `80` | if it's taken when netBae starts, the next free port is used and the log says which |
 | `[storage] database` | `/var/lib/netbae/netbae.db` | the history database |
@@ -304,7 +306,7 @@ extra_targets = [
 disable = ["Streaming AU", "China cloud & CDN"]
 ```
 
-Configs from before 1.8 list every target under `[ping] targets`, which replaces the built-in list. netBae keeps using it (and says so in the log). To switch over, delete `targets = [ ... ]` from your config and move anything you added yourself into `extra_targets`.
+Configs from before 1.8 list every target under `[ping] targets`. When that list is one netBae shipped (whichever version you started on, with or without your changes), netBae switches to today's built-in list by itself, so new targets keep arriving: hosts you added, and defaults you renamed or regrouped, are kept as if they were in `extra_targets`, and defaults you deleted stay off as if they were in `disable`. Your config file isn't changed; the log says what was carried over and how to make it permanent. A list that's mostly your own hosts is used exactly as written.
 
 ### Game servers
 

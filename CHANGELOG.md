@@ -15,6 +15,17 @@ The main steps so far, with the full details per version below.
 | 1.6 | Read-only public dashboard and `netbae tunnel` (Cloudflare, Tailscale), security hardening |
 | 1.8 - 1.9 | IPv6 pings and routes, built-in targets in their own file, a database about 40% smaller |
 | 1.10 - 1.14 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs, route change history, charts grouped by category |
+| 1.15 | An Update button on the dashboard and weekly automatic updates |
+
+## 1.15.0 - 2026-10-18
+
+One-click and automatic updates.
+
+- **Update button:** when a new release is out, the private dashboard's header shows "Update to vX". It runs the same update as `netbae update` (config and history kept) and reloads the page when the new version is running. The dashboard never gets admin rights: it asks a small system job set up by the installer (systemd on Linux, launchd on a Mac, a SYSTEM scheduled task on Windows) that only runs the official update. Docker installs show the new version and the `docker compose pull` command. Turn the release check off with `[web] update_check = false`.
+- **Automatic updates:** netBae installs new releases by itself, at most once a week at 3:30 am local time, using the same path as the Update button. Set `[web] auto_update` to `"daily"` or `"off"` to change that. Docker installs don't update themselves.
+- When netBae is up to date, the version in the header shows a ✓, and hovering it says when it last checked for a newer release.
+- `targets.toml` (the built-in host list) starts with a clear warning not to edit it, since updates replace it, and to use `netbae config` instead.
+- DNS and CDN: clearer column names. "Avg ms" is now **CDN ping** (the average ping to the servers a DNS server sent you to, which the ranking uses), "7-day avg" is **CDN ping, 7 days**, and "DNS ms" is **DNS lookup** (how long the DNS server took to answer), with an explanation under the heading and on hover.
 
 ## 1.14.0 - 2026-10-18
 

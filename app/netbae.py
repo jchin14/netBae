@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.14.0"
+VERSION = "1.15.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -100,7 +100,7 @@ def load_builtin_targets(path=TARGETS_FILE):
 BUILTIN_TARGETS = load_builtin_targets()
 
 DEFAULT_CONFIG = {
-    "web": {"host": "0.0.0.0", "port": 80, "chart_band": "none"},
+    "web": {"host": "0.0.0.0", "port": 80, "chart_band": "none", "update_check": True, "auto_update": "weekly"},
     # optional read-only copy of the dashboard for sharing (e.g. through a Cloudflare Tunnel)
     "public": {"enabled": False, "host": "0.0.0.0", "port": 8080,
                "requests_per_minute": 120, "total_requests_per_minute": 1200, "hide": [],
@@ -517,6 +517,46 @@ def find_speedtest(binary):
     return "speedtest"
 
 
+OLD_TARGETS_FILE = os.path.join(HERE, "old_targets.json")  # the lists config.toml shipped before 1.8
+
+
+def target_key(t, full=True):
+    """What identifies a ping target entry: host, method and port, plus (full) its name and group."""
+    t = {"host": t} if isinstance(t, str) else t
+    host = str(t.get("host", "")).strip().lower()
+    method = str(t.get("method", "icmp")).lower()
+    port = int(t.get("port", 443)) if method == "tcp" else None
+    if not full:
+        return (host, method, port)
+    group = t.get("group") or ("Gaming" if host.partition(":")[0] in GAME_PROVIDERS else "Other")
+    return (host, method, port, str(t.get("name") or ""), str(group))
+
+
+def migrate_old_targets(user_targets, builtin=None):
+    """Configs from before 1.8 hold a full copy of the built-in list, which would hide every target added
+    since. If the list is one netBae shipped (with changes), return (extra_targets, disable) that keep those
+    changes on top of today's built-in list: your own hosts (and defaults you renamed or regrouped) become
+    extra_targets, and defaults you deleted are disabled. None if it isn't based on a shipped list."""
+    try:
+        with open(OLD_TARGETS_FILE, encoding="utf-8") as f:
+            lists = json.load(f)["lists"]
+    except (OSError, ValueError, KeyError):
+        return None
+    entries = [t for t in user_targets or [] if isinstance(t, (str, dict)) and (isinstance(t, str) or t.get("host"))]
+    shipped = {target_key(t) for lst in lists for t in lst["targets"]}
+    mine = {target_key(t) for t in entries} & shipped
+    if len(entries) < 5 or len(mine) < 0.6 * len(entries):
+        return None  # mostly your own hosts: a list of your own, kept as it is
+    extras = [t for t in entries if target_key(t) not in shipped]
+    # the list you started from: the one sharing the most entries (then the shortest, to disable the least)
+    base = max(lists, key=lambda lst: (len(mine & {target_key(t) for t in lst["targets"]}), -len(lst["targets"])))
+    have = {target_key(t, False) for t in entries}
+    names = {target_key(t, False): (t.get("name") if isinstance(t, dict) else None) or target_key(t, False)[0]
+             for t in (BUILTIN_TARGETS if builtin is None else builtin)}
+    disable = sorted({names[k] for k in (target_key(t, False) for t in base["targets"]) if k not in have and k in names})
+    return extras, disable
+
+
 def merge_targets(ping):
     """(raw, normalized) ping targets: the built-in or listed targets, minus [ping] disable (names or groups),
     plus [ping] extra_targets (one with the same host, method and port replaces the built-in one)."""
@@ -548,8 +588,21 @@ def load_config(path):
         with open(path, "rb") as f:
             user = tomllib.load(f)
         if "targets" in (user.get("ping") or {}):  # a full list of its own (configs from before 1.8 have one)
-            log.info("config.toml has its own [ping] targets, so the built-in list in targets.toml isn't used. Delete "
-                     "targets to get the built-in list (updated with netBae) and put your own hosts in extra_targets.")
+            ping = user["ping"]
+            moved = migrate_old_targets(ping["targets"])
+            if moved:
+                extras, disable = moved
+                user["ping"] = dict(ping, extra_targets=list(ping.get("extra_targets") or []) + extras,
+                                    disable=sorted(set(ping.get("disable") or []) | set(disable)))
+                del user["ping"]["targets"]
+                log.info("config.toml has the target list from an older netBae: using today's built-in list instead, "
+                         "plus %d of your own target%s (as extra_targets) and %d you removed (as disable). To make this "
+                         "permanent, replace targets = [...] with: extra_targets = [those hosts], disable = %s",
+                         len(extras), "" if len(extras) == 1 else "s", len(disable), json.dumps(disable))
+            else:
+                log.info("config.toml has its own [ping] targets, so the built-in list in targets.toml isn't used. "
+                         "Delete targets to get the built-in list (updated with netBae) and put your own hosts in "
+                         "extra_targets.")
         for section, values in user.items():
             if isinstance(values, dict):
                 cfg.setdefault(section, {}).update(values)
@@ -608,6 +661,8 @@ def load_config(path):
     ids = [t["id"] for t in cfg["ping"]["targets"]]
     if len(ids) != len(set(ids)):
         raise SystemExit("duplicate ping targets in config")
+    if str(cfg["web"]["auto_update"]).lower() not in ("weekly", "daily", "off"):
+        raise SystemExit('[web] auto_update must be "weekly", "daily" or "off"')
     if int(cfg["speedtest"]["global_every"] or 0) < 0:
         raise SystemExit("[speedtest] global_every must be 0 (off) or more")
     for sec, key in (("ping", "interval_seconds"), ("ping", "region_interval_seconds"), ("dns", "interval_seconds"),
@@ -2237,6 +2292,8 @@ class Monitor:
         self.ipv6 = (0, None)  # (checked_at, available)
         self.addr_cache = {}   # (host, 4|6) -> (checked_at, address or None)
         self.cdn_lock = threading.Lock()
+        self.update_info, self.update_started = None, 0.0
+        self.update_method = update_method()
         self.started = time.time()
         self.config_path = None
         # public dashboard sharing, shown on the private dashboard
@@ -2278,6 +2335,10 @@ class Monitor:
             t = threading.Timer(60, self.collect_cdn)  # a first result soon after starting
             t.daemon = True
             t.start()
+        if c["web"]["update_check"]:
+            run_aligned("update-check", 6 * 3600, 600, lambda: check_latest_release(self))
+            self.pool.submit(check_latest_release, self)
+            run_aligned("auto-update", 86400, 3.5 * 3600, lambda: auto_update(self))  # 03:30 local time
         run_aligned("rollup", 60, 10, self.rollup_all)
         run_aligned("cleanup", 3600, 1800, self.cleanup)
         self.pool.submit(self.collect_system)
@@ -2961,6 +3022,7 @@ def api_config(m, q):
         "version": VERSION,
         "repo": REPO_URL,
         "chart_band": c["web"]["chart_band"],
+        "update": update_summary(m),
         # every ISP the main connection has been on, for filtering the latency charts by ISP
         "isp_history": [{"isp": i, "first": a, "last": b} for i, a, b in m.db.query(
             "SELECT isp, MIN(ts), MAX(ts) FROM isp WHERE connection = ? AND isp IS NOT NULL GROUP BY isp ORDER BY MAX(ts) DESC",
@@ -3173,6 +3235,101 @@ def api_cdn(m, q):
                                   "cities": route_cities(detailed),
                                   "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
     return out
+
+
+# --------------------------------------------------------------------------- updates
+# The dashboard's Update button never runs the installer itself (the service has no admin rights). It asks
+# for an update, and a separate system job installed by the installer runs `netbae update`:
+#   Linux: netbae-update.path (systemd) starts netbae-update.service when <data>/update-request appears
+#   macOS: launchd job com.github.netbae.update watches <data>/update-request
+#   Windows: the SYSTEM scheduled task "netBae update", which the service account may start
+UPDATE_TASK = "netBae update"
+
+
+def version_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v or "")[:3]) or (0,)
+
+
+def update_method():
+    """How this install can update itself from the dashboard: "button", "docker" or "manual"."""
+    if os.environ.get("NETBAE_DOCKER"):
+        return "docker"
+    if IS_WINDOWS:
+        r = run_cmd(["schtasks", "/Query", "/TN", UPDATE_TASK])
+        return "button" if r else "manual"
+    if IS_MAC:
+        return "button" if os.path.exists("/Library/LaunchDaemons/com.github.netbae.update.plist") else "manual"
+    return "button" if os.path.exists("/etc/systemd/system/netbae-update.path") else "manual"
+
+
+def check_latest_release(m):
+    """The newest published release on GitHub (checked every 6 hours)."""
+    slug = REPO_URL.split("github.com/")[-1]
+    try:
+        d = http_json(f"https://api.github.com/repos/{slug}/releases/latest", timeout=15)
+        m.update_info = {"latest": str(d.get("tag_name", "")).lstrip("v"), "url": d.get("html_url"),
+                         "checked": time.time(), "error": None}
+    except Exception as e:
+        m.update_info = dict(m.update_info or {}, checked=time.time(), error=str(e)[:200])
+
+
+def update_summary(m):
+    u = m.update_info or {}
+    latest = u.get("latest")
+    data = os.path.dirname(os.path.abspath(m.db.path))
+    return {"current": VERSION, "latest": latest, "url": u.get("url"), "checked": u.get("checked"),
+            "available": bool(latest) and version_tuple(latest) > version_tuple(VERSION),
+            "method": m.update_method, "auto": str(m.cfg["web"]["auto_update"]).lower() if m.update_method == "button" else "off",
+            "requested": os.path.exists(os.path.join(data, "update-request")) or time.time() - m.update_started < 600}
+
+
+def api_update_status(m, q):
+    """Whether an update was asked for, and the end of the update log."""
+    log_file = os.path.join(os.path.dirname(os.path.abspath(m.db.path)), "update.log")
+    tail = (read_file(log_file) or "").splitlines()[-15:]
+    return dict(update_summary(m), log=tail)
+
+
+def api_run_update(m, q):
+    if m.update_method != "button":
+        return {"started": False, "reason": "this install can't update itself from the dashboard (see netbae update)"}
+    data = os.path.dirname(os.path.abspath(m.db.path))
+    try:
+        if IS_WINDOWS:
+            r = subprocess.run(["schtasks", "/Run", "/TN", UPDATE_TASK], capture_output=True, text=True, timeout=20,
+                               **SUBPROCESS_FLAGS)
+            if r.returncode:
+                return {"started": False, "reason": (r.stderr or r.stdout or "couldn't start the update task").strip()[:200]}
+        else:
+            with open(os.path.join(data, "update-request"), "w") as f:
+                f.write(f"{time.time()}\n")
+    except OSError as e:
+        return {"started": False, "reason": str(e)[:200]}
+    m.update_started = time.time()
+    log.info("update requested from the dashboard (now %s, latest %s)", VERSION, (m.update_info or {}).get("latest"))
+    return {"started": True}
+
+
+def auto_update(m):
+    """Runs daily at 03:30 local time: installs a newer release if [web] auto_update allows it today
+    ("daily", or "weekly" = at most once every 7 days). Same path as the dashboard's Update button."""
+    mode = str(m.cfg["web"]["auto_update"]).lower()
+    if mode == "off" or m.update_method != "button":
+        return
+    check_latest_release(m)
+    if not update_summary(m)["available"]:
+        return
+    stamp = os.path.join(os.path.dirname(os.path.abspath(m.db.path)), "auto-update-last")
+    try:
+        last = float(read_file(stamp) or 0)
+    except ValueError:
+        last = 0
+    if mode == "weekly" and time.time() - last < 6.5 * 86400:
+        return
+    with open(stamp, "w") as f:
+        f.write(f"{time.time()}\n")
+    log.info("automatic update (%s): %s -> %s", mode, VERSION, m.update_info.get("latest"))
+    api_run_update(m, {})
 
 
 def api_run_cdn(m, q):
@@ -3626,8 +3783,8 @@ GET_ROUTES = {
     "/api/system/history": api_system_history, "/api/summary": api_summary, "/api/isp": api_isp,
     "/api/traceroute": api_traceroute, "/api/cdn": api_cdn,
 }
-POST_ROUTES = {"/api/speedtest/run": api_run_speedtest, "/api/cdn/run": api_run_cdn}
-PRIVATE_ROUTES = dict(GET_ROUTES, **{"/api/sharing": api_sharing})  # not on the public dashboard
+POST_ROUTES = {"/api/speedtest/run": api_run_speedtest, "/api/cdn/run": api_run_cdn, "/api/update/run": api_run_update}
+PRIVATE_ROUTES = dict(GET_ROUTES, **{"/api/sharing": api_sharing, "/api/update": api_update_status})  # not public
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
                  ".json": "application/json", ".ico": "image/x-icon"}
@@ -3720,6 +3877,7 @@ def make_handler(monitor, public=False):
                 if public:
                     if u.path == "/api/config":
                         out = dict(out, public=True)
+                        out.pop("update", None)  # updating is only for the private dashboard
                     out = mask.apply(out)
                 self.send_json(out)
             except (BrokenPipeError, ConnectionResetError):

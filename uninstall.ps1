@@ -47,6 +47,9 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
+if (Get-ScheduledTask -TaskName 'netBae update' -ErrorAction SilentlyContinue) {  # the dashboard's Update button
+    Unregister-ScheduledTask -TaskName 'netBae update' -Confirm:$false
+}
 Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -like "*$AppDir\netbae.py*" } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }

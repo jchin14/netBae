@@ -15,6 +15,8 @@ if [[ $(uname -s) == Darwin ]]; then
   LABEL=com.github.netbae
   launchctl bootout "system/$LABEL" 2>/dev/null || true
   launchctl bootout "system/$LABEL.tunnel" 2>/dev/null || true  # netbae tunnel (Cloudflare)
+  launchctl bootout "system/$LABEL.update" 2>/dev/null || true  # the dashboard's Update button
+  rm -f "/Library/LaunchDaemons/$LABEL.update.plist"
   rm -f "/Library/LaunchDaemons/$LABEL.tunnel.plist"
   pkill -f /usr/local/lib/netbae/netbae.py 2>/dev/null || true  # also any copy started by hand
   rm -f "/Library/LaunchDaemons/$LABEL.plist" /etc/newsyslog.d/netbae.conf
@@ -35,6 +37,8 @@ fi
 
 systemctl disable --now netbae 2>/dev/null || true
 systemctl disable --now netbae-tunnel 2>/dev/null || true  # netbae tunnel (Cloudflare)
+systemctl disable --now netbae-update.path 2>/dev/null || true  # the dashboard's Update button
+rm -f /etc/systemd/system/netbae-update.path /etc/systemd/system/netbae-update.service
 rm -f /etc/systemd/system/netbae-tunnel.service
 pkill -f /opt/netbae/netbae.py 2>/dev/null || true  # also any copy started by hand
 rm -f /etc/systemd/system/netbae.service

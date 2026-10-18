@@ -1,0 +1,1356 @@
+{
+ "note": "Built-in ping target lists shipped in config.toml before 1.8 (see scripts/old-default-targets.py)",
+ "lists": [
+  {
+   "commit": "daaee4a",
+   "date": "2026-10-15",
+   "targets": [
+    {
+     "name": "Router",
+     "host": "gateway"
+    },
+    {
+     "name": "Cloudflare",
+     "host": "1.1.1.1"
+    },
+    {
+     "name": "Google DNS",
+     "host": "8.8.8.8"
+    },
+    {
+     "name": "Quad9",
+     "host": "9.9.9.9"
+    },
+    {
+     "name": "Microsoft",
+     "host": "microsoft.com"
+    },
+    {
+     "name": "Facebook",
+     "host": "facebook.com"
+    }
+   ]
+  },
+  {
+   "commit": "3d0f8e4",
+   "date": "2026-10-15",
+   "targets": [
+    {
+     "name": "Router",
+     "host": "gateway",
+     "group": "Network"
+    },
+    {
+     "name": "Cloudflare DNS",
+     "host": "1.1.1.1",
+     "group": "DNS"
+    },
+    {
+     "name": "Google DNS",
+     "host": "8.8.8.8",
+     "group": "DNS"
+    },
+    {
+     "name": "Quad9",
+     "host": "9.9.9.9",
+     "group": "DNS"
+    },
+    {
+     "name": "Google",
+     "host": "google.com",
+     "group": "Google"
+    },
+    {
+     "name": "YouTube",
+     "host": "youtube.com",
+     "group": "Google"
+    },
+    {
+     "name": "Netflix",
+     "host": "www.netflix.com",
+     "group": "Streaming"
+    },
+    {
+     "name": "Twitch",
+     "host": "twitch.tv",
+     "group": "Streaming"
+    },
+    {
+     "name": "Steam",
+     "host": "steampowered.com",
+     "group": "Gaming"
+    },
+    {
+     "name": "Discord",
+     "host": "discord.com",
+     "group": "Gaming"
+    },
+    {
+     "name": "Facebook",
+     "host": "facebook.com",
+     "group": "Social"
+    },
+    {
+     "name": "Reddit",
+     "host": "reddit.com",
+     "group": "Social"
+    },
+    {
+     "name": "Microsoft",
+     "host": "microsoft.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Apple",
+     "host": "apple.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "AWS",
+     "host": "aws.amazon.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "GitHub",
+     "host": "github.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Akamai",
+     "host": "akamai.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Fastly",
+     "host": "fastly.com",
+     "group": "CDN"
+    }
+   ]
+  },
+  {
+   "commit": "dcc65b6",
+   "date": "2026-10-15",
+   "targets": [
+    {
+     "name": "Router",
+     "host": "gateway",
+     "group": "Network"
+    },
+    {
+     "name": "Cloudflare DNS",
+     "host": "1.1.1.1",
+     "group": "DNS"
+    },
+    {
+     "name": "Google DNS",
+     "host": "8.8.8.8",
+     "group": "DNS"
+    },
+    {
+     "name": "Quad9",
+     "host": "9.9.9.9",
+     "group": "DNS"
+    },
+    {
+     "name": "Google",
+     "host": "google.com",
+     "group": "Google"
+    },
+    {
+     "name": "YouTube",
+     "host": "youtube.com",
+     "group": "Google"
+    },
+    {
+     "name": "Netflix",
+     "host": "www.netflix.com",
+     "group": "Streaming"
+    },
+    {
+     "name": "Twitch",
+     "host": "twitch.tv",
+     "group": "Streaming"
+    },
+    {
+     "name": "Steam & CS2",
+     "host": "valve:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Fortnite",
+     "host": "epic:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Discord voice",
+     "host": "discord:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Facebook",
+     "host": "facebook.com",
+     "group": "Social"
+    },
+    {
+     "name": "Reddit",
+     "host": "reddit.com",
+     "group": "Social"
+    },
+    {
+     "name": "Microsoft",
+     "host": "microsoft.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Apple",
+     "host": "apple.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "AWS",
+     "host": "aws.amazon.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "GitHub",
+     "host": "github.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Akamai",
+     "host": "akamai.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Fastly",
+     "host": "fastly.com",
+     "group": "CDN"
+    }
+   ]
+  },
+  {
+   "commit": "fec667f",
+   "date": "2026-10-16",
+   "targets": [
+    {
+     "name": "Router",
+     "host": "gateway",
+     "group": "Network"
+    },
+    {
+     "name": "Cloudflare DNS",
+     "host": "1.1.1.1",
+     "group": "DNS"
+    },
+    {
+     "name": "Google DNS",
+     "host": "8.8.8.8",
+     "group": "DNS"
+    },
+    {
+     "name": "Quad9",
+     "host": "9.9.9.9",
+     "group": "DNS"
+    },
+    {
+     "name": "OpenDNS",
+     "host": "208.67.222.222",
+     "group": "DNS"
+    },
+    {
+     "name": "CleanBrowsing",
+     "host": "185.228.168.9",
+     "group": "DNS"
+    },
+    {
+     "name": "AdGuard DNS",
+     "host": "94.140.14.14",
+     "group": "DNS"
+    },
+    {
+     "name": "NextDNS",
+     "host": "45.90.28.0",
+     "group": "DNS"
+    },
+    {
+     "name": "Control D",
+     "host": "76.76.2.0",
+     "group": "DNS"
+    },
+    {
+     "name": "Google",
+     "host": "google.com",
+     "group": "Google"
+    },
+    {
+     "name": "YouTube",
+     "host": "youtube.com",
+     "group": "Google"
+    },
+    {
+     "name": "Netflix",
+     "host": "www.netflix.com",
+     "group": "Streaming"
+    },
+    {
+     "name": "Twitch",
+     "host": "twitch.tv",
+     "group": "Streaming"
+    },
+    {
+     "name": "Steam & CS2",
+     "host": "valve:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Fortnite",
+     "host": "epic:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Discord voice",
+     "host": "discord:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Facebook",
+     "host": "facebook.com",
+     "group": "Social"
+    },
+    {
+     "name": "Reddit",
+     "host": "reddit.com",
+     "group": "Social"
+    },
+    {
+     "name": "Microsoft",
+     "host": "microsoft.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Apple",
+     "host": "apple.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "AWS",
+     "host": "aws.amazon.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "GitHub",
+     "host": "github.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Akamai",
+     "host": "akamai.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Fastly",
+     "host": "fastly.com",
+     "group": "CDN"
+    }
+   ]
+  },
+  {
+   "commit": "908e9ab",
+   "date": "2026-10-16",
+   "targets": [
+    {
+     "name": "Router",
+     "host": "gateway",
+     "group": "Network"
+    },
+    {
+     "name": "Cloudflare DNS",
+     "host": "1.1.1.1",
+     "group": "DNS"
+    },
+    {
+     "name": "Google DNS",
+     "host": "8.8.8.8",
+     "group": "DNS"
+    },
+    {
+     "name": "Quad9",
+     "host": "9.9.9.9",
+     "group": "DNS"
+    },
+    {
+     "name": "OpenDNS",
+     "host": "208.67.222.222",
+     "group": "DNS"
+    },
+    {
+     "name": "CleanBrowsing",
+     "host": "185.228.168.9",
+     "group": "DNS"
+    },
+    {
+     "name": "AdGuard DNS",
+     "host": "94.140.14.14",
+     "group": "DNS"
+    },
+    {
+     "name": "NextDNS",
+     "host": "45.90.28.0",
+     "group": "DNS"
+    },
+    {
+     "name": "Control D",
+     "host": "76.76.2.0",
+     "group": "DNS"
+    },
+    {
+     "name": "Google",
+     "host": "google.com",
+     "group": "Google"
+    },
+    {
+     "name": "YouTube",
+     "host": "youtube.com",
+     "group": "Google"
+    },
+    {
+     "name": "Netflix",
+     "host": "www.netflix.com",
+     "group": "Streaming"
+    },
+    {
+     "name": "Twitch",
+     "host": "twitch.tv",
+     "group": "Streaming"
+    },
+    {
+     "name": "Steam & CS2",
+     "host": "valve:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Fortnite",
+     "host": "epic:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Discord voice",
+     "host": "discord:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Facebook",
+     "host": "facebook.com",
+     "group": "Social"
+    },
+    {
+     "name": "Reddit",
+     "host": "reddit.com",
+     "group": "Social"
+    },
+    {
+     "name": "X",
+     "host": "x.com",
+     "group": "Social"
+    },
+    {
+     "name": "Microsoft",
+     "host": "microsoft.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Apple",
+     "host": "apple.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "AWS",
+     "host": "aws.amazon.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "GitHub",
+     "host": "github.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Akamai",
+     "host": "akamai.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Fastly",
+     "host": "fastly.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Cloudflare",
+     "host": "www.cloudflare.com",
+     "group": "CDN"
+    },
+    {
+     "name": "CloudFront",
+     "host": "d1.awsstatic.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Azure Front Door",
+     "host": "www.office.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Bunny",
+     "host": "bunny.net",
+     "group": "CDN"
+    },
+    {
+     "name": "Gcore",
+     "host": "gcore.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Eweka",
+     "host": "news.eweka.nl",
+     "group": "Usenet"
+    },
+    {
+     "name": "Highwinds",
+     "host": "news.newshosting.com",
+     "group": "Usenet"
+    }
+   ]
+  },
+  {
+   "commit": "92d2584",
+   "date": "2026-10-16",
+   "targets": [
+    {
+     "name": "Router",
+     "host": "gateway",
+     "group": "Network"
+    },
+    {
+     "name": "Cloudflare DNS",
+     "host": "1.1.1.1",
+     "group": "DNS"
+    },
+    {
+     "name": "Google DNS",
+     "host": "8.8.8.8",
+     "group": "DNS"
+    },
+    {
+     "name": "Quad9",
+     "host": "9.9.9.9",
+     "group": "DNS"
+    },
+    {
+     "name": "OpenDNS",
+     "host": "208.67.222.222",
+     "group": "DNS"
+    },
+    {
+     "name": "CleanBrowsing",
+     "host": "185.228.168.9",
+     "group": "DNS"
+    },
+    {
+     "name": "AdGuard DNS",
+     "host": "94.140.14.14",
+     "group": "DNS"
+    },
+    {
+     "name": "NextDNS",
+     "host": "45.90.28.0",
+     "group": "DNS"
+    },
+    {
+     "name": "Control D",
+     "host": "76.76.2.0",
+     "group": "DNS"
+    },
+    {
+     "name": "Google",
+     "host": "google.com",
+     "group": "Google"
+    },
+    {
+     "name": "YouTube",
+     "host": "youtube.com",
+     "group": "Google"
+    },
+    {
+     "name": "Netflix",
+     "host": "www.netflix.com",
+     "group": "Streaming"
+    },
+    {
+     "name": "Twitch",
+     "host": "twitch.tv",
+     "group": "Streaming"
+    },
+    {
+     "name": "Steam & CS2",
+     "host": "valve:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Fortnite",
+     "host": "epic:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Discord voice",
+     "host": "discord:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Facebook",
+     "host": "facebook.com",
+     "group": "Social"
+    },
+    {
+     "name": "Reddit",
+     "host": "reddit.com",
+     "group": "Social"
+    },
+    {
+     "name": "X",
+     "host": "x.com",
+     "group": "Social"
+    },
+    {
+     "name": "Instagram",
+     "host": "instagram.com",
+     "group": "Social"
+    },
+    {
+     "name": "OpenAI (ChatGPT)",
+     "host": "chatgpt.com",
+     "group": "AI"
+    },
+    {
+     "name": "Anthropic (Claude)",
+     "host": "claude.ai",
+     "group": "AI"
+    },
+    {
+     "name": "Grok",
+     "host": "grok.com",
+     "group": "AI"
+    },
+    {
+     "name": "Microsoft",
+     "host": "microsoft.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Apple",
+     "host": "apple.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "AWS",
+     "host": "aws.amazon.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "GitHub",
+     "host": "github.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Akamai",
+     "host": "akamai.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Fastly",
+     "host": "fastly.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Cloudflare",
+     "host": "www.cloudflare.com",
+     "group": "CDN"
+    },
+    {
+     "name": "CloudFront",
+     "host": "d1.awsstatic.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Azure Front Door",
+     "host": "www.office.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Bunny",
+     "host": "bunny.net",
+     "group": "CDN"
+    },
+    {
+     "name": "Gcore",
+     "host": "gcore.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Omicron (Newshosting)",
+     "host": "news.newshosting.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "Easynews",
+     "host": "news.easynews.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "Giganews",
+     "host": "news.giganews.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "UsenetExpress",
+     "host": "usnews.usenetexpress.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "Frugal Usenet",
+     "host": "news.frugalusenet.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "Eweka",
+     "host": "news.eweka.nl",
+     "group": "Usenet EU"
+    },
+    {
+     "name": "Usenet.Farm",
+     "host": "news.usenet.farm",
+     "group": "Usenet EU"
+    }
+   ]
+  },
+  {
+   "commit": "d547cb1",
+   "date": "2026-10-17",
+   "targets": [
+    {
+     "name": "Router",
+     "host": "gateway",
+     "group": "Network"
+    },
+    {
+     "name": "Cloudflare DNS",
+     "host": "1.1.1.1",
+     "group": "DNS"
+    },
+    {
+     "name": "Google DNS",
+     "host": "8.8.8.8",
+     "group": "DNS"
+    },
+    {
+     "name": "Quad9",
+     "host": "9.9.9.9",
+     "group": "DNS"
+    },
+    {
+     "name": "OpenDNS",
+     "host": "208.67.222.222",
+     "group": "DNS"
+    },
+    {
+     "name": "CleanBrowsing",
+     "host": "185.228.168.9",
+     "group": "DNS"
+    },
+    {
+     "name": "AdGuard DNS",
+     "host": "94.140.14.14",
+     "group": "DNS"
+    },
+    {
+     "name": "NextDNS",
+     "host": "45.90.28.0",
+     "group": "DNS"
+    },
+    {
+     "name": "Control D",
+     "host": "76.76.2.0",
+     "group": "DNS"
+    },
+    {
+     "name": "Google",
+     "host": "google.com",
+     "group": "Google"
+    },
+    {
+     "name": "YouTube",
+     "host": "youtube.com",
+     "group": "Google"
+    },
+    {
+     "name": "Netflix",
+     "host": "www.netflix.com",
+     "group": "Streaming"
+    },
+    {
+     "name": "Twitch",
+     "host": "twitch.tv",
+     "group": "Streaming"
+    },
+    {
+     "name": "Disney+",
+     "host": "www.disneyplus.com",
+     "group": "Streaming"
+    },
+    {
+     "name": "HBO Max",
+     "host": "www.hbomax.com",
+     "group": "Streaming"
+    },
+    {
+     "name": "Stan",
+     "host": "www.stan.com.au",
+     "group": "Streaming AU"
+    },
+    {
+     "name": "ABC iview",
+     "host": "iview.abc.net.au",
+     "group": "Streaming AU"
+    },
+    {
+     "name": "7plus",
+     "host": "7plus.com.au",
+     "group": "Streaming AU"
+    },
+    {
+     "name": "9Now",
+     "host": "www.9now.com.au",
+     "group": "Streaming AU"
+    },
+    {
+     "name": "Foxtel",
+     "host": "www.foxtel.com.au",
+     "group": "Streaming AU"
+    },
+    {
+     "name": "Kayo",
+     "host": "kayosports.com.au",
+     "group": "Streaming AU"
+    },
+    {
+     "name": "Steam & CS2",
+     "host": "valve:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Fortnite",
+     "host": "epic:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Discord voice",
+     "host": "discord:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Facebook",
+     "host": "facebook.com",
+     "group": "Social"
+    },
+    {
+     "name": "Reddit",
+     "host": "reddit.com",
+     "group": "Social"
+    },
+    {
+     "name": "X",
+     "host": "x.com",
+     "group": "Social"
+    },
+    {
+     "name": "Instagram",
+     "host": "instagram.com",
+     "group": "Social"
+    },
+    {
+     "name": "TikTok",
+     "host": "www.tiktok.com",
+     "group": "Social"
+    },
+    {
+     "name": "OpenAI (ChatGPT)",
+     "host": "chatgpt.com",
+     "group": "AI"
+    },
+    {
+     "name": "Anthropic (Claude)",
+     "host": "claude.ai",
+     "group": "AI"
+    },
+    {
+     "name": "Grok",
+     "host": "grok.com",
+     "group": "AI"
+    },
+    {
+     "name": "Microsoft",
+     "host": "microsoft.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Apple",
+     "host": "apple.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "AWS",
+     "host": "aws.amazon.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "GitHub",
+     "host": "github.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Akamai",
+     "host": "akamai.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Fastly",
+     "host": "fastly.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Cloudflare",
+     "host": "www.cloudflare.com",
+     "group": "CDN"
+    },
+    {
+     "name": "CloudFront",
+     "host": "d1.awsstatic.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Azure Front Door",
+     "host": "www.office.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Bunny",
+     "host": "bunny.net",
+     "group": "CDN"
+    },
+    {
+     "name": "Gcore",
+     "host": "gcore.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Alibaba Cloud",
+     "host": "www.alibabacloud.com",
+     "group": "China cloud & CDN"
+    },
+    {
+     "name": "Tencent Cloud",
+     "host": "www.tencentcloud.com",
+     "group": "China cloud & CDN"
+    },
+    {
+     "name": "Huawei Cloud",
+     "host": "www.huaweicloud.com",
+     "group": "China cloud & CDN"
+    },
+    {
+     "name": "Baidu",
+     "host": "www.baidu.com",
+     "group": "China cloud & CDN"
+    },
+    {
+     "name": "ByteDance (BytePlus)",
+     "host": "www.byteplus.com",
+     "group": "China cloud & CDN"
+    },
+    {
+     "name": "CDNetworks (Wangsu)",
+     "host": "www.cdnetworks.com",
+     "group": "China cloud & CDN"
+    },
+    {
+     "name": "Omicron (Newshosting)",
+     "host": "news.newshosting.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "Easynews",
+     "host": "news.easynews.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "Giganews",
+     "host": "news.giganews.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "UsenetExpress",
+     "host": "usnews.usenetexpress.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "Frugal Usenet",
+     "host": "news.frugalusenet.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "Eweka",
+     "host": "news.eweka.nl",
+     "group": "Usenet EU"
+    },
+    {
+     "name": "Usenet.Farm",
+     "host": "news.usenet.farm",
+     "group": "Usenet EU"
+    }
+   ]
+  },
+  {
+   "commit": "820751d",
+   "date": "2026-10-17",
+   "targets": [
+    {
+     "name": "Router",
+     "host": "gateway",
+     "group": "Network"
+    },
+    {
+     "name": "Cloudflare DNS",
+     "host": "1.1.1.1",
+     "group": "DNS"
+    },
+    {
+     "name": "Google DNS",
+     "host": "8.8.8.8",
+     "group": "DNS"
+    },
+    {
+     "name": "Quad9",
+     "host": "9.9.9.9",
+     "group": "DNS"
+    },
+    {
+     "name": "OpenDNS",
+     "host": "208.67.222.222",
+     "group": "DNS"
+    },
+    {
+     "name": "CleanBrowsing",
+     "host": "185.228.168.9",
+     "group": "DNS"
+    },
+    {
+     "name": "AdGuard DNS",
+     "host": "94.140.14.14",
+     "group": "DNS"
+    },
+    {
+     "name": "NextDNS",
+     "host": "45.90.28.0",
+     "group": "DNS"
+    },
+    {
+     "name": "Control D",
+     "host": "76.76.2.0",
+     "group": "DNS"
+    },
+    {
+     "name": "Google",
+     "host": "google.com",
+     "group": "Google"
+    },
+    {
+     "name": "YouTube",
+     "host": "youtube.com",
+     "group": "Google"
+    },
+    {
+     "name": "Netflix",
+     "host": "www.netflix.com",
+     "group": "Streaming"
+    },
+    {
+     "name": "Twitch",
+     "host": "twitch.tv",
+     "group": "Streaming"
+    },
+    {
+     "name": "Disney+",
+     "host": "www.disneyplus.com",
+     "group": "Streaming"
+    },
+    {
+     "name": "HBO Max",
+     "host": "www.hbomax.com",
+     "group": "Streaming"
+    },
+    {
+     "name": "Stan",
+     "host": "www.stan.com.au",
+     "group": "Streaming AU"
+    },
+    {
+     "name": "ABC iview",
+     "host": "iview.abc.net.au",
+     "group": "Streaming AU"
+    },
+    {
+     "name": "7plus",
+     "host": "7plus.com.au",
+     "group": "Streaming AU"
+    },
+    {
+     "name": "9Now",
+     "host": "www.9now.com.au",
+     "group": "Streaming AU"
+    },
+    {
+     "name": "Foxtel",
+     "host": "www.foxtel.com.au",
+     "group": "Streaming AU"
+    },
+    {
+     "name": "Kayo",
+     "host": "kayosports.com.au",
+     "group": "Streaming AU"
+    },
+    {
+     "name": "Steam & CS2",
+     "host": "valve:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Fortnite",
+     "host": "epic:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Discord voice",
+     "host": "discord:auto",
+     "group": "Gaming"
+    },
+    {
+     "name": "Facebook",
+     "host": "facebook.com",
+     "group": "Social"
+    },
+    {
+     "name": "Reddit",
+     "host": "reddit.com",
+     "group": "Social"
+    },
+    {
+     "name": "X",
+     "host": "x.com",
+     "group": "Social"
+    },
+    {
+     "name": "Instagram",
+     "host": "instagram.com",
+     "group": "Social"
+    },
+    {
+     "name": "TikTok",
+     "host": "www.tiktok.com",
+     "group": "Social"
+    },
+    {
+     "name": "OpenAI (ChatGPT)",
+     "host": "chatgpt.com",
+     "group": "AI"
+    },
+    {
+     "name": "Anthropic (Claude)",
+     "host": "claude.ai",
+     "group": "AI"
+    },
+    {
+     "name": "Grok",
+     "host": "grok.com",
+     "group": "AI"
+    },
+    {
+     "name": "Microsoft",
+     "host": "microsoft.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Apple",
+     "host": "apple.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "AWS",
+     "host": "aws.amazon.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "GitHub",
+     "host": "github.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Atlassian",
+     "host": "www.atlassian.com",
+     "group": "Cloud & tech"
+    },
+    {
+     "name": "Akamai",
+     "host": "akamai.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Fastly",
+     "host": "fastly.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Cloudflare",
+     "host": "www.cloudflare.com",
+     "group": "CDN"
+    },
+    {
+     "name": "CloudFront",
+     "host": "d1.awsstatic.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Azure Front Door",
+     "host": "www.office.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Bunny",
+     "host": "bunny.net",
+     "group": "CDN"
+    },
+    {
+     "name": "Gcore",
+     "host": "gcore.com",
+     "group": "CDN"
+    },
+    {
+     "name": "Alibaba Cloud",
+     "host": "www.alibabacloud.com",
+     "group": "China cloud & CDN"
+    },
+    {
+     "name": "Tencent Cloud",
+     "host": "www.tencentcloud.com",
+     "group": "China cloud & CDN"
+    },
+    {
+     "name": "Huawei Cloud",
+     "host": "www.huaweicloud.com",
+     "group": "China cloud & CDN"
+    },
+    {
+     "name": "Baidu",
+     "host": "www.baidu.com",
+     "group": "China cloud & CDN"
+    },
+    {
+     "name": "ByteDance (BytePlus)",
+     "host": "www.byteplus.com",
+     "group": "China cloud & CDN"
+    },
+    {
+     "name": "CDNetworks (Wangsu)",
+     "host": "www.cdnetworks.com",
+     "group": "China cloud & CDN"
+    },
+    {
+     "name": "AWS Sydney",
+     "host": "dynamodb.ap-southeast-2.amazonaws.com",
+     "method": "tcp",
+     "port": 443,
+     "group": "Hosting"
+    },
+    {
+     "name": "Oracle Cloud Sydney",
+     "host": "objectstorage.ap-sydney-1.oraclecloud.com",
+     "method": "tcp",
+     "port": 443,
+     "group": "Hosting"
+    },
+    {
+     "name": "Azure (portal)",
+     "host": "portal.azure.com",
+     "group": "Hosting"
+    },
+    {
+     "name": "OVHcloud Sydney",
+     "host": "speedtest-syd.apac-tools.ovh",
+     "group": "Hosting"
+    },
+    {
+     "name": "Vultr Sydney",
+     "host": "syd-au-ping.vultr.com",
+     "group": "Hosting"
+    },
+    {
+     "name": "DigitalOcean Singapore",
+     "host": "speedtest-sgp1.digitalocean.com",
+     "group": "Hosting"
+    },
+    {
+     "name": "Linode Singapore",
+     "host": "speedtest.singapore.linode.com",
+     "group": "Hosting"
+    },
+    {
+     "name": "Hetzner Falkenstein",
+     "host": "fsn1-speed.hetzner.com",
+     "group": "Hosting"
+    },
+    {
+     "name": "Omicron (Newshosting)",
+     "host": "news.newshosting.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "Easynews",
+     "host": "news.easynews.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "Giganews",
+     "host": "news.giganews.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "UsenetExpress",
+     "host": "usnews.usenetexpress.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "Frugal Usenet",
+     "host": "news.frugalusenet.com",
+     "group": "Usenet US"
+    },
+    {
+     "name": "Eweka",
+     "host": "news.eweka.nl",
+     "group": "Usenet EU"
+    },
+    {
+     "name": "Usenet.Farm",
+     "host": "news.usenet.farm",
+     "group": "Usenet EU"
+    }
+   ]
+  }
+ ]
+}
