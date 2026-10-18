@@ -14,7 +14,17 @@ The main steps so far, with the full details per version below.
 | 1.5 | Docker image for x86 and Raspberry Pi, manual speedtests, installer tests on four Linux distros |
 | 1.6 | Read-only public dashboard and `netbae tunnel` (Cloudflare, Tailscale), security hardening |
 | 1.8 - 1.9 | IPv6 pings and routes, built-in targets in their own file, a database about 40% smaller |
-| 1.10 - 1.12 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs |
+| 1.10 - 1.13 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs, route change history |
+
+## 1.13.0 - 2026-10-18
+
+Routes record only changes, consistent host colours, and test results in every release.
+
+- **Routes only record changes:** when a trace finds the same route as last time, netBae updates that route's last-seen time and hop timings instead of storing it again, and remembers when the route was first seen. Route details list the route changes with their time spans. Existing repeated entries are merged once on the first start after updating.
+- Each host's colour is a square everywhere (tiles, chart toggles and tables), slightly larger on the host tiles, so it's easy to tell apart from the round status dots.
+- Route details: "Spotted an issue? Open a GitHub issue."
+- Release notes have a CI table: the platforms each release was tested on (Debian 12 and 13, Ubuntu 24.04, Fedora, macOS, Windows, Docker) with the results, and VirusTotal scan results for the release files.
+- README: the detail sections all start collapsed.
 
 ## 1.12.1 - 2026-10-18
 

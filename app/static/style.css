@@ -123,7 +123,9 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 20px 40px; display: grid
 .members { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 12px; }
 .tile.member { border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; }
 .tile.member .value { font-size: 20px; }
-.tile .swatch { width: 8px; height: 8px; border-radius: 2px; margin-left: auto; flex: none; }
+/* a host's colour is always a square (the round dots are status); larger on the host tiles */
+.tile .swatch { width: 12px; height: 12px; border-radius: 3px; margin-left: auto; flex: none; }
+.host-sq { width: 10px; height: 10px; border-radius: 2px; display: inline-block; vertical-align: -1px; flex: none; }
 
 .chip-group { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-right: 10px; }
 .group-label {
@@ -235,7 +237,7 @@ input[type="datetime-local"] { padding: 4px 6px; }
   border: 1px solid var(--border); border-radius: 999px; padding: 3px 11px 3px 9px; font-size: 12.5px;
   background: var(--card);
 }
-.chip i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.chip i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .chip.off { background: var(--chip-off); color: var(--muted); }
 .chip.off i { opacity: .3; }
 

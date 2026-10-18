@@ -457,7 +457,9 @@ async function showRoute(id, title) {
     <td style="text-align:left">${h.city ? (h.city_src === 'geo' ? `<span title="approximate, from IP geolocation">~${esc(h.city)}</span>` : esc(h.city)) : ''}</td></tr>`).join('');
   const cities = [];
   for (const h of r?.hops || []) if (h.city && cities[cities.length - 1] !== h.city) cities.push(h.city);
-  const hist = d.history.slice(0, 10).map((x) => `<li>${fmtTime(x.ts)}: ${x.error ? `<span class="error-text">${esc(x.error)}</span>`
+  // one entry per route change: since when, and when it was last seen if that's a different time
+  const seen = (x) => (x.first_ts && x.ts - x.first_ts > 60 ? `${fmtTime(x.first_ts)} to ${fmtTime(x.ts)}` : fmtTime(x.ts));
+  const hist = d.history.slice(0, 10).map((x) => `<li>${seen(x)}: ${x.error ? `<span class="error-text">${esc(x.error)}</span>`
     : `<b>${esc(ROUTE_BADGE[x.kind] || x.kind)}</b> ${esc(x.path.map((p) => p.name).join(' → '))}`}</li>`).join('');
   dlg.innerHTML = `<div class="dlg-head"><h2>Route to ${esc(title)}</h2><button class="link" data-close>Close</button></div>
     ${r ? `<p><span class="route-badge route-${ROUTE_CLASS[r.kind] || r.kind}">${esc(ROUTE_BADGE[r.kind] || r.kind || '?')}</span>
@@ -465,9 +467,9 @@ async function showRoute(id, title) {
       ${cities.length ? `<p class="small">Through ${esc(cities.join(' → '))}</p>` : ''}
       <p class="muted small">Destination ${esc(r.dest_host && r.dest_host !== r.dest ? `${r.dest_host} (${r.dest})` : (r.dest || ''))} · traced ${fmtAgo(r.ts)} · networks from Team Cymru's IP-to-ASN data, hostnames from reverse DNS, locations from router names (~ = IP geolocation, approximate)${d.rel_source ? `, who pays whom from CAIDA's AS relationships (${esc(d.rel_source)})` : ''}</p>
       <div class="table-wrap"><table class="stats"><thead><tr><th>#</th><th style="text-align:left">Hop (hostname / IP)</th><th>ms</th><th style="text-align:left">Network</th><th style="text-align:left">Location</th></tr></thead><tbody>${hops}</tbody></table></div>
-      <h3 class="small">Recent routes</h3><ul class="route-hist">${hist}</ul>
-      <p class="muted small">Locations are a best estimate, from router names or approximate IP geolocation. Spotted a wrong one?
-        <a href="${esc(CONFIG.repo || 'https://github.com/jchin14/netBae')}/issues/new" target="_blank" rel="noopener">Open a GitHub issue</a> and it'll be fixed.</p>` : '<p class="muted">Not traced yet. Routes are traced every 12 hours, and right after netBae starts for any target without one.</p>'}`;
+      <h3 class="small">Route changes</h3><ul class="route-hist">${hist}</ul>
+      <p class="muted small">Locations are a best estimate, from router names or approximate IP geolocation. Spotted an issue?
+        <a href="${esc(CONFIG.repo || 'https://github.com/jchin14/netBae')}/issues/new" target="_blank" rel="noopener">Open a GitHub issue.</a></p>` : '<p class="muted">Not traced yet. Routes are traced every 12 hours, and right after netBae starts for any target without one.</p>'}`;
   dlg.showModal();
 }
 
@@ -1027,7 +1029,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     };
     const body = rows.map((it) => {
       const s = stats[it.key] || {};
-      return `<tr><td><span class="dot" style="background:${it.color}"></span> ${esc(it.label)}</td>
+      return `<tr><td><i class="host-sq" style="background:${it.color}"></i> ${esc(it.label)}</td>
         <td class="avg">${fmtMs(s.avg)}</td><td>${fmtMs(s.min)}</td><td>${fmtMs(s.p5)}</td><td>${fmtMs(s.p95)}</td><td>${fmtMs(s.max)}</td>
         <td>${fmtLoss(s.loss, 2)}</td><td>${(s.samples ?? 0).toLocaleString()}</td>${endpoint === 'ping' ? `<td style="text-align:left">${routeHtml(it.key)}</td>` : ''}</tr>`;
     }).join('');

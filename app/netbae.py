@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.12.1"
+VERSION = "1.13.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -676,8 +676,10 @@ CREATE INDEX IF NOT EXISTS isp_ts ON isp(ts);
 CREATE TABLE IF NOT EXISTS cdn (ts REAL NOT NULL, server TEXT NOT NULL, hostname TEXT NOT NULL, ip TEXT,
     resolve_ms REAL, rtt REAL, loss REAL, error TEXT);
 CREATE INDEX IF NOT EXISTS cdn_ts ON cdn(ts);
+-- one row per route a target has had: ts = last seen, first_ts = first seen (a trace that finds the same
+-- route again just updates ts and the hop timings)
 CREATE TABLE IF NOT EXISTS traceroute (ts REAL NOT NULL, target TEXT NOT NULL, dest TEXT, kind TEXT,
-    path TEXT, hops TEXT, error TEXT, dest_host TEXT);
+    path TEXT, hops TEXT, error TEXT, dest_host TEXT, first_ts REAL);
 CREATE INDEX IF NOT EXISTS traceroute_target_ts ON traceroute(target, ts);
 CREATE TABLE IF NOT EXISTS own_prefix (prefix TEXT PRIMARY KEY, first_seen REAL, last_seen REAL);
 CREATE TABLE IF NOT EXISTS hop_geo (ip TEXT PRIMARY KEY, ts REAL, city TEXT, lat REAL, lon REAL);
@@ -831,8 +833,12 @@ class DB:
                 if col not in have:
                     self.conn().execute(f"ALTER TABLE {t} ADD COLUMN {col} INTEGER")
         self.migrate_to_name_ids()
-        if "dest_host" not in {r[1] for r in self.query("PRAGMA table_info(traceroute)")}:  # added in 1.4
+        cols = {r[1] for r in self.query("PRAGMA table_info(traceroute)")}
+        if "dest_host" not in cols:  # added in 1.4
             self.conn().execute("ALTER TABLE traceroute ADD COLUMN dest_host TEXT")
+        if "first_ts" not in cols:  # 1.13: when a route was first seen (ts is when it was last seen)
+            self.conn().execute("ALTER TABLE traceroute ADD COLUMN first_ts REAL")
+            self.collapse_repeated_routes()
         # since 1.4.2 a route whose first hand-over is at an exchange counts as IX, even if transit follows
         for rid, path in self.query("SELECT rowid, path FROM traceroute WHERE kind = 'transit'"
                                     " AND path LIKE '%\"ixp\": true%'"):
@@ -918,6 +924,27 @@ class DB:
         else:
             log.info("database upgraded in %.0f s (not enough free disk to compact it; the space it freed is"
                      " reused for new data)", time.time() - started)
+
+    def collapse_repeated_routes(self):
+        """One-time: merge runs of identical traces per target into one row (first seen to last seen)."""
+        keep, drop = {}, []
+        rows = self.query("SELECT rowid, target, ts, kind, path, error FROM traceroute ORDER BY target, ts")
+        prev = None
+        for rid, tid, ts, kind, path, err in rows:
+            key = (tid, Monitor.route_key(kind, path, err))
+            if prev and prev[0] == key:
+                drop.append(prev[1])                      # the older row of the run goes...
+                keep[rid] = keep.pop(prev[1], prev[2])    # ...and the newest keeps the run's first time
+            else:
+                keep[rid] = ts
+            prev = (key, rid, keep[rid])
+        c = self.conn()
+        c.execute("BEGIN")
+        c.executemany("DELETE FROM traceroute WHERE rowid = ?", [(r,) for r in drop])
+        c.executemany("UPDATE traceroute SET first_ts = ? WHERE rowid = ?", [(t, r) for r, t in keep.items()])
+        c.execute("COMMIT")
+        if drop:
+            log.info("routes: merged %d repeated traces into the routes they repeated", len(drop))
 
     def conn(self):
         c = getattr(self.local, "c", None)
@@ -2443,8 +2470,7 @@ class Monitor:
                     return (ts, tid, None, None, None, None, str(e)[:200], host)
             with ThreadPoolExecutor(max_workers=int(tr["parallel"])) as pool:
                 rows = list(pool.map(one, targets))
-            self.db.insert_many("INSERT INTO traceroute (ts, target, dest, kind, path, hops, error, dest_host)"
-                                " VALUES (?,?,?,?,?,?,?,?)", rows)
+            self.store_routes(rows)
             log.info("traced %d routes", len(rows))
             load_as_relationships()  # used when routes are shown, so fetching it after tracing is fine
         finally:
@@ -2495,6 +2521,27 @@ class Monitor:
         finally:
             self.cdn_lock.release()
 
+    @staticmethod
+    def route_key(kind, path, error):
+        """What makes two traces "the same route": the networks in order and the label (not hop addresses or
+        timings, which vary trace to trace), or for a failed trace its error."""
+        if error:
+            return ("error", error)
+        return (kind, tuple((x.get("asn"), x.get("name"), bool(x.get("ixp"))) for x in json.loads(path or "[]")))
+
+    def store_routes(self, rows):
+        """Save traces (ts, target, dest, kind, path, hops, error, dest_host), keeping only route changes: a trace
+        matching the target's latest route updates that row's last-seen time and hops instead of adding one."""
+        for ts, tid, dest, kind, path, hops, err, dest_host in rows:
+            last = self.db.query("SELECT rowid, kind, path, error FROM traceroute WHERE target = ? ORDER BY ts DESC LIMIT 1",
+                                 (tid,))
+            if last and self.route_key(last[0][1], last[0][2], last[0][3]) == self.route_key(kind, path, err):
+                self.db.conn().execute("UPDATE traceroute SET ts = ?, dest = COALESCE(?, dest), hops = COALESCE(?, hops),"
+                                       " first_ts = COALESCE(first_ts, ts) WHERE rowid = ?", (ts, dest, hops, last[0][0]))
+            else:
+                self.db.conn().execute("INSERT INTO traceroute (ts, target, dest, kind, path, hops, error, dest_host, first_ts)"
+                                       " VALUES (?,?,?,?,?,?,?,?,?)", (ts, tid, dest, kind, path, hops, err, dest_host, ts))
+
     def trace_ips(self, ips):
         """Trace routes to addresses (stored as target "cdn:<ip>", shown like any other route)."""
         if not ips:
@@ -2514,8 +2561,7 @@ class Monitor:
                 return (ts, f"cdn:{ip}", None, None, None, None, str(e)[:200], ip)
         with ThreadPoolExecutor(max_workers=int(self.cfg["traceroute"]["parallel"])) as pool:
             rows = list(pool.map(one, ips))
-        self.db.insert_many("INSERT INTO traceroute (ts, target, dest, kind, path, hops, error, dest_host)"
-                            " VALUES (?,?,?,?,?,?,?,?)", rows)
+        self.store_routes(rows)
 
     def region_server(self, t):
         """(server, address) a region target measures: the fastest server in the city, or for an IPv6 twin the fastest
@@ -3125,12 +3171,12 @@ def api_run_cdn(m, q):
 def api_traceroute(m, q):
     """Full hop list for one target's latest route, plus its route history."""
     tid = q.get("target") or ""
-    rows = m.db.query("SELECT ts, dest, kind, path, hops, error, dest_host FROM traceroute WHERE target = ?"
-                      " ORDER BY ts DESC LIMIT 30", (tid,))
-    hist = [{"ts": ts, "dest": dest, "dest_host": dh, "kind": fix_route_kind(kind, json.loads(path or "[]")),
-             "path": with_rels(json.loads(path or "[]")),
+    rows = m.db.query("SELECT ts, dest, kind, path, hops, error, dest_host, COALESCE(first_ts, ts) FROM traceroute"
+                      " WHERE target = ? ORDER BY ts DESC LIMIT 30", (tid,))
+    hist = [{"ts": ts, "first_ts": first, "dest": dest, "dest_host": dh,
+             "kind": fix_route_kind(kind, json.loads(path or "[]")), "path": with_rels(json.loads(path or "[]")),
              "hops": locate_hops(json.loads(hops or "[]")) if i == 0 else None, "error": err}
-            for i, (ts, dest, kind, path, hops, err, dh) in enumerate(rows)]
+            for i, (ts, dest, kind, path, hops, err, dh, first) in enumerate(rows)]
     return {"target": tid, "latest": hist[0] if hist else None, "history": hist, "rel_source": as_rel_serial()}
 
 

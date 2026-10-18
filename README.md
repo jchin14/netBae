@@ -215,7 +215,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 
 ### All options
 
-<details open>
+<details>
 <summary><b>[web] [storage] [ping] [dns]</b></summary>
 
 | Option | Default | |
@@ -246,7 +246,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 
 </details>
 
-<details open>
+<details>
 <summary><b>[speedtest] [isp] [traceroute] [system]</b></summary>
 
 | Option | Default | |
@@ -272,7 +272,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 
 </details>
 
-<details open>
+<details>
 <summary><b>[public] [[connections]]</b></summary>
 
 | Option | Default | |
