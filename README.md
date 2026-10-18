@@ -183,7 +183,7 @@ Images: `ghcr.io/jchin14/netbae` for amd64, arm64 (Pi 3/4/5 on 64-bit) and arm/v
 
 The `netbae` command does everything day to day; the full list is in the [TL;DR](#tldr) and `netbae help`. On Windows it works in cmd and PowerShell, and commands that change something (update, restart, config, tunnel, uninstall) ask for admin rights. Updates never overwrite your config.
 
-On the dashboard, each chart's time menu has the last 15 minutes to a year, **A day…** (pick a date, then step with ◀ ▶) and a custom range. A badge shows whether a chart is **Live** or showing past data, and the header says when any chart isn't live. Once your connection has been on more than one ISP, the ping and DNS charts get an **ISP** selector that keeps only the times you were on that ISP, so you can compare providers.
+The ping chart draws one line per category (the average of its hosts) and the DNS chart one line per resolver (IPv4 and IPv6 together); click a row in the table under a chart to expand it into its hosts or addresses. On the dashboard, each chart's time menu has the last 15 minutes to a year, **A day…** (pick a date, then step with ◀ ▶) and a custom range. A badge shows whether a chart is **Live** or showing past data, and the header says when any chart isn't live. Once your connection has been on more than one ISP, the ping and DNS charts get an **ISP** selector that keeps only the times you were on that ISP, so you can compare providers.
 
 ### Uninstall
 

@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.13.1"
+VERSION = "1.14.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -2884,9 +2884,22 @@ def split_list(v):
 
 
 def aggregate(m, name, frm, to, bucket, keys=None, extra=("", ())):
-    """Rows of (key, bucket, n, ok, avg, min, max, p5, p95). bucket=None aggregates the whole range."""
+    """Rows of (key, bucket, n, ok, avg, min, max, p5, p95). bucket=None aggregates the whole range.
+    A key made of ids joined with "+" ("a+b+c+") is one combined series of all those hosts' samples, e.g. a
+    whole category, or a resolver's IPv4 and IPv6 addresses together."""
+    combos = [k for k in keys or [] if "+" in k]
+    singles = [k for k in keys or [] if "+" not in k]
+    out = aggregate_keys(m, name, frm, to, bucket, singles, extra) if singles or not keys else []
+    for combo in combos:
+        members = [x for x in combo.split("+") if x]
+        out += [(combo,) + r[1:] for r in aggregate_keys(m, name, frm, to, bucket, members, extra, combined=True)]
+    return sorted(out, key=lambda r: r[1])
+
+
+def aggregate_keys(m, name, frm, to, bucket, keys=None, extra=("", ()), combined=False):
     spec = SERIES[name]
     key = spec["keys"][0]
+    kexpr = "'all'" if combined else key  # combined: every key's samples in one series
     st, now = m.cfg["storage"], time.time()
     span = to - frm
     # raw samples for short ranges, 1-minute summaries for days, hourly summaries for months/years
@@ -2909,20 +2922,21 @@ def aggregate(m, name, frm, to, bucket, keys=None, extra=("", ())):
     if extra[0]:
         where += " AND " + extra[0]
         params += list(extra[1])
+    name_of = (lambda k: k) if combined else m.db.name_of
     if level == "raw":
-        rows = m.db.query(pct_select(spec["val"], bexpr, [key], spec["raw"], where) + " ORDER BY b", params)
-        return [(m.db.name_of(r[0]),) + tuple(r[1:]) for r in rows]
+        rows = m.db.query(pct_select(spec["val"], bexpr, [kexpr], spec["raw"], where) + " ORDER BY b", params)
+        return [(name_of(r[0]),) + tuple(r[1:]) for r in rows]
     # Combine summary rows: exact count/min/max, sample-weighted avg, and P5/P95 from the added-up
     # histograms. Rows from before histograms existed fall back to weighted per-row percentiles.
-    sql = (f"SELECT {key}, {bexpr} AS b, {COMBINE}, {HIST_SUMS} FROM {spec[level]} WHERE {where}"
-           f" GROUP BY {key}, b ORDER BY b")
+    sql = (f"SELECT {kexpr}, {bexpr} AS b, {COMBINE}, {HIST_SUMS} FROM {spec[level]} WHERE {where}"
+           f" GROUP BY {kexpr}, b ORDER BY b")
     out = []
     for row in m.db.query(sql, params):
         k, b, n, ok, avg, mn, mx, p5, p95 = row[:9]
         counts = [c or 0 for c in row[9:]]
         if ok and sum(counts) == ok:
             p5, p95 = hist_percentile(counts, 0.05, mn, mx), hist_percentile(counts, 0.95, mn, mx)
-        out.append((m.db.name_of(k), b, n, ok, avg, mn, mx, p5, p95))
+        out.append((name_of(k), b, n, ok, avg, mn, mx, p5, p95))
     return out
 
 

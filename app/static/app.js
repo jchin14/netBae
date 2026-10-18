@@ -176,13 +176,13 @@ function rangeControl(el, key, defaultRange, onChange) {
 // Which lines a chart shows. Stored per browser; "v2" started over when charts began showing only a few lines
 // by default (drawing every host on page load was heavy on the CPU).
 function chipFilter(el, key, items, onChange, defaultOff = []) {
-  const off = new Set(store.get(`off2:${key}`, null) ?? defaultOff);
+  const off = new Set(store.get(`off3:${key}`, null) ?? defaultOff);
   const sync = () => {
     el.querySelectorAll('.chip').forEach((c) => c.classList.toggle('off', off.has(c.dataset.id)));
     el.querySelectorAll('.group-label').forEach((b) => b.classList.toggle('off',
       items.filter((x) => x.group === b.dataset.group).every((x) => off.has(x.id))));
   };
-  const changed = () => { sync(); store.set(`off2:${key}`, [...off]); onChange(); };
+  const changed = () => { sync(); store.set(`off3:${key}`, [...off]); onChange(); };
   el.innerHTML = '';
   const groups = [...new Set(items.map((it) => it.group ?? ''))];
   for (const g of groups) {
@@ -903,11 +903,12 @@ async function ispOverlay(root, r, onToggle) {
   return datasets;
 }
 
-function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams, lossLabel, defaultOn = null }) {
-  // only a handful of lines on first load: the listed ones that exist, else the first five
-  let on = defaultOn ? items.filter((it) => defaultOn.includes(it.id)) : items;
-  if (on.length < 2) on = items.slice(0, 5);
-  const defaultOff = items.filter((it) => !on.includes(it)).map((it) => it.id);
+// collapse: hosts are drawn as one line per category (catOf) until that category's table row is clicked to
+// expand it, which keeps chart rendering light even with a hundred hosts.
+function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams, lossLabel, defaultHide = [],
+  collapse = false, catOf = (it) => it.group, memberNoun = 'hosts' }) {
+  const defaultOff = items.filter((it) => defaultHide.includes(it.id)).map((it) => it.id);
+  const expanded = new Set(store.get(`expand:${id}`, []));
   const root = $(`#${id}`);
   const metricSel = $('.metric', root);
   const bandSel = $('.band', root);
@@ -963,17 +964,34 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     bandSel.hidden = metric === 'loss';
     // ~1 point per 6px so each bucket holds several samples and the spread band means something
     const points = Math.max(60, Math.min(300, Math.round(root.clientWidth / 6)));
-    // one series per selected item and IP version: IPv6 lines are dashed when both are shown
+    // Blocks for the table, one per category (or per host when not collapsing), and the lines to draw.
+    // Per IP version: IPv6 lines are dashed when both are shown. A collapsed category is one combined series
+    // ("id1+id2+..."); expanded, its hosts get their own lines and the category row keeps its totals.
     const fam = familySel && !familySel.hidden ? familySel.value : '4';
-    const series = items.filter((x) => sel.includes(x.id)).flatMap((it) => {
-      const v4 = { ...it, key: it.id };
-      if (!it.v6 || fam === '4') return [v4];
-      const v6 = { ...it, key: it.v6, label: `${it.label} (IPv6)`, dash: fam === 'both' ? [6, 3] : [] };
-      return fam === '6' ? [v6] : [v4, v6];
-    });
+    const variants = fam === 'both' ? ['4', '6'] : [fam];
+    const chosen = items.filter((x) => sel.includes(x.id));
+    const blocks = [];
+    for (const cat of collapse ? [...new Set(chosen.map(catOf))] : [null]) {
+      const mem = collapse ? chosen.filter((it) => catOf(it) === cat) : chosen;
+      for (const v of variants) {
+        const sfx = v === '6' ? ' (IPv6)' : '';
+        const dash = v === '6' && fam === 'both' ? [6, 3] : [];
+        const members = mem.filter((it) => v === '4' || it.v6)
+          .map((it) => ({ ...it, key: v === '6' ? it.v6 : it.id, label: it.label + sfx, dash }));
+        if (!members.length) continue;
+        if (!collapse || members.length === 1) { blocks.push({ summary: null, members, open: true }); continue; }
+        const mid = members[Math.floor((members.length - 1) / 2)];
+        blocks.push({
+          summary: { key: members.map((x) => x.key).join('+') + '+', label: cat + sfx, color: mid.color, dash, cat, count: members.length },
+          members, open: expanded.has(cat),
+        });
+      }
+    }
+    const series = blocks.flatMap((b) => (b.summary && !b.open ? [b.summary] : b.members));  // drawn
+    const wanted = [...new Set(blocks.flatMap((b) => (b.summary ? [b.summary.key] : []).concat(b.open ? b.members.map((x) => x.key) : [])))];
     const params = { from: r.from.toFixed(0), to: r.to.toFixed(0), points, ...(extraParams ? extraParams() : {}) };
     if (ispSel.value) params.isp = ispSel.value;
-    params[keyParam] = series.map((x) => x.key).join(',') || '__none__';
+    params[keyParam] = wanted.join(',') || '__none__';
     const d = await api(endpoint, params);
     // point layout: [t, avg, min, max, loss%, p5, p95]
     const [loI, hiI, bandName] = band === 'minmax' ? [2, 3, 'min–max'] : [5, 6, 'p5–p95'];
@@ -1011,7 +1029,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     setXRange(chart, r);
     chart.update();
 
-    lastTable = { series, stats: d.stats };
+    lastTable = { blocks, stats: d.stats };
     renderTable();
     return r.live;
   };
@@ -1022,26 +1040,46 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
   const COLS = [['avg', 'Avg ms'], ['min', 'Min'], ['p5', 'P5'], ['p95', 'P95'], ['max', 'Max'], ['loss', lossLabel], ['samples', 'Samples']];
   function renderTable() {
     if (!lastTable) return;
-    const { series, stats } = lastTable;
-    const rows = sort ? [...series].sort((a, b) => {
-      const x = (stats[a.key] || {})[sort.key], y = (stats[b.key] || {})[sort.key];
+    const { blocks, stats } = lastTable;
+    const val = (it) => (stats[it.key] || {})[sort.key];
+    const cmp = (a, b) => {
+      const x = val(a), y = val(b);
       if (x == null || y == null) return (x == null) - (y == null);  // no data: always last
       return (x - y) * sort.dir;
-    }) : series;
+    };
+    const lead = (b) => b.summary || b.members[0];
+    const ordered = sort ? [...blocks].sort((a, b) => cmp(lead(a), lead(b))) : blocks;
     const th = ([key, label]) => {
       const on = sort?.key === key;
       return `<th class="sortable${key === 'avg' ? ' avg' : ''}${on ? ' sorted' : ''}" data-sort="${key}" title="Sort by ${esc(label)}">`
         + `${esc(label)}${on ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
     };
-    const body = rows.map((it) => {
+    const row = (it, kind) => {
       const s = stats[it.key] || {};
-      return `<tr><td><i class="host-sq" style="background:${it.color}"></i> ${esc(it.label)}</td>
+      const name = kind === 'cat'
+        ? `<span class="caret">${it.open ? '▾' : '▸'}</span> <i class="host-sq" style="background:${it.color}"></i> <b>${esc(it.label)}</b> <span class="muted">${it.count} ${memberNoun}</span>`
+        : `<i class="host-sq" style="background:${it.color}"></i> ${esc(it.label)}`;
+      return `<tr class="${kind === 'cat' ? 'cat-row' : kind === 'member' ? 'member-row' : ''}"${kind === 'cat' ? ` data-cat="${esc(it.cat)}" title="${it.open ? 'Collapse' : 'Show each host in'} ${esc(it.cat)}"` : ''}>
+        <td>${name}</td>
         <td class="avg">${fmtMs(s.avg)}</td><td>${fmtMs(s.min)}</td><td>${fmtMs(s.p5)}</td><td>${fmtMs(s.p95)}</td><td>${fmtMs(s.max)}</td>
-        <td>${fmtLoss(s.loss, 2)}</td><td>${(s.samples ?? 0).toLocaleString()}</td>${endpoint === 'ping' ? `<td style="text-align:left">${routeHtml(it.key)}</td>` : ''}</tr>`;
+        <td>${fmtLoss(s.loss, 2)}</td><td>${(s.samples ?? 0).toLocaleString()}</td>${endpoint === 'ping' ? `<td style="text-align:left">${kind === 'cat' ? '' : routeHtml(it.key)}</td>` : ''}</tr>`;
+    };
+    const body = ordered.map((b) => {
+      if (!b.summary) return (sort ? [...b.members].sort(cmp) : b.members).map((it) => row(it, '')).join('');
+      return row({ ...b.summary, open: b.open }, 'cat')
+        + (b.open ? (sort ? [...b.members].sort(cmp) : b.members).map((it) => row(it, 'member')).join('') : '');
     }).join('');
     $('.stats', root).innerHTML = `<thead><tr><th>Host</th>${COLS.map(th).join('')}${endpoint === 'ping' ? '<th style="text-align:left">Route</th>' : ''}</tr></thead><tbody>${body}</tbody>`;
   }
   $('.stats', root).addEventListener('click', (e) => {
+    const catRow = e.target.closest('tr.cat-row');
+    if (catRow) {  // expand or collapse a category
+      const c = catRow.dataset.cat;
+      if (expanded.has(c)) expanded.delete(c); else expanded.add(c);
+      store.set(`expand:${id}`, [...expanded]);
+      refresh();
+      return;
+    }
     const key = e.target.closest('th[data-sort]')?.dataset.sort;
     if (!key) return;
     sort = sort?.key !== key ? { key, dir: 1 } : sort.dir > 0 ? { key, dir: -1 } : null;
@@ -1211,7 +1249,7 @@ async function main() {
   }));
   panels.push(latencyPanel({
     id: 'panel-ping', endpoint: 'ping', keyParam: 'targets', items: pingItems, defaultRange: '1h', lossLabel: 'Loss',
-    defaultOn: ['gateway', 'isp:first-hop', '1.1.1.1', 'google.com', 'www.netflix.com'],
+    collapse: true, defaultHide: CONFIG.ping.targets.filter((t) => t.method === 'region').map((t) => t.id),
   }));
   $('#ping-tiles').addEventListener('click', (e) => {
     const card = e.target.closest('.group');
@@ -1230,7 +1268,9 @@ async function main() {
     domainSel.value = store.get('dns:domain', '');
     const dnsColors = groupColors(CONFIG.dns.servers.map((s) => ({ id: s.id, group: s.name })));
     const dnsItems = CONFIG.dns.servers.map((s) => ({
-      id: s.id, label: s.family === 6 ? `${s.name} v6` : s.name, color: dnsColors[s.id], title: s.host, group: s.group,
+      // "v4"/"v6" only on resolvers that have both
+      id: s.id, label: CONFIG.dns.servers.filter((x) => x.name === s.name).length > 1 ? `${s.name} ${s.family === 6 ? 'v6' : 'v4'}` : s.name,
+      color: dnsColors[s.id], title: s.host, group: s.group, cat: s.name,
     }));
     if (!CONFIG.dns.ipv6_available && CONFIG.dns.servers.some((s) => s.family === 6)) {
       $('#dns-note').textContent = "This network doesn't have IPv6 internet, so the IPv6 resolvers aren't being tested.";
@@ -1238,7 +1278,7 @@ async function main() {
     const p = latencyPanel({
       id: 'panel-dns', endpoint: 'dns', keyParam: 'servers', items: dnsItems, defaultRange: '6h',
       lossLabel: 'Failures', extraParams: () => ({ domain: domainSel.value }),
-      defaultOn: ['gateway', '1.1.1.1', '8.8.8.8', '9.9.9.9'],
+      collapse: true, catOf: (it) => it.cat, memberNoun: 'addresses',  // a resolver's IPv4 and IPv6 together
     });
     domainSel.addEventListener('change', () => { store.set('dns:domain', domainSel.value); p.refresh(); });
     panels.push(p);

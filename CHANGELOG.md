@@ -14,7 +14,13 @@ The main steps so far, with the full details per version below.
 | 1.5 | Docker image for x86 and Raspberry Pi, manual speedtests, installer tests on four Linux distros |
 | 1.6 | Read-only public dashboard and `netbae tunnel` (Cloudflare, Tailscale), security hardening |
 | 1.8 - 1.9 | IPv6 pings and routes, built-in targets in their own file, a database about 40% smaller |
-| 1.10 - 1.13 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs, route change history |
+| 1.10 - 1.14 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs, route change history, charts grouped by category |
+
+## 1.14.0 - 2026-10-18
+
+Charts grouped by category.
+
+- **Charts by category:** the ping chart draws one line per category (Streaming, CDN, Gaming...), the average of the hosts selected in it, and its table has one row per category. Click a row to expand it into each host (and again to collapse). The DNS chart does the same per resolver, with IPv4 and IPv6 together. Far fewer lines to draw, so the page stays light, with every host one click away. All hosts except Regions are selected by default; chart selections start over once.
 
 ## 1.13.1 - 2026-10-18
 

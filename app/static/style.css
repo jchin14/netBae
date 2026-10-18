@@ -150,6 +150,10 @@ table.stats tr.total td { border-top: 1px solid var(--border); }
 @media (max-width: 600px) { .speed-details { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .flag { margin-right: 5px; }
 .tile.member { cursor: pointer; }
+table.stats tr.cat-row { cursor: pointer; }
+table.stats tr.cat-row:hover td { background: rgba(127, 127, 127, .08); }
+table.stats tr.cat-row .caret { display: inline-block; width: 1em; color: var(--muted); }
+table.stats tr.member-row td:first-child { padding-left: 2.2em; }
 .loss-warn { color: var(--warn); font-weight: 600; }
 .loss-bad { color: var(--bad); font-weight: 600; }
 table.stats th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
