@@ -17,6 +17,36 @@ The main steps so far, with the full details per version below.
 | 1.10 - 1.14 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs, route change history, charts grouped by category |
 | 1.15 | An Update button on the dashboard and weekly automatic updates |
 
+## Unreleased
+
+- The ping and DNS charts show the last 24 hours by default, instead of 1 hour and 6 hours.
+- Charts always show the whole time range you picked, instead of zooming in when there's only data for part of it.
+- With IPv4 + IPv6 chosen, the latency charts show a key next to the dropdown: solid for IPv4, dashed for IPv6, and the IPv6 dashes are longer so they're easier to tell apart.
+
+## 1.17.0 - 2026-10-18
+
+A summary bar, ISP logos, sharing the public dashboard on several hostnames, lighter default pings and easier-to-use charts.
+
+- The latency charts draw a dashed line, labelled e.g. "Superloop → Telstra", wherever your main connection moved to another ISP.
+- In a route, a public hop with no announced network is named from its hostname (e.g. "superloop.au") instead of "private / unknown"; only addresses that really are private say "private".
+- In the DNS and CDN table, a DNS server that didn't answer for a hostname now ranks below every server that answered them all.
+- `netbae tunnel` now confirms a new hostname works even when your router still has an old "no such name" answer cached for it.
+- `netbae tunnel` no longer stops right after "Checking for a cloudflared update" on Linux, and `netbae tunnel <hostname>` now works as a shortcut for `netbae tunnel cloudflare <hostname>`.
+- `netbae tunnel cloudflare` can share the public dashboard on several hostnames, e.g. `netbae tunnel cloudflare netbae.example.com status.example.org`, or one more each time you run it. `netbae tunnel remove <hostname>` stops sharing on one, and the dashboard header lists every hostname.
+- Pings run every 30 seconds by default instead of every 5, and region pings every 60 seconds instead of 30, for a lighter load. Configs that set `interval_seconds` keep their own value.
+- The footer says netBae isn't affiliated with any provider or carrier shown.
+- Region pings show on the ping chart by default (collapsed into one Regions line) instead of being hidden.
+- Pronto is shown as Superloop (its owner), including in older ISP checks and speedtests, and the ISP's logo shows next to its name at the top for well-known providers. netBae fetches the logo itself, so your browser doesn't contact anyone else.
+- The README has Docker Compose quick-start instructions.
+- The public dashboard footer counts visitors over the last 24 hours instead of the last hour.
+- Speedtest history shows 10 tests at a time, with previous / next buttons and a choice of 10, 25, 50 or 100 per page.
+- Charts have a Reset view button (default range and zoom, categories collapsed), and the ping chart and the ping groups at the top have Expand all / Collapse all.
+- The System chart's right-hand axis and lines now say CPU temperature and CPU load, so it's clear what the numbers are.
+- Routes now name the city the destination answered from, e.g. "direct to Cloudflare Melbourne" or "transit via GSL to Giganews Amsterdam".
+- A summary bar at the top of the dashboard: hosts up, your own hosts up, ISP uptime over the last 24 hours, average latency (not counting regions), packet loss, jitter, DNS time and the latest speedtest.
+- A route trace where no hop answered now shows as an error instead of an empty route, and it's traced again the next time netBae starts. Empty routes saved by earlier versions are retried on the next start too.
+- The public dashboard line no longer lists your tunnel twice when another Cloudflare tunnel (for other sites) runs on the same machine.
+
 ## 1.16.0 - 2026-10-18
 
 Speedtests that wait for a quiet network, faster charts on a Raspberry Pi, and a first speedtest straight after install.

@@ -40,6 +40,13 @@ docker run -d --name netbae --network host --restart unless-stopped \
   -e TZ=Australia/Melbourne -v "$PWD/netbae-data:/data" ghcr.io/jchin14/netbae:latest
 ```
 
+Or Docker Compose: download [docker-compose.yml](docker-compose.yml) into an empty folder, set `TZ` in it, then start it:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/jchin14/netBae/main/docker-compose.yml
+docker compose up -d
+```
+
 **Open** `http://<that-machine>/` from any device on your network.
 
 **Useful commands:**
@@ -62,7 +69,7 @@ docker run -d --name netbae --network host --restart unless-stopped \
 - [Install](#install): supported systems, what the installer does on Linux, macOS and Windows, Docker, where things live
 - [Everyday use](#everyday-use): [Uninstall](#uninstall)
 - [Configuration](#configuration): [All options](#all-options) · [Game servers](#game-servers) · [Regions](#region-speedtests-and-pings) · [Secondary connection](#monitoring-a-secondary-connection)
-- [Sharing a public dashboard](#sharing-a-public-dashboard): [netbae tunnel](#the-easy-way-netbae-tunnel) · [What visitors see](#what-visitors-see) · [By hand](#by-hand)
+- [Sharing a public dashboard](#sharing-a-public-dashboard): [netbae tunnel](#the-easy-way-netbae-tunnel) · [With Docker](#with-docker) · [What visitors see](#what-visitors-see) · [By hand](#by-hand)
 - [How it measures](#how-it-measures)
 - [Averages and storage](#averages-and-storage)
 - [Behind a reverse proxy](#behind-a-reverse-proxy) · [API](#api) · [FAQ](#faq) · [How it's tested](#how-its-tested) · [Contributing](#contributing) · [Support](#support) · [Licence](#licence)
@@ -73,7 +80,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 
 | | |
 |---|---|
-| **Ping, every 5 seconds** | your router and your ISP's first hop (BNG), DNS resolvers, Google/YouTube, streaming (Netflix, Twitch, Disney+, HBO Max, Paramount+, plus Stan, ABC iview, SBS On Demand, 7plus, 9Now, 10, Foxtel, Kayo and Sky News in Australia), Facebook/Instagram/Reddit/X/TikTok, AI (ChatGPT, Claude, Grok), calls and chat (Slack, Teams, Zoom, Webex, Meet), Microsoft/Apple/AWS/GitHub/Atlassian, hosting data centres (AWS, Oracle Cloud, Azure, OVHcloud, Vultr, DigitalOcean, Linode, Hetzner), CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Chinese clouds and CDNs (Alibaba, Tencent, Huawei, Baidu, ByteDance, CDNetworks), Usenet in the US and Europe, and **game servers** (Steam & CS2, Fortnite, Discord voice, AWS GameLift, Battle.net, Minecraft) |
+| **Ping, every 30 seconds** | your router and your ISP's first hop (BNG), DNS resolvers, Google/YouTube, streaming (Netflix, Twitch, Disney+, HBO Max, Paramount+, plus Stan, ABC iview, SBS On Demand, 7plus, 9Now, 10, Foxtel, Kayo and Sky News in Australia), Facebook/Instagram/Reddit/X/TikTok, AI (ChatGPT, Claude, Grok), calls and chat (Slack, Teams, Zoom, Webex, Meet), Microsoft/Apple/AWS/GitHub/Atlassian, hosting data centres (AWS, Oracle Cloud, Azure, OVHcloud, Vultr, DigitalOcean, Linode, Hetzner), CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Chinese clouds and CDNs (Alibaba, Tencent, Huawei, Baidu, ByteDance, CDNetworks), Usenet in the US and Europe, and **game servers** (Steam & CS2, Fortnite, Discord voice, AWS GameLift, Battle.net, Minecraft) |
 | **Grouped overview** | one card per category with its average ping; click a card to see every host in it |
 | **Charts that show jitter** | the average as a line with a shaded P5-P95 (or min-max) band; zoom and drag the y-axis |
 | **Speedtests** | the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages |
@@ -229,13 +236,13 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[storage] raw_retention_days` | `7` | every sample |
 | `[storage] minute_retention_days` | `90` | 1-minute summaries (count, average, min, max and a latency histogram) |
 | `[storage] retention_days` | `0` | hourly summaries, speedtests and system history (`0` = forever) |
-| `[ping] interval_seconds` / `offset_seconds` | `5` / `0` | |
+| `[ping] interval_seconds` / `offset_seconds` | `30` / `0` | |
 | `[ping] timeout_seconds` | `2` | |
 | `[ping] extra_targets` | none | your own hosts, added to the built-in list: `{ name, host, group }`; `host = "gateway"` = your router; `method = "tcp"` (with `port`) for hosts that block ping; game servers below. One with the same host as a built-in target replaces it |
 | `[ping] disable` | none | built-in targets to switch off, by name or group, e.g. `["Streaming AU", "Hetzner Falkenstein"]` |
 | `[ping] targets` | not set | set it to use only your own list instead of the built-in one |
 | `[ping] regions` | 18 cities | latency to the fastest Ookla server in each city, see [Regions](#region-speedtests-and-pings) |
-| `[ping] region_interval_seconds` | `30` | |
+| `[ping] region_interval_seconds` | `60` | |
 | `[ping] ipv6` | `true` | also ping each site over IPv6 (a separate line) when this machine and the site have IPv6, and each region over IPv6 to a speedtest server there that has it. Not the router, game servers or secondary connections |
 | `[dns] enabled` | `true` | |
 | `[dns] interval_seconds` / `offset_seconds` / `timeout_seconds` | `30` / `0` / `2` | |
@@ -405,10 +412,53 @@ It asks which kind you want:
 
 netBae installs `cloudflared` or Tailscale from their official sources if needed (and updates an installed `cloudflared` each time it runs), sets `[public] enabled = true` and `host = "127.0.0.1"` (so only the tunnel can reach it), restarts netBae and prints your public address. The only step it can't do for you is the first sign-in: it shows a link to open in your browser, then carries on. Cloudflare tunnels run as the `netbae-tunnel` service (a `netBae tunnel` scheduled task on Windows) under the same unprivileged account as netBae, and start at boot. Tailscale Funnel runs inside Tailscale itself.
 
+- More than one hostname? Give several (`netbae tunnel cloudflare netbae.example.com status.example.org`) or run it again with another: each run adds to the hostnames already shared, all through the same tunnel. `netbae tunnel remove <hostname>` stops sharing on one.
 - `netbae tunnel status` shows what's shared and where.
 - `netbae tunnel off` stops sharing and turns the public dashboard off (your Cloudflare login is kept, so turning it back on is one command).
 - Made a tunnel in the Cloudflare dashboard instead? `netbae tunnel cloudflare --token <token>` runs it. Give it a public hostname with service `http://127.0.0.1:8080`.
-- Docker: uncomment the `cloudflared` service in [docker-compose.yml](docker-compose.yml) instead.
+- Docker: `netbae tunnel` isn't available in the container, see [With Docker](#with-docker) below.
+
+### With Docker
+
+In Docker, run Cloudflare's `cloudflared` container next to netBae. [docker-compose.yml](docker-compose.yml) already has it, commented out.
+
+1. Turn on the public dashboard in `netbae-data/config.toml` (`sudo nano netbae-data/config.toml`), then run `docker compose restart netbae`:
+
+   ```toml
+   [public]
+   enabled = true
+   host = "127.0.0.1"   # only the tunnel, running on the same host, can reach it
+   port = 8080
+   ```
+
+2. In [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) go to **Networks → Tunnels → Create a tunnel** and choose **Cloudflared**. Copy the token from the install command it shows (the long string after `--token`).
+3. Add a **public hostname** to the tunnel: e.g. `netbae.example.com`, service type `HTTP`, URL `127.0.0.1:8080`. To share the dashboard on more than one address, add another public hostname with the same URL.
+4. In `docker-compose.yml`, uncomment the `cloudflared` service and paste in your token:
+
+   ```yaml
+     cloudflared:
+       image: cloudflare/cloudflared:latest
+       container_name: netbae-tunnel
+       restart: unless-stopped
+       network_mode: host
+       command: tunnel --no-autoupdate run
+       environment:
+         TUNNEL_TOKEN: "paste-your-tunnel-token-here"
+   ```
+
+5. Run `docker compose up -d` and open `https://netbae.example.com`. Your own dashboard shows whether the tunnel is connected and reachable.
+
+No domain? For a quick test, use `command: tunnel --no-autoupdate --url http://127.0.0.1:8080` and leave out `TUNNEL_TOKEN`. `docker logs netbae-tunnel` shows a random `https://....trycloudflare.com` address, which changes every time the container restarts.
+
+With `docker run` instead of Compose:
+
+```bash
+docker run -d --name netbae-tunnel --network host --restart unless-stopped \
+  -e TUNNEL_TOKEN="paste-your-tunnel-token-here" \
+  cloudflare/cloudflared:latest tunnel --no-autoupdate run
+```
+
+To stop sharing, comment the `cloudflared` service out again and run `docker compose up -d --remove-orphans` (or `docker rm -f netbae-tunnel`), then set `[public] enabled = false` and run `docker compose restart netbae`.
 
 ### What visitors see
 

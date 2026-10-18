@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.16.0"
+VERSION = "1.17.2"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -109,7 +109,7 @@ DEFAULT_CONFIG = {
     "storage": {"database": os.path.join(WIN_DATA_DIR, "netbae.db") if IS_WINDOWS else "/var/lib/netbae/netbae.db",
                 "raw_retention_days": 7, "minute_retention_days": 90, "retention_days": 0},
     "ping": {
-        "interval_seconds": 5,
+        "interval_seconds": 30,
         "offset_seconds": 0,
         "timeout_seconds": 2,
         "targets": BUILTIN_TARGETS,  # from targets.toml; config.toml adds extra_targets and disable
@@ -119,7 +119,7 @@ DEFAULT_CONFIG = {
         "regions": ["Sydney", "Perth", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Guam", "Delhi", "Oman",
                     "Los Angeles", "Toronto", "New York", "São Paulo", "London", "Amsterdam", "Paris", "Milan",
                     "Cape Town"],
-        "region_interval_seconds": 30,
+        "region_interval_seconds": 60,
         # also ping each site over IPv6 (stored separately) when this machine and the site have IPv6
         "ipv6": True,
     },
@@ -574,7 +574,7 @@ def merge_targets(ping):
         if not hit:
             pairs.append((t, n))
     for t in ping.get("extra_targets") or []:
-        n = normalize_target(t)
+        n = dict(normalize_target(t), custom=True)  # one of your own (counted on its own in the summary bar)
         same = [i for i, (_, x) in enumerate(pairs) if x["id"] == n["id"]]
         if same:
             pairs[same[0]] = (t, n)
@@ -922,6 +922,9 @@ class DB:
                 if col not in have:
                     self.conn().execute(f"ALTER TABLE {t} ADD COLUMN {col} INTEGER")
         self.migrate_to_name_ids()
+        for k, b in ISP_BRANDS.items():  # 1.16.2: older checks stored the registry's name
+            for t in ("isp", "speedtest"):
+                self.conn().execute(f"UPDATE {t} SET isp = ? WHERE lower(isp) LIKE ?", (b, k + "%"))
         cols = {r[1] for r in self.query("PRAGMA table_info(traceroute)")}
         if "dest_host" not in cols:  # added in 1.4
             self.conn().execute("ALTER TABLE traceroute ADD COLUMN dest_host TEXT")
@@ -1166,7 +1169,7 @@ def lookup_isp_ipinfo(bind=None, timeout=10):
     org = d.get("org") or ""
     asn, _, name = org.partition(" ") if org.startswith("AS") else ("", "", org)
     loc = ", ".join(x for x in (d.get("city"), d.get("country")) if x)
-    return {"ip": d.get("ip"), "isp": name or None, "asn": asn or None, "location": loc or None}
+    return {"ip": d.get("ip"), "isp": isp_brand(name) or None, "asn": asn or None, "location": loc or None}
 
 
 def icmp_ping(host, timeout, bind=None):
@@ -1252,6 +1255,64 @@ AS_NAMES = {
     6830: "Liberty Global", 5432: "Proximus", 2856: "BT", 5400: "BT", 64050: "BGPNET", 9304: "HGC",
 }
 CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+# ISPs that registries or Ookla name by an old or wholesale brand: shown as the brand customers know
+ISP_BRANDS = {"pronto": "Superloop"}
+
+
+def isp_brand(name):
+    if not name:
+        return name
+    return next((b for k, b in ISP_BRANDS.items() if name.lower().startswith(k)), name)
+
+
+# Websites of well-known ISPs, for the logo next to the ISP name (fetched once by the server and cached)
+ISP_DOMAINS = {
+    "Superloop": "superloop.com", "Exetel": "exetel.com.au", "Telstra": "telstra.com.au", "Optus": "optus.com.au",
+    "TPG": "tpg.com.au", "iiNet": "iinet.net.au", "Internode": "internode.on.net", "Aussie Broadband": "aussiebroadband.com.au",
+    "Vocus": "vocus.com.au", "Dodo": "dodo.com", "Vodafone": "vodafone.com", "Leaptel": "leaptel.com.au",
+    "Launtel": "launtel.net.au", "Starlink": "starlink.com", "Spark": "spark.co.nz", "One NZ": "one.nz",
+    "2degrees": "2degrees.nz", "Comcast": "xfinity.com", "AT&T": "att.com", "Verizon": "verizon.com",
+    "Spectrum": "spectrum.com", "Charter": "spectrum.com", "Cox": "cox.com", "T-Mobile": "t-mobile.com",
+    "BT": "bt.com", "Sky": "sky.com", "Virgin Media": "virginmedia.com", "Deutsche Telekom": "telekom.de",
+    "Orange": "orange.com", "Swisscom": "swisscom.ch", "Init7": "init7.net", "Singtel": "singtel.com",
+    "Rogers": "rogers.com", "Bell Canada": "bell.ca", "Cloudflare": "cloudflare.com",
+}
+
+
+def isp_domain(name):
+    if not name:
+        return None
+    low = name.lower()
+    return next((d for k, d in ISP_DOMAINS.items() if low == k.lower() or low.startswith(k.lower() + " ")), None)
+
+
+_logos, _logos_lock = {}, threading.Lock()
+
+
+def isp_logo(name):
+    """(content type, bytes) of the ISP's site icon, or None. Fetched through DuckDuckGo's icon service by the
+    server, so the browser never contacts a third party; cached for a week (misses for an hour)."""
+    domain = isp_domain(name)
+    if not domain:
+        return None
+    with _logos_lock:
+        hit = _logos.get(domain)
+    if hit and time.time() - hit[0] < (7 * 86400 if hit[1] else 3600):
+        return hit[1]
+    logo = None
+    try:
+        req = urllib.request.Request(f"https://icons.duckduckgo.com/ip3/{domain}.ico", headers={"User-Agent": f"netBae/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            body = r.read(200_000)
+            ctype = r.headers.get("Content-Type", "image/x-icon").split(";")[0]
+            if r.status == 200 and body and ctype.startswith("image/"):
+                logo = (ctype, body)
+    except (OSError, ValueError) as e:
+        log.debug("no logo for %s: %s", domain, e)
+    with _logos_lock:
+        _logos[domain] = (time.time(), logo)
+    return logo
 
 
 def _dns_name(data, pos):
@@ -1443,7 +1504,7 @@ def as_name(asn):
                       r"Private Limited|Private|Pvt|Technologies)\b\.?", "", name, flags=re.I)
         if len(name) > 32:  # long registry names: keep the first few words
             name = " ".join(name.split()[:3]).rstrip(",")
-        _as_name_cache[asn] = name.strip(" ,.-") or f"AS{asn}"
+        _as_name_cache[asn] = isp_brand(name.strip(" ,.-")) or f"AS{asn}"
     return _as_name_cache[asn]
 
 
@@ -1660,6 +1721,8 @@ def traceroute(host, max_hops=25, bind=None):
     hops = [(n, ip, rtt) for n, (ip, rtt) in sorted(hops.items())]
     while hops and not hops[-1][1]:  # drop the run of timeouts at the end
         hops.pop()
+    if not hops:  # stored as an error, so it's retried on the next start instead of counting as a route
+        raise OSError(f"no hop answered ({cmd[0]})")
     return hops
 
 
@@ -2685,7 +2748,7 @@ class Monitor:
         while time.time() < deadline and not self.lookups_done():
             time.sleep(5)
         cutoff = time.time() - self.cfg["traceroute"]["interval_hours"] * 3600
-        fresh = {r[0] for r in self.db.query("SELECT target FROM traceroute WHERE error IS NULL"
+        fresh = {r[0] for r in self.db.query("SELECT target FROM traceroute WHERE error IS NULL AND hops != '[]'"
                                              " GROUP BY target HAVING MAX(ts) > ?", (cutoff,))}
         try:
             self.collect_traceroutes(skip=fresh)
@@ -3116,7 +3179,7 @@ class Monitor:
                 srv = result.get("server", {})
                 row.update(
                     server_id=srv.get("id"), server_name=srv.get("name"),
-                    server_location=srv.get("location"), isp=result.get("isp"),
+                    server_location=srv.get("location"), isp=isp_brand(result.get("isp")),
                     ping_ms=result.get("ping", {}).get("latency"),
                     jitter_ms=result.get("ping", {}).get("jitter"),
                     download_mbps=result["download"]["bandwidth"] * 8 / 1e6,
@@ -3283,6 +3346,11 @@ def api_config(m, q):
         "isp_history": [{"isp": i, "first": a, "last": b} for i, a, b in m.db.query(
             "SELECT isp, MIN(ts), MAX(ts) FROM isp WHERE connection = ? AND isp IS NOT NULL GROUP BY isp ORDER BY MAX(ts) DESC",
             (c["isp"]["main_name"],))] if c["isp"]["enabled"] else [],
+        # when the main connection moved to another ISP, for the lines on the latency charts
+        "isp_changes": [{"ts": t, "isp": i, "from": p} for t, i, p in m.db.query(
+            "SELECT ts, isp, prev FROM (SELECT ts, isp, LAG(isp) OVER (ORDER BY ts) AS prev FROM isp"
+            " WHERE connection = ? AND isp IS NOT NULL) WHERE prev IS NOT NULL AND isp != prev ORDER BY ts DESC LIMIT 100",
+            (c["isp"]["main_name"],))] if c["isp"]["enabled"] else [],
         "info": m.static_info,
         "ping": {"interval_seconds": c["ping"]["interval_seconds"], "offset_seconds": c["ping"]["offset_seconds"],
                  "region_interval_seconds": c["ping"]["region_interval_seconds"],
@@ -3415,7 +3483,11 @@ def isp_current(m):
                           " ORDER BY ts DESC LIMIT 1", (name,))
         latest = dict(zip(["ts", "ip", "isp", "asn", "location", "error"], rows[0])) if rows else None
         ok = dict(zip(["ts", "ip", "isp", "asn", "location"], good[0])) if good else None
-        out.append({"connection": name, "latest": latest, "last_ok": ok})
+        # share of the last day's checks that got through (a lookup service refusing, e.g. HTTP 429, isn't an outage)
+        n, up = m.db.query("SELECT COUNT(*), SUM(error IS NULL OR error LIKE '%HTTP %') FROM isp"
+                           " WHERE connection = ? AND ts > ?", (name, time.time() - 86400))[0]
+        out.append({"connection": name, "latest": latest, "last_ok": ok, "logo": bool(ok and isp_domain(ok["isp"])),
+                    "uptime24h": round(100.0 * up / n, 2) if n else None})
     return out
 
 
@@ -3431,6 +3503,12 @@ def latest_routes(m):
                     "cities": route_cities(detailed),  # the public dashboard may hide the first hops' cities
                     "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
     return out
+
+
+def jitter(rtts):
+    """Average change between consecutive answered pings (how Ookla and RFC 3550 describe jitter, unsmoothed)."""
+    v = [x for x in rtts if x is not None]
+    return sum(abs(b - a) for a, b in zip(v, v[1:])) / (len(v) - 1) if len(v) > 1 else None
 
 
 def mean_or_none(xs):
@@ -3477,10 +3555,12 @@ def api_cdn(m, q):
         a7 = avg7.get(server)
         out["servers"].append({"id": server, "name": sv["name"], "host": sv["host"], "family": sv.get("family"),
                                "results": hosts, "score": r2(scores.get((last, server))),
+                               "failed": sum(1 for al in hosts.values() if not any(a["ip"] for a in al)),
                                "avg7d": r2(sum(a7) / len(a7)) if a7 else None,
                                # how long the DNS server took to answer, averaged over the hostnames
                                "resolve_ms": r2(mean_or_none([al[0]["resolve_ms"] for al in hosts.values()]))})
-    out["servers"].sort(key=lambda x: (x["score"] is None, x["score"] or 0))
+    # a server that left any hostname unanswered ranks below every server that answered them all
+    out["servers"].sort(key=lambda x: (x["score"] is None, x["failed"], x["score"] or 0))
     ips = {a["ip"] for x in out["servers"] for al in x["results"].values() for a in al if a["ip"]}
     for tid, ts, kind, path, hops in m.db.query(
             "SELECT target, MAX(ts), kind, path, hops FROM traceroute WHERE error IS NULL AND target LIKE 'cdn:%'"
@@ -3634,9 +3714,9 @@ def api_summary(m, q):
     last = {m.db.name_of(t): (rtt, ts) for t, rtt, ts in m.db.query(
         "SELECT target, rtt, MAX(ts) FROM ping WHERE ts > ? GROUP BY target", (now - 120,))}
     recent = {}
-    for t, rtt in m.db.query("SELECT target, rtt FROM ping WHERE ts > ?", (now - 300,)):
+    for t, rtt in m.db.query("SELECT target, rtt FROM ping WHERE ts > ? ORDER BY ts", (now - 300,)):
         recent.setdefault(m.db.name_of(t), []).append(rtt)
-    agg = {t: (trimmed_mean(v), len(v), sum(x is not None for x in v)) for t, v in recent.items()}
+    agg = {t: (trimmed_mean(v), len(v), sum(x is not None for x in v), jitter(v)) for t, v in recent.items()}
     ping = []
     for t in m.cfg["ping"]["targets"]:
         l = last.get(t["id"], (None, None))
@@ -3649,7 +3729,8 @@ def api_summary(m, q):
                      "where": t.get("where") or ("finding nearest server…" if t["method"] == "game" else None),
                      "last": r2(l[0]), "last_ts": l[1],
                      "avg5m": r2(a[0]) if a else None,
-                     "loss5m": round(100.0 * (a[1] - a[2]) / a[1], 1) if a else None})
+                     "loss5m": round(100.0 * (a[1] - a[2]) / a[1], 1) if a else None,
+                     "jitter5m": r2(a[3]) if a else None, "custom": bool(t.get("custom"))})
     recent = {}
     for sv, ms in m.db.query("SELECT server, ms FROM dns WHERE ts > ?", (now - 300,)):
         recent.setdefault(m.db.name_of(sv), []).append(ms)
@@ -3760,17 +3841,22 @@ def tunnel_status(m):
         for rule in cfg.get("ingress") or []:  # tunnels configured in the Cloudflare dashboard
             if rule.get("hostname") and f":{port}" in str(rule.get("service", "")):
                 hosts.append(rule["hostname"])
-        tunnels.append({"kind": "Cloudflare Tunnel", "url": f"https://{hosts[0]}" if hosts else None,
-                        "connected": connected, "metrics": mport})
-    # netbae tunnel's own config names the hostname of a tunnel on your domain
+        if not hosts and any(rule.get("hostname") for rule in cfg.get("ingress") or []):
+            continue  # a tunnel for other sites on this machine
+        for h in hosts or [None]:  # one tunnel can serve several hostnames
+            tunnels.append({"kind": "Cloudflare Tunnel", "url": f"https://{h}" if h else None,
+                            "connected": connected, "metrics": mport})
+    # netbae tunnel's own config names the hostnames of a tunnel on your domain
     yml = os.path.join(os.path.dirname(m.config_path or DEFAULT_CONFIG_PATH), "cloudflared", "config.yml")
-    host = next(iter(re.findall(r"^\s*- hostname: *(\S+)", read_file(yml) or "", re.M)), None)
-    if host:
+    for host in re.findall(r"^\s*- hostname: *(\S+)", read_file(yml) or "", re.M):
         named = next((t for t in tunnels if t["kind"] == "Cloudflare Tunnel" and not t["url"]), None)
+        if any(t["url"] == f"https://{host}" for t in tunnels):
+            continue
         if named:
             named["url"] = f"https://{host}"
-        elif not any(t["url"] == f"https://{host}" for t in tunnels):
-            tunnels.append({"kind": "Cloudflare Tunnel", "url": f"https://{host}", "connected": False})
+        else:
+            conn = next((t["connected"] for t in tunnels if t["kind"] == "Cloudflare Tunnel"), False)
+            tunnels.append({"kind": "Cloudflare Tunnel", "url": f"https://{host}", "connected": conn})
     ts = find_program("tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
                       os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Tailscale", "tailscale.exe"))
     if ts:
@@ -4162,6 +4248,8 @@ def make_handler(monitor, public=False):
             if self.dispatch(GET_ROUTES if public else PRIVATE_ROUTES):
                 return
             path = urlparse(self.path).path
+            if path == "/api/isp/logo":
+                return self.send_logo()
             if path.startswith("/api/"):
                 return self.send_json({"error": "not found"}, 404)
             rel = "index.html" if path in ("", "/") else path.lstrip("/")
@@ -4176,6 +4264,18 @@ def make_handler(monitor, public=False):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def send_logo(self):
+            name = parse_qs(urlparse(self.path).query).get("isp", [""])[-1]
+            logo = isp_logo(name)
+            if not logo:
+                return self.send_json({"error": "no logo"}, 404)
+            self.send_response(200)
+            self.send_header("Content-Type", logo[0])
+            self.send_header("Cache-Control", "max-age=86400")
+            self.send_header("Content-Length", str(len(logo[1])))
+            self.end_headers()
+            self.wfile.write(logo[1])
 
         def same_origin(self):
             """Blocks other websites from making your browser start things here (CSRF). Browsers label

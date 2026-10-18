@@ -4,18 +4,20 @@
 #   netbae tunnel                          choose interactively
 #   netbae tunnel quick                    temporary https://<random>.trycloudflare.com address (no account)
 #   netbae tunnel cloudflare <hostname>    permanent tunnel on your own domain, e.g. netbae.example.com
+#                                          (run again or give several to add more; existing ones are kept)
+#   netbae tunnel remove <hostname>        stop sharing on one of those hostnames
 #   netbae tunnel cloudflare --token <t>   run a tunnel you created in the Cloudflare dashboard
 #   netbae tunnel tailscale                Tailscale Funnel: https://<machine>.<tailnet>.ts.net
 #   netbae tunnel status
 #   netbae tunnel off                      stop sharing and turn the public dashboard off
 $ErrorActionPreference = 'Stop'
-$Command = ''; $Hostname = ''; $Token = ''
+$Command = ''; $Hostnames = @(); $Token = ''
 for ($i = 0; $i -lt $args.Count; $i++) {
     $a = "$($args[$i])"
     if ($a -in '-token', '--token', '/token') { $Token = "$($args[$i + 1])"; $i++ }
     elseif ($a -like '--token=*') { $Token = $a.Substring(8) }
     elseif (-not $Command) { $Command = $a }
-    else { $Hostname = $a }
+    else { $Hostnames += $a }
 }
 
 $AppDir = Join-Path $env:ProgramFiles 'netBae'
@@ -34,7 +36,7 @@ function Fail($m) { Write-Host "xx $m" -ForegroundColor Red; exit 1 }
 
 $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    $a = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$PSCommandPath`" $Command $Hostname"
+    $a = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$PSCommandPath`" $Command $($Hostnames -join ' ')"
     if ($Token) { $a += " --token $Token" }
     $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $a -Wait -PassThru
     exit $p.ExitCode
@@ -177,6 +179,17 @@ function Wait-Url([string]$Url) {
                 Write-Host ''; Info "Your public dashboard: $Url"; return
             }
         } catch { }
+        # the local resolver (often the router) may have cached "no such name" from before the
+        # DNS record existed, so also ask Cloudflare's DNS directly
+        try {
+            $h = ([Uri]$Url).Host
+            $ip = Resolve-DnsName $h -Server 1.1.1.1 -Type A -DnsOnly -ErrorAction Stop | Where-Object { $_.IPAddress } | Select-Object -First 1 -ExpandProperty IPAddress
+            if ($ip -and ((& curl.exe -fsS --max-time 5 --resolve "${h}:443:$ip" "$Url/api/config" 2>$null) -join '') -like '*"public":true*') {
+                Write-Host ''; Info "Your public dashboard: $Url"
+                Write-Host "    It may take a few more minutes to open on this network while your router's DNS cache catches up."
+                return
+            }
+        } catch { }
         Start-Sleep 3
     }
     Warn "no answer yet from $Url. It may still be setting up; check: netbae tunnel status"
@@ -208,14 +221,15 @@ function Invoke-Cloudflare {
         }
         return
     }
-    $h = $Hostname
-    if (-not $h) { $h = Read-Host 'Hostname for the dashboard (on a domain in your Cloudflare account, e.g. netbae.example.com)' }
-    $h = ($h -replace '^https?://', '') -replace '/.*$', ''
-    if ($h -notlike '*.*') { Fail 'give a full hostname, e.g. netbae.example.com' }
+    $hosts = $Hostnames
+    if (-not $hosts) { $hosts = (Read-Host 'Hostname for the dashboard (on a domain in your Cloudflare account, e.g. netbae.example.com; several separated by spaces)') -split '\s+' | Where-Object { $_ } }
+    $hosts = @($hosts | ForEach-Object { ($_ -replace '^https?://', '') -replace '/.*$', '' })
+    if (-not $hosts) { Fail 'give a full hostname, e.g. netbae.example.com' }
+    foreach ($h in $hosts) { if ($h -notlike '*.*') { Fail "give a full hostname, e.g. netbae.example.com (not $h)" } }
 
     $cert = "$CfDir\cert.pem"
     if (-not (Test-Path $cert)) {
-        Info "Sign in to Cloudflare: a browser opens; choose the domain for $h"
+        Info "Sign in to Cloudflare: a browser opens; choose the domain for $($hosts[0])"
         $home2 = "$CfDir\.home"; Remove-Item $home2 -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Force "$home2\.cloudflared" | Out-Null
         $oldHome, $oldProfile = $env:HOME, $env:USERPROFILE
@@ -239,26 +253,48 @@ function Invoke-Cloudflare {
         $id = @((& $cf tunnel --origincert $cert list -o json -n $name) | Out-String | ConvertFrom-Json)[0].id
     }
     if (-not $id) { Fail "couldn't create the tunnel" }
-    $route = & $cf tunnel --origincert $cert route dns $id $h 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) {
-        if ($route -match 'already' -and (Read-Host "A DNS record for $h already exists. Replace it? [y/N]") -match '^[yY]') {
-            & $cf tunnel --origincert $cert route dns --overwrite-dns $id $h | Out-Null
-        } else { Write-Host $route; Fail "couldn't point $h at the tunnel" }
+    foreach ($h in $hosts) {
+        $route = & $cf tunnel --origincert $cert route dns $id $h 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            if ($route -match 'already' -and (Read-Host "A DNS record for $h already exists. Replace it? [y/N]") -match '^[yY]') {
+                & $cf tunnel --origincert $cert route dns --overwrite-dns $id $h | Out-Null
+            } else { Write-Host $route; Fail "couldn't point $h at the tunnel" }
+        }
     }
     Enable-Public
-    $yml = @"
-# Written by netbae tunnel. The tunnel only reaches netBae's read-only public port.
-tunnel: $id
-credentials-file: $creds
-ingress:
-  - hostname: $h
-    service: http://127.0.0.1:$PPort
-  - service: http_status:404
-"@
-    [IO.File]::WriteAllText("$CfDir\config.yml", $yml, $utf8)
+    # keep the hostnames shared before, so each run adds to them
+    $all = @(@(Get-CfHosts) + $hosts | Select-Object -Unique)
+    Write-CfConfig $id $all
     Register-Tunnel $cf "--config `"$CfDir\config.yml`" run"
-    Wait-Url "https://$h"
-    Write-Host "    Only invited people? Add a Cloudflare Access application for $h (free for up to 50 users)."
+    foreach ($h in $hosts) { Wait-Url "https://$h" }
+    if ($all.Count -gt 1) { Info "Shared on: $($all -join ' ') (stop one with: netbae tunnel remove <hostname>)" }
+    Write-Host '    Only invited people? Add a Cloudflare Access application for each hostname (free for up to 50 users).'
+}
+function Get-CfHosts {
+    if (Test-Path "$CfDir\config.yml") {
+        Get-Content "$CfDir\config.yml" | Where-Object { $_ -match '^  - hostname: *(.+)' } | ForEach-Object { $Matches[1].Trim() }
+    }
+}
+function Write-CfConfig([string]$Id, [string[]]$Names) {
+    $yml = "# Written by netbae tunnel. The tunnel only reaches netBae's read-only public port.`ntunnel: $Id`ncredentials-file: $CfDir\credentials.json`ningress:`n"
+    foreach ($h in $Names) { $yml += "  - hostname: $h`n    service: http://127.0.0.1:$PPort`n" }
+    $yml += "  - service: http_status:404`n"
+    [IO.File]::WriteAllText("$CfDir\config.yml", $yml, $utf8)
+}
+function Invoke-Remove {
+    $h = "$($Hostnames | Select-Object -First 1)"
+    $h = ($h -replace '^https?://', '') -replace '/.*$', ''
+    if (-not $h) { Fail 'which hostname? e.g. netbae tunnel remove netbae.example.com' }
+    $all = @(Get-CfHosts)
+    if ($all -notcontains $h) { Fail "$h isn't shared by netbae tunnel (see: netbae tunnel status)" }
+    $rest = @($all | Where-Object { $_ -ne $h })
+    if (-not $rest) { Fail "$h is the only hostname; to stop sharing altogether: netbae tunnel off" }
+    $id = (Get-Content "$CfDir\config.yml" | Where-Object { $_ -match '^tunnel: *(.+)' } | ForEach-Object { $Matches[1].Trim() } | Select-Object -First 1)
+    Write-CfConfig $id $rest
+    Stop-Tunnel
+    Start-ScheduledTask -TaskName $TunnelTask
+    Info "$h no longer reaches the dashboard. Still shared on: $($rest -join ' ')"
+    Write-Host "    Its DNS record is still in your Cloudflare account; delete it there if you don't need it."
 }
 
 # ---------------------------------------------------------------- tailscale
@@ -312,8 +348,10 @@ switch ($Command.ToLower()) {
     'quick' { Invoke-Quick }
     { $_ -in 'cloudflare', 'cf' } { Invoke-Cloudflare }
     { $_ -in 'tailscale', 'ts', 'funnel' } { Invoke-Tailscale }
+    { $_ -in 'remove', 'rm' } { Invoke-Remove }
     'status' { Show-Status }
     { $_ -in 'off', 'stop' } { Invoke-Off }
+    { $_ -like '*.*' } { $Hostnames = @($Command) + $Hostnames; Invoke-Cloudflare }  # netbae tunnel netbae.example.com
     '' {
         Write-Host @'
 Share the read-only public dashboard without opening a port on your router:
@@ -327,5 +365,5 @@ Share the read-only public dashboard without opening a port on your router:
             '1' { Invoke-Quick } '2' { Invoke-Cloudflare } '3' { Invoke-Tailscale } default { Fail 'nothing chosen' }
         }
     }
-    default { Get-Content $PSCommandPath | Select-Object -Skip 1 -First 9 | ForEach-Object { $_ -replace '^# ?', '' }; exit 1 }
+    default { Get-Content $PSCommandPath | Select-Object -Skip 1 -First 11 | ForEach-Object { $_ -replace '^# ?', '' }; exit 1 }
 }

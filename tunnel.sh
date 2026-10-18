@@ -5,6 +5,8 @@
 #   netbae tunnel                         choose interactively
 #   netbae tunnel quick                   temporary https://<random>.trycloudflare.com address (no account)
 #   netbae tunnel cloudflare <hostname>   permanent tunnel on your own domain, e.g. netbae.example.com
+#                                         (run again or give several to add more; existing ones are kept)
+#   netbae tunnel remove <hostname>       stop sharing on one of those hostnames
 #   netbae tunnel cloudflare --token <t>  run a tunnel you created in the Cloudflare dashboard
 #   netbae tunnel tailscale               Tailscale Funnel: https://<machine>.<tailnet>.ts.net
 #   netbae tunnel status
@@ -101,7 +103,7 @@ install_cloudflared() {
   c_info "Installing cloudflared (Cloudflare's tunnel program)"
   if [[ $OS == Darwin ]]; then
     local brew
-    brew=$(ls /opt/homebrew/bin/brew /usr/local/bin/brew 2>/dev/null | head -1)
+    brew=$(ls /opt/homebrew/bin/brew /usr/local/bin/brew 2>/dev/null | head -1 || true)
     [[ -n $brew && -n ${SUDO_USER:-} ]] || die "install Homebrew (https://brew.sh), then: brew install cloudflared"
     sudo -u "$SUDO_USER" "$brew" install cloudflared
   elif command -v apt-get >/dev/null; then
@@ -124,7 +126,7 @@ update_cloudflared() {  # bring an installed cloudflared up to date from whereve
   local old new brew
   old=$("$CF" --version 2>/dev/null | head -1)
   c_info "Checking for a cloudflared update"
-  brew=$(ls /opt/homebrew/bin/brew /usr/local/bin/brew 2>/dev/null | head -1)
+  brew=$(ls /opt/homebrew/bin/brew /usr/local/bin/brew 2>/dev/null | head -1 || true)
   if [[ $OS == Darwin && -n $brew && -n ${SUDO_USER:-} ]] && sudo -u "$SUDO_USER" "$brew" list cloudflared >/dev/null 2>&1; then
     sudo -u "$SUDO_USER" "$brew" upgrade cloudflared >/dev/null 2>&1 || true
   elif [[ $OS != Darwin ]] && command -v dpkg >/dev/null && dpkg -s cloudflared >/dev/null 2>&1; then
@@ -220,9 +222,19 @@ cf_dir() {
 }
 wait_for_url() {  # wait_for_url https://host - the dashboard answering through the tunnel
   c_info "Waiting for $1 to answer (DNS can take a minute)"
+  local out
   for _ in $(seq 40); do
-    if curl -fsS --max-time 5 "$1/api/config" 2>/dev/null | grep -q '"public":true'; then
+    out=$(curl -fsS --max-time 5 "$1/api/config" 2>/dev/null || true)
+    if [[ $out == *'"public":true'* ]]; then
       echo; c_info "Your public dashboard: $1"; return 0
+    fi
+    # the local resolver (often the router) may have cached "no such name" from before the
+    # DNS record existed, so also ask Cloudflare's DNS directly
+    out=$(curl -fsS --max-time 5 --doh-url https://1.1.1.1/dns-query "$1/api/config" 2>/dev/null || true)
+    if [[ $out == *'"public":true'* ]]; then
+      echo; c_info "Your public dashboard: $1"
+      echo "    It may take a few more minutes to open on this network while your router's DNS cache catches up."
+      return 0
     fi
     sleep 3
   done
@@ -241,12 +253,12 @@ cmd_quick() {
 }
 
 cmd_cloudflare() {
-  local host="" token=""
+  local token="" h i hosts=()
   while [[ $# -gt 0 ]]; do
     case $1 in
       --token) token=${2:-}; shift 2 || true ;;
       --token=*) token=${1#*=}; shift ;;
-      *) host=$1; shift ;;
+      *) hosts+=("$1"); shift ;;
     esac
   done
   install_cloudflared
@@ -264,13 +276,16 @@ cmd_cloudflare() {
     fi
     return
   fi
-  [[ -n $host ]] || host=$(ask "Hostname for the dashboard (on a domain in your Cloudflare account, e.g. netbae.example.com):" "")
-  host=${host#https://}; host=${host%%/*}
-  [[ $host == *.* ]] || die "give a full hostname, e.g. netbae.example.com"
+  [[ ${#hosts[@]} -gt 0 ]] || read -r -a hosts <<<"$(ask "Hostname for the dashboard (on a domain in your Cloudflare account, e.g. netbae.example.com; several separated by spaces):" "")"
+  [[ ${#hosts[@]} -gt 0 ]] || die "give a full hostname, e.g. netbae.example.com"
+  for i in "${!hosts[@]}"; do
+    h=${hosts[$i]#https://}; h=${h#http://}; hosts[i]=${h%%/*}
+    [[ ${hosts[$i]} == *.* ]] || die "give a full hostname, e.g. netbae.example.com (not ${hosts[$i]})"
+  done
 
   local cert="$CF_DIR/cert.pem" name id
   if [[ ! -f $cert ]]; then
-    c_info "Sign in to Cloudflare: open the link below and choose the domain for $host"
+    c_info "Sign in to Cloudflare: open the link below and choose the domain for ${hosts[0]}"
     rm -rf "$CF_DIR/.home"; install -d -m 0700 "$CF_DIR/.home/.cloudflared"
     HOME="$CF_DIR/.home" "$CF" tunnel login
     mv "$CF_DIR/.home/.cloudflared/cert.pem" "$cert"; rm -rf "$CF_DIR/.home"
@@ -289,28 +304,53 @@ cmd_cloudflare() {
     id=$(cfj list -o json -n "$name" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')
   fi
   chown "root:$(id -gn "$SVC_USER")" "$CF_DIR/credentials.json"; chmod 0640 "$CF_DIR/credentials.json"
-  if ! cfj route dns "$id" "$host" 2>/tmp/netbae-route.$$; then
-    if grep -qi 'already' /tmp/netbae-route.$$ && [[ $(ask "A DNS record for $host already exists. Replace it? [y/N]" n) == [yY]* ]]; then
-      cfj route dns --overwrite-dns "$id" "$host" >/dev/null
-    else
-      cat /tmp/netbae-route.$$ >&2; rm -f /tmp/netbae-route.$$; die "couldn't point $host at the tunnel"
+  for h in "${hosts[@]}"; do
+    if ! cfj route dns "$id" "$h" 2>/tmp/netbae-route.$$; then
+      if grep -qi 'already' /tmp/netbae-route.$$ && [[ $(ask "A DNS record for $h already exists. Replace it? [y/N]" n) == [yY]* ]]; then
+        cfj route dns --overwrite-dns "$id" "$h" >/dev/null
+      else
+        cat /tmp/netbae-route.$$ >&2; rm -f /tmp/netbae-route.$$; die "couldn't point $h at the tunnel"
+      fi
     fi
-  fi
+  done
   rm -f /tmp/netbae-route.$$
   public_on
-  cat >"$CF_DIR/config.yml" <<EOF
-# Written by netbae tunnel. The tunnel only reaches netBae's read-only public port.
-tunnel: $id
-credentials-file: $CF_DIR/credentials.json
-ingress:
-  - hostname: $host
-    service: http://127.0.0.1:$PPORT
-  - service: http_status:404
-EOF
-  chmod 0644 "$CF_DIR/config.yml"
+  # keep the hostnames shared before, so each run adds to them
+  local all=() seen=" "
+  for h in $(cf_hosts) "${hosts[@]}"; do
+    [[ $seen == *" $h "* ]] || { all+=("$h"); seen+="$h "; }
+  done
+  write_cf_config "$id" "${all[@]}"
   cf_service --config "$CF_DIR/config.yml" run
-  wait_for_url "https://$host"
-  echo "    Only invited people? Add a Cloudflare Access application for $host (free for up to 50 users)."
+  for h in "${hosts[@]}"; do wait_for_url "https://$h"; done
+  if [[ ${#all[@]} -gt 1 ]]; then c_info "Shared on: ${all[*]} (stop one with: netbae tunnel remove <hostname>)"; fi
+  echo "    Only invited people? Add a Cloudflare Access application for each hostname (free for up to 50 users)."
+}
+cf_hosts() { if [[ -f $CF_DIR/config.yml ]]; then sed -n 's/^  - hostname: *//p' "$CF_DIR/config.yml"; fi; }
+write_cf_config() {  # write_cf_config <tunnel id> <hostname>...
+  local id=$1 h; shift
+  {
+    echo "# Written by netbae tunnel. The tunnel only reaches netBae's read-only public port."
+    echo "tunnel: $id"
+    echo "credentials-file: $CF_DIR/credentials.json"
+    echo "ingress:"
+    for h in "$@"; do printf '  - hostname: %s\n    service: http://127.0.0.1:%s\n' "$h" "$PPORT"; done
+    echo "  - service: http_status:404"
+  } >"$CF_DIR/config.yml"
+  chmod 0644 "$CF_DIR/config.yml"
+}
+cmd_remove() {
+  local h=${1:-} id rest=() x
+  h=${h#https://}; h=${h%%/*}
+  [[ -n $h ]] || die "which hostname? e.g. netbae tunnel remove netbae.example.com"
+  cf_hosts | grep -qxF "$h" || die "$h isn't shared by netbae tunnel (see: netbae tunnel status)"
+  for x in $(cf_hosts); do [[ $x == "$h" ]] || rest+=("$x"); done
+  [[ ${#rest[@]} -gt 0 ]] || die "$h is the only hostname; to stop sharing altogether: netbae tunnel off"
+  id=$(sed -n 's/^tunnel: *//p' "$CF_DIR/config.yml")
+  write_cf_config "$id" "${rest[@]}"
+  if [[ $OS == Darwin ]]; then launchctl kickstart -k "system/$TLABEL"; else systemctl restart netbae-tunnel; fi
+  c_info "$h no longer reaches the dashboard. Still shared on: ${rest[*]}"
+  echo "    Its DNS record is still in your Cloudflare account; delete it there if you don't need it."
 }
 
 # ---------------------------------------------------------------- tailscale
@@ -368,8 +408,10 @@ case "${1:-}" in
   quick) cmd_quick ;;
   cloudflare|cf) shift; cmd_cloudflare "$@" ;;
   tailscale|ts|funnel) cmd_tailscale ;;
+  remove|rm) shift; cmd_remove "$@" ;;
   status) cmd_status ;;
   off|stop) cmd_off ;;
+  *.*) cmd_cloudflare "$@" ;;  # netbae tunnel netbae.example.com
   "")
     cat <<'EOF'
 Share the read-only public dashboard without opening a port on your router:
@@ -383,5 +425,5 @@ EOF
       1) cmd_quick ;; 2) cmd_cloudflare ;; 3) cmd_tailscale ;; *) die "nothing chosen" ;;
     esac
     ;;
-  *) sed -n '2,12s/^# \{0,1\}//p' "$0"; exit 1 ;;
+  *) sed -n '2,14s/^# \{0,1\}//p' "$0"; exit 1 ;;
 esac

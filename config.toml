@@ -43,8 +43,8 @@ minute_retention_days = 90   # 1-minute summaries (count, avg, min, max, latency
 retention_days = 0           # hourly summaries, speedtests and system history
 
 [ping]
-interval_seconds = 5
-offset_seconds = 0     # e.g. 2 -> pings at :02, :07, :12 ...
+interval_seconds = 30
+offset_seconds = 0     # e.g. 2 -> pings at :02, :32, 1:02 ...
 timeout_seconds = 2
 # Ping targets: netBae's built-in list (74 hosts: DNS, streaming, gaming, social, AI, calls, cloud, CDNs, hosting,
 # Usenet ...) is in targets.toml next to netbae.py (/opt/netbae on Linux and in Docker, /usr/local/lib/netbae on macOS,
@@ -66,7 +66,7 @@ disable = []           # e.g. ["Streaming AU", "China cloud & CDN", "Hetzner Fal
 regions = ["Sydney", "Perth", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Guam", "Delhi", "Oman",
            "Los Angeles", "Toronto", "New York", "São Paulo", "London", "Amsterdam", "Paris", "Milan",
            "Cape Town"]
-region_interval_seconds = 30
+region_interval_seconds = 60
 # Also ping each site over IPv6, as a separate line, when this machine and the site have IPv6.
 # IPv4 sites keep their IPv4 history; the dashboard's tiles show both and the chart can switch
 # between IPv4, IPv6 or both. Regions use an IPv6-capable speedtest server in the same city.

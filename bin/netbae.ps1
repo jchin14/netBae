@@ -120,7 +120,7 @@ netbae - manage the netBae internet monitor
   netbae restart | start | stop
   netbae version
   netbae tunnel       share a read-only dashboard publicly (Cloudflare or Tailscale, no port forwarding)
-  netbae tunnel status | off
+  netbae tunnel status | off | remove <hostname>
   netbae uninstall [-Purge]
 '@
     }
