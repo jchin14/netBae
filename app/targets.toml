@@ -120,8 +120,9 @@ targets = [
 ]
 
 # DNS servers: every one is asked for every domain on each run. IPv6 servers are only queried when this
-# machine has IPv6 internet. host = "gateway" is your router; host = "dhcp" is the DNS servers this machine
-# was given by DHCP, if they're not the router (e.g. your ISP's resolvers, or the router's IPv6 address).
+# machine has IPv6 internet. host = "gateway" is your router, over IPv4 and (when it answers DNS there) IPv6;
+# host = "dhcp" is the IPv4 and IPv6 DNS servers this machine was given by DHCP or router adverts, if they're
+# not the router (e.g. your ISP's resolvers or a Pi-hole). The router's own IPv6 address counts as the router.
 # A name with one IPv4 and one IPv6 address also pairs them for the ping charts' IPv6 lines.
 dns_servers = [
   { name = "Router",        host = "gateway" },

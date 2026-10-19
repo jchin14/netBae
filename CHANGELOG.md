@@ -17,6 +17,13 @@ The main steps so far, with the full details per version below.
 | 1.10 - 1.14 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs, route change history, charts grouped by category |
 | 1.15 | An Update button on the dashboard and weekly automatic updates |
 
+## 1.18.5 - 2026-10-19
+
+Fixes the dashboard summary failing to load on IPv6 networks in 1.18.4, and tests the router's DNS over IPv6.
+
+- DNS: the router over IPv6 too (Router v6), and DHCP DNS over IPv4 and IPv6. The router's own IPv6 address (found by its MAC address) is shown as Router v6 instead of DHCP DNS, so DHCP DNS only lists resolvers that really aren't the router, like your ISP's or a Pi-hole.
+- Fixed: in 1.18.4 the dashboard's summary (tiles, header and routes) could fail to load on networks with IPv6, because DNS servers that aren't traced (like the router) broke the route lookup.
+
 ## 1.18.4 - 2026-10-19
 
 Internet latency to the nearest servers, sortable speedtest tables, click a table row to hide its line, routes to DNS servers, and fan speed.

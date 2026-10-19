@@ -1709,7 +1709,7 @@ async function main() {
       id: s.id, label: CONFIG.dns.servers.filter((x) => x.name === s.name).length > 1 ? `${s.name} ${s.family === 6 ? 'v6' : 'v4'}` : s.name,
       color: dnsColors[s.id], title: s.host, group: s.group, cat: s.name,
       // the router and resolvers on your network aren't traced
-      local: s.host === 'gateway' || s.dhcp || /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|f[cd]|fe80)/i.test(s.host),
+      local: s.lan || s.host === 'gateway',
     }));
     if (!CONFIG.dns.ipv6_available && CONFIG.dns.servers.some((s) => s.family === 6)) {
       $('#dns-note').textContent = "This network doesn't have IPv6 internet, so the IPv6 resolvers aren't being tested.";

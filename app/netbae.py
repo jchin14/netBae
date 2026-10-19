@@ -46,7 +46,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.18.4"
+VERSION = "1.18.5"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -203,6 +203,90 @@ def default_gateway():
         return str(ipaddress.IPv4Address(m.group(1)))
     except ValueError:  # "link#12" and the like
         return None
+
+
+def default_gateway6():
+    """IPv6 default gateway with its interface, e.g. "fe80::1%eth0" (routers advertise their link-local address)."""
+    raw = read_file("/proc/net/ipv6_route")
+    if raw:
+        best = None
+        for line in raw.splitlines():
+            f = line.split()
+            # destination ::/0 with a next hop; the kernel's own unreachable defaults have none
+            if len(f) == 10 and f[0] == "0" * 32 and f[1] == "00" and f[4] != "0" * 32 and f[9] != "lo":
+                if best is None or int(f[5], 16) < best[0]:
+                    best = (int(f[5], 16), f"{ipaddress.IPv6Address(bytes.fromhex(f[4]))}%{f[9]}")
+        return best and best[1]
+    if IS_WINDOWS:
+        # "If Metric Network Destination Gateway": the interface number is the zone id
+        best = None
+        for line in (run_cmd(["route", "print", "-6", "::/0"]) or "").splitlines():
+            f = line.split()
+            if len(f) == 4 and f[2] == "::/0" and f[0].isdigit() and f[1].isdigit() and ":" in f[3]:
+                if best is None or int(f[1]) < best[0]:
+                    best = (int(f[1]), f"{f[3]}%{f[0]}")
+        return best and best[1]
+    m = re.search(r"gateway:\s*(\S+)", run_cmd(["/sbin/route", "-n", "get", "-inet6", "default"]) or "")
+    return m.group(1) if m and ":" in m.group(1) else None
+
+
+def neighbor_macs():
+    """{ip: mac} from the ARP and IPv6 neighbour tables: the devices on your network this machine talked to lately."""
+    out = {}
+
+    def add(ip, mac):
+        parts = re.split(r"[:-]", mac.lower())
+        if len(parts) == 6 and all(re.fullmatch(r"[0-9a-f]{1,2}", x) for x in parts):
+            mac = ":".join(x.zfill(2) for x in parts)  # macOS writes 1c:b:8b..., Windows 1C-0B-8B...
+            if mac not in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"):
+                out[ip.split("%")[0].lower()] = mac
+    if IS_WINDOWS:
+        for line in (run_cmd(["powershell", "-NoProfile", "-Command", "Get-NetNeighbor | ForEach-Object "
+                              "{ \"$($_.IPAddress) $($_.LinkLayerAddress)\" }"]) or "").splitlines():
+            f = line.split()
+            if len(f) == 2:
+                add(*f)
+        return out
+    raw = read_file("/proc/net/arp")
+    if raw is not None:  # Linux: "IP address  HW type  Flags  HW address ..."
+        for line in raw.splitlines()[1:]:
+            f = line.split()
+            if len(f) > 3:
+                add(f[0], f[3])
+        for line in (run_cmd(["ip", "-6", "neigh"]) or "").splitlines():  # "fe80::1 dev eth0 lladdr aa:bb:... router"
+            f = line.split()
+            if "lladdr" in f[:-1]:
+                add(f[0], f[f.index("lladdr") + 1])
+        return out
+    for line in (run_cmd(["/usr/sbin/arp", "-an"]) or "").splitlines():  # macOS: "? (192.168.1.1) at 1c:b:8b:e0:67:3c on en0"
+        m = re.search(r"\(([\d.]+)\) at (\S+)", line)
+        if m:
+            add(*m.groups())
+    for line in (run_cmd(["/usr/sbin/ndp", "-an"]) or "").splitlines()[1:]:  # "2401:db8::1  1c:b:8b:e0:67:3c  en0 ..."
+        f = line.split()
+        if len(f) > 1:
+            add(f[0], f[1])
+    return out
+
+
+def router_dns():
+    """The router's addresses for DNS: (IPv6 address to ask, or None; every address that is the router).
+    Routers hand out their own IPv6 address as a DNS server (by DHCPv6 or router adverts), so a DNS server on the
+    same device as the default gateway (same MAC address) is the router. Failing that, its link-local address if
+    it answers DNS there."""
+    gw4, gw6 = default_gateway(), default_gateway6()
+    v6 = [ip for ip in system_dns_servers() if ":" in ip]
+    for ip in v6:
+        dns_query(ip, "example.com", 1)  # also puts it in the neighbour table if it's on this network
+    macs = neighbor_macs()
+    router_macs = {macs.get(gw4), macs.get(gw6.split("%")[0].lower()) if gw6 else None} - {None}
+    mine = [ip for ip in v6 if macs.get(ip.lower()) in router_macs]
+    ips = {x for x in (gw4, gw6 and gw6.split("%")[0].lower()) if x} | set(mine)
+    if mine:
+        return mine[0], ips
+    if gw6 and dns_query(gw6, "example.com", 1) is not None:
+        return gw6, ips
+    return None, ips
 
 
 def docker_bridge():
@@ -688,15 +772,23 @@ def load_config(path):
                                                    twin=t["id"]))
     merge_dns_cdn(cfg)
     servers = []
+    hosts = [str(x.get("host") if isinstance(x, dict) else x).lower() for x in cfg["dns"]["servers"]]
+    router = router_dns() if "gateway" in hosts or "dhcp" in hosts else (None, set())
     for t in cfg["dns"]["servers"]:
-        if isinstance(t, dict) and str(t.get("host", "")).lower() == "dhcp":
-            # add the DHCP-provided resolvers that aren't the router or already in the list
-            gw = default_gateway()
-            listed = {str(x.get("host") if isinstance(x, dict) else x) for x in cfg["dns"]["servers"]}
-            extra = [ip for ip in system_dns_servers() if ip != gw and ip not in listed]
+        host = str(t.get("host") if isinstance(t, dict) else t).lower()
+        if host == "gateway":
+            servers.append(dict(normalize_target(t), lan=True))
+            if router[0]:  # and the router's IPv6 address, as the same server
+                name = t.get("name") if isinstance(t, dict) else None
+                servers.append(dict(normalize_target({"name": name or "Router", "host": router[0]}), id="gateway6", lan=True))
+        elif host == "dhcp":
+            # the DHCP-provided resolvers (IPv4 and IPv6) that aren't the router or already in the list
+            listed = set(hosts)
+            extra = [ip for ip in system_dns_servers() if ip.lower() not in router[1] and ip.lower() not in listed]
             for i, ip in enumerate(extra):
-                servers.append(dict(normalize_target({"name": t.get("name") or "DHCP DNS", "host": ip}),
-                                    id="dhcp" if i == 0 else f"dhcp-{i + 1}"))
+                servers.append(dict(normalize_target({"name": (t.get("name") if isinstance(t, dict) else None) or "DHCP DNS", "host": ip}),
+                                    id="dhcp" if i == 0 else f"dhcp-{i + 1}",
+                                    lan=not ipaddress.ip_address(ip).is_global))
             if not extra:
                 log.info("DHCP DNS: this machine uses the router (or a listed resolver) for DNS, nothing extra to test")
         else:
@@ -3609,6 +3701,8 @@ def isp_current(m):
 
 def dns_trace_host(sv):
     """A DNS server's address if it's on the internet (the router and resolvers on your network aren't traced)."""
+    if sv.get("lan"):
+        return None
     try:
         return sv["host"] if ipaddress.ip_address(sv["host"]).is_global else None
     except ValueError:
@@ -3627,11 +3721,16 @@ def latest_routes(m):
         out[tid] = {"ts": ts, "kind": fix_route_kind(kind, p), "path": with_rels(p),
                     "cities": route_cities(detailed),  # the public dashboard may hide the first hops' cities
                     "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
-    by_host = {(V6_TWIN.get(t["host"]) if t.get("family") == 6 and ":" not in t["host"] else t["host"]): t["id"]
-               for t in m.cfg["ping"]["targets"] if not t.get("bind") and t["id"] in out}
+    by_host = {}  # address -> ping target with a route (hostnames don't match a DNS server's address)
+    for t in m.cfg["ping"]["targets"]:
+        host = t.get("host") or ""  # region and game targets find their server at runtime
+        addr = V6_TWIN.get(host) if t.get("family") == 6 and ":" not in host else host
+        if addr and is_ip(addr) and not t.get("bind") and t["id"] in out:
+            by_host[addr] = t["id"]
     for sv in m.cfg["dns"]["servers"]:
-        if "dns:" + sv["id"] not in out and by_host.get(dns_trace_host(sv)):
-            out["dns:" + sv["id"]] = out[by_host[sv["host"]]]
+        host = dns_trace_host(sv)
+        if host and "dns:" + sv["id"] not in out and host in by_host:
+            out["dns:" + sv["id"]] = out[by_host[host]]
     return out
 
 
@@ -3704,11 +3803,6 @@ def api_cdn(m, q):
                                   "path": with_rels(json.loads(path or "[]")),
                                   "cities": route_cities(detailed),
                                   "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
-    by_host = {(V6_TWIN.get(t["host"]) if t.get("family") == 6 and ":" not in t["host"] else t["host"]): t["id"]
-               for t in m.cfg["ping"]["targets"] if not t.get("bind") and t["id"] in out}
-    for sv in m.cfg["dns"]["servers"]:
-        if "dns:" + sv["id"] not in out and by_host.get(dns_trace_host(sv)):
-            out["dns:" + sv["id"]] = out[by_host[sv["host"]]]
     return out
 
 
