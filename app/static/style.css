@@ -70,6 +70,8 @@ h1 .logo { width: 24px; height: 24px; fill: none; stroke: var(--accent); stroke-
 .share-now[hidden] { display: none; }
 .badge-public { border: 1px solid var(--border); color: var(--muted); border-radius: 999px; padding: 1px 8px; margin-right: 8px; }
 .badge-public[hidden] { display: none; }
+a.access-link { text-decoration: none; }
+a.access-link:hover { color: var(--text); border-color: var(--muted); }
 .busy-tag { border: 1px solid var(--border); color: var(--muted); border-radius: 999px; padding: 0 6px; font-size: .85em; }
 .repo { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); text-decoration: none; margin-left: 10px;
   border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
@@ -278,8 +280,23 @@ input[type="datetime-local"] { padding: 4px 6px; }
 .chips.chip-rows { flex-direction: column; gap: 4px; }
 .chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .chip-row:not(.open) .chip { display: none; }
-.chip-row .caret { font: inherit; font-size: 11px; width: 18px; color: var(--muted); background: none; border: 0; padding: 0; cursor: pointer; }
+/* a category row: the caret on the left opens it, the name shows or hides it, and the rest of the row picks out
+   its line (hover with a mouse, tap to pin on a phone) */
+.chip-row { border-radius: 8px; min-height: 32px; }
+.chip-row:hover, .chip-row.pinned { background: rgba(127, 127, 127, .08); }
+.chip-row.pinned { box-shadow: inset 3px 0 0 var(--accent); }
+.chip-row .caret {
+  font: inherit; line-height: 1; color: var(--muted); background: none; border: 0; cursor: pointer;
+  align-self: stretch; min-width: 36px; min-height: 32px; margin-right: -6px; padding: 0 6px 0 8px; text-align: left;
+}
 .chip-row .caret:hover { color: var(--text); }
+.chip-row .caret::before {
+  content: ''; display: inline-block; width: 6px; height: 6px; border: solid currentColor; border-width: 0 2px 2px 0;
+  transform: rotate(-45deg); transition: transform .15s;
+}
+.chip-row.open .caret::before { transform: translateY(-2px) rotate(45deg); }
+.chip-row .group-label { padding-top: 6px; padding-bottom: 6px; }
+.chip-row .row-fill { flex: 1 0 24px; align-self: stretch; min-height: 32px; cursor: pointer; }
 .group-label .count { font-weight: 500; color: var(--muted); }
 .chip i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .chip.off { background: var(--chip-off); color: var(--muted); }

@@ -16,6 +16,23 @@ The main steps so far, with the full details per version below.
 | 1.8 - 1.9 | IPv6 pings and routes, built-in targets in their own file, a database about 40% smaller |
 | 1.10 - 1.14 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs, route change history, charts grouped by category |
 | 1.15 | An Update button on the dashboard and weekly automatic updates |
+| 1.19 | NixOS support (install command and a Nix flake), Cloudflare Access sign-in for your own dashboard away from home, speedtests that pause the other tests |
+
+## 1.19.0 - 2026-10-22
+
+NixOS support, Cloudflare Access sign-in for your own dashboard away from home, speedtests that pause the other tests, live ISP change lines, and fewer false "down" hosts on a busy machine.
+
+- **NixOS support:** the usual install command now works on NixOS too: it adds netBae to your NixOS configuration as a module (in `/etc/nixos`) and rebuilds, and all the `netbae` commands work. There's also a Nix flake with a package and a `services.netbae` module for flake users (unprivileged service with only the capabilities it needs, config written as Nix, optional firewall port). See NixOS in the README.
+- **Sign in from anywhere:** sign in on your public address with Cloudflare Access to get your own dashboard there, so one hostname works for visitors and for you away from home. Visitors still see the public view. Set it up with `[public] access_team` and `access_aud` (see the README).
+- Pings, DNS checks and traceroutes pause during every speedtest (scheduled, manual, region, global and secondary connection), so the test's traffic no longer shows up as latency spikes and they don't slow the test down. A test waits for any that are already running, then they resume once it's done. The ping and DNS charts have a short gap instead. System stats keep recording.
+- A switch to another ISP (e.g. a failover to your backup connection) gets its dashed line on the latency charts within seconds, without reloading the page.
+- ISP checks on the System chart are a tick (or a cross when the check failed) in the ISP's colour, one row per connection, instead of a shape per ISP.
+- Ping chart categories are easier to use on phones. Tap the arrow on the left (now a bigger target) to open a category, its name to show or hide it, and the rest of its row to pick out its line on the chart (tap again to stop). With a mouse, hovering a category or host does the same.
+- A build newer than the latest release shows as `dev1.x.y` in the header and footer instead of `v1.x.y`, so test builds are easy to tell apart.
+- The summary bar shows Internet latency before Avg latency.
+- ISP change labels close together on a chart stack instead of hiding each other.
+- Fixed: fewer false "down" hosts on a busy machine: when 5 or more hosts fail in the same ping round, they're pinged again a second later, so a short stall on the monitoring machine (swapping, a slow disk) no longer shows a whole batch of hosts, router included, as down.
+- Fixed: updating from the dashboard's Update button or automatically no longer says the Ookla speedtest CLI is missing, or installs a second copy of it in /usr/local/bin.
 
 ## 1.18.5 - 2026-10-19
 

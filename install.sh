@@ -29,6 +29,7 @@ SPEEDTEST_VERSION=1.2.0
 OOKLA_REPO=https://packagecloud.io/ookla/speedtest-cli
 CHARTJS_URL=https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js
 ADAPTER_URL=https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js
+# Chart.js URLs and hashes are also pinned in nix/package.nix (as SRI hashes): change both together
 CHARTJS_SHA256=d2af8974e95271638772e9e9524db5b9a6f58d6ec2d5d781400447b4a31c681e   # a download that doesn't match is thrown away
 ADAPTER_SHA256=ea7ab30d26c38dcf1f2d26bb43e73a94537b58f1906f55e1a546dd09321b5615
 
@@ -41,10 +42,129 @@ if [[ $EUID -ne 0 ]]; then
   [[ -n "$SCRIPT" && -f "$SCRIPT" ]] && exec sudo NETBAE_REPO="$NETBAE_REPO" NETBAE_REF="$NETBAE_REF" bash "$SCRIPT" "$@"
   die "please run as root, e.g.: curl -fsSL <url>/install.sh | sudo bash"
 fi
+# The dashboard's Update button and auto-update run this from a system job with no HOME, and the Ookla CLI
+# crashes without one (so it looked missing and was installed again). ~ is root's home when HOME is unset.
+export HOME=${HOME:-~}
 if [[ $OS == Linux ]]; then
   command -v systemctl >/dev/null && [[ -d /run/systemd/system ]] || die "systemd is required"
 elif [[ $OS != Darwin ]]; then
   die "unsupported OS '$OS' - netBae installs on systemd Linux and macOS"
+fi
+
+# ---------------------------------------------------------------- source files
+# Use the files next to this script, or download the repo when piped from curl.
+SRC_DIR=""
+if [[ -n "$SCRIPT" && -f "$SCRIPT" ]]; then
+  SRC_DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+fi
+if [[ -z "$SRC_DIR" || ! -f "$SRC_DIR/app/netbae.py" ]]; then
+  SRC_DIR=$(mktemp -d)
+  trap 'rm -rf "$SRC_DIR"' EXIT
+  c_info "Downloading netBae ($NETBAE_REPO@$NETBAE_REF)"
+  curl -fsSL "https://github.com/$NETBAE_REPO/archive/$NETBAE_REF.tar.gz" | tar -xz -C "$SRC_DIR" --strip-components=1 \
+    || die "could not download https://github.com/$NETBAE_REPO"
+  [[ -f "$SRC_DIR/app/netbae.py" ]] || die "downloaded archive does not contain app/netbae.py"
+fi
+
+# ---------------------------------------------------------------- NixOS
+# NixOS is configured declaratively, so netBae installs as a module in /etc/nixos instead: the source goes to
+# /etc/nixos/netbae, /etc/nixos/netbae.nix turns the service on, configuration.nix imports it, and
+# nixos-rebuild builds it. Settings stay in /etc/netbae/config.toml, as on other Linux systems.
+is_nixos() { [[ -f /etc/NIXOS ]] || grep -qs '^ID=nixos' /etc/os-release; }
+nixos_install() {
+  local nixdir=/etc/nixos conf=/etc/nixos/configuration.nix port old=""
+  [[ -f $conf ]] || die "no $conf: add netBae to your NixOS configuration by hand (see NixOS in the README)"
+  [[ -f $nixdir/netbae/app/netbae.py ]] && old=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$nixdir/netbae/app/netbae.py")
+  NEW_VERSION=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$SRC_DIR/app/netbae.py")
+  if [[ -n $old ]]; then c_info "Updating netBae $old -> $NEW_VERSION on NixOS (config and data are kept)"
+  else c_info "Installing netBae $NEW_VERSION on NixOS"; fi
+
+  rm -rf "$nixdir/netbae.new"
+  mkdir -p "$nixdir/netbae.new"
+  cp -a "$SRC_DIR/app" "$SRC_DIR/nix" "$SRC_DIR/config.toml" "$SRC_DIR/LICENSE" "$nixdir/netbae.new/"
+  rm -rf "$nixdir/netbae.new/app/__pycache__" "$nixdir/netbae.new/app/static/vendor"
+  echo "$NETBAE_REPO" >"$nixdir/netbae.new/REPO"
+  rm -rf "$nixdir/netbae.old"; [[ -d $nixdir/netbae ]] && mv "$nixdir/netbae" "$nixdir/netbae.old"
+  mv "$nixdir/netbae.new" "$nixdir/netbae"
+
+  mkdir -p "$CONF_DIR"
+  local defaults
+  defaults=$(sed 's/^auto_update = .*/auto_update = "off"     # NixOS: update with netbae update/' "$SRC_DIR/config.toml")
+  if [[ -f $CONF_DIR/config.toml ]]; then
+    c_info "Keeping existing $CONF_DIR/config.toml (new defaults saved as config.toml.default)"
+  else
+    printf '%s\n' "$defaults" >"$CONF_DIR/config.toml"
+  fi
+  printf '%s\n' "$defaults" >"$CONF_DIR/config.toml.default"
+  chmod 644 "$CONF_DIR/config.toml" "$CONF_DIR/config.toml.default"
+  port=$(sed -n '/^\[web\]/,/^\[/s/^port *= *\([0-9]*\).*/\1/p' "$CONF_DIR/config.toml" | head -1)
+
+  cat >"$nixdir/netbae.nix" <<NIX
+# Added by the netBae installer (https://github.com/$NETBAE_REPO). Managed by it: netbae update rewrites this
+# file and netbae uninstall removes it. Your settings go in $CONF_DIR/config.toml (netbae config).
+{ ... }:
+{
+  imports = [ ./netbae/nix/module.nix ];
+  services.netbae = {
+    enable = true;
+    configFile = "$CONF_DIR/config.toml";
+    port = ${port:-80};
+    openFirewall = true;
+  };
+}
+NIX
+  local added=""
+  if ! grep -q './netbae.nix' "$conf"; then
+    # add it to the first imports list, whether its [ is on the same line (imports = [ ...) or the next one,
+    # as in the configuration.nix that nixos-generate-config writes
+    awk 'done { print; next }
+         /^[[:space:]]*imports[[:space:]]*=/ { seen = 1 }
+         seen && index($0, "[") { sub(/\[/, "[ ./netbae.nix"); done = 1 }
+         { print }' "$conf" >"$conf.netbae-new"
+    if grep -q './netbae.nix' "$conf.netbae-new"; then
+      cp "$conf" "$conf.netbae-backup"
+      cat "$conf.netbae-new" >"$conf"
+      added=1
+      c_info "Added ./netbae.nix to the imports in $conf (backup: $conf.netbae-backup)"
+    fi
+    rm -f "$conf.netbae-new"
+    if [[ -z $added ]]; then
+      rm -f "$nixdir/netbae.nix"; [[ -z $old ]] && rm -rf "$nixdir/netbae"
+      c_warn "Couldn't find an imports list in $conf. Add this inside its top-level { }, then re-run this installer:"
+      echo "    imports = [ ./netbae.nix ];"
+      exit 1
+    fi
+  fi
+  if [[ -f $nixdir/flake.nix && -d $nixdir/.git ]]; then
+    git -C "$nixdir" add -A netbae.nix netbae configuration.nix  # flakes only see files git knows about
+    c_info "Staged netBae's files in the git repository in $nixdir (commit them when you like)"
+  fi
+
+  c_info "Running nixos-rebuild switch (the first build downloads Python, the Ookla CLI and Chart.js)"
+  if ! nixos-rebuild switch; then
+    if [[ -d $nixdir/netbae.old ]]; then  # an update: back to the version that worked
+      rm -rf "$nixdir/netbae"; mv "$nixdir/netbae.old" "$nixdir/netbae"
+    else  # a first install: take it all out again
+      rm -rf "$nixdir/netbae" "$nixdir/netbae.nix"
+      [[ -n $added ]] && cp "$conf.netbae-backup" "$conf"
+    fi
+    die "nixos-rebuild failed (see above); your NixOS configuration was put back as it was"
+  fi
+  rm -rf "$nixdir/netbae.old"
+  local ip suffix=""
+  ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' || true)
+  [[ ${port:-80} == 80 ]] || suffix=":$port"
+  echo
+  if [[ -n $old ]]; then c_info "netBae updated to $NEW_VERSION and running!"; else c_info "netBae is running!"; fi
+  echo "    Dashboard:  http://${ip:-<this-machine-ip>}$suffix"
+  echo "    Config:     netbae config     ($CONF_DIR/config.toml)"
+  echo "    Logs:       netbae logs"
+  echo "    Update:     netbae update     (or re-run the install command)"
+  echo "    NixOS:      $nixdir/netbae.nix (imported by configuration.nix)"
+}
+if [[ $OS == Linux ]] && is_nixos; then
+  nixos_install
+  exit 0
 fi
 
 # ---------------------------------------------------------------- macOS prerequisites
@@ -109,21 +229,6 @@ if ! "$PY" -c 'import tomllib' 2>/dev/null && ! "$PY" -c 'import tomli' 2>/dev/n
   "$PY" -c 'import tomli' 2>/dev/null || "$PY" -m pip install --quiet tomli 2>/dev/null \
     || "$PY" -m pip install --quiet --break-system-packages tomli \
     || die "could not install tomli; please install Python 3.11+ or the tomli package"
-fi
-
-# ---------------------------------------------------------------- source files
-# Use the files next to this script, or download the repo when piped from curl.
-SRC_DIR=""
-if [[ -n "$SCRIPT" && -f "$SCRIPT" ]]; then
-  SRC_DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
-fi
-if [[ -z "$SRC_DIR" || ! -f "$SRC_DIR/app/netbae.py" ]]; then
-  SRC_DIR=$(mktemp -d)
-  trap 'rm -rf "$SRC_DIR"' EXIT
-  c_info "Downloading netBae ($NETBAE_REPO@$NETBAE_REF)"
-  curl -fsSL "https://github.com/$NETBAE_REPO/archive/$NETBAE_REF.tar.gz" | tar -xz -C "$SRC_DIR" --strip-components=1 \
-    || die "could not download https://github.com/$NETBAE_REPO"
-  [[ -f "$SRC_DIR/app/netbae.py" ]] || die "downloaded archive does not contain app/netbae.py"
 fi
 
 # ---------------------------------------------------------------- official Ookla speedtest CLI

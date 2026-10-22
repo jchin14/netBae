@@ -208,15 +208,18 @@ function rangeControl(el, key, defaultRange, onChange) {
 // Which lines a chart shows. Stored per browser; "v2" started over when charts began showing only a few lines
 // by default (drawing every host on page load was heavy on the CPU).
 // rows: { isOpen(group), toggle(group) } puts each group on its own row, with its hosts hidden until the ▸ opens it
-function chipFilter(el, key, items, onChange, defaultOff = [], rows = null) {
+// hover(spec, pin): with a mouse, hovering a chip ("id:<item>") or a category row ("cat:<group>") picks out its
+// lines in the chart; tapping or clicking the empty part of a row pins that (pin = true), for phones with no hover.
+// It returns what's pinned now.
+function chipFilter(el, key, items, onChange, defaultOff = [], rows = null, hover = null) {
   const off = new Set(store.get(`off3:${key}`, null) ?? defaultOff);
   let allBtn = null;
   const sync = () => {
     if (rows) {
       el.querySelectorAll('.chip-row').forEach((r) => {
         const open = rows.isOpen(r.dataset.group);
-        r.classList.toggle('open', open);
-        $('.caret', r).textContent = open ? '▾' : '▸';
+        r.classList.toggle('open', open);  // the caret's chevron turns with it (CSS)
+        $('.caret', r).setAttribute('aria-expanded', String(open));
       });
     }
     el.querySelectorAll('.chip').forEach((c) => c.classList.toggle('off', off.has(c.dataset.id)));
@@ -236,6 +239,7 @@ function chipFilter(el, key, items, onChange, defaultOff = [], rows = null) {
     if (rows) {
       const caret = document.createElement('button');
       caret.className = 'caret';
+      caret.setAttribute('aria-label', `Show ${g}'s hosts`);
       caret.title = `Show or hide each of ${g}'s ${members.length} hosts (also opens it in the table)`;
       caret.addEventListener('click', () => rows.toggle(g));
       wrap.appendChild(caret);
@@ -271,7 +275,30 @@ function chipFilter(el, key, items, onChange, defaultOff = [], rows = null) {
       });
       wrap.appendChild(chip);
     }
+    if (rows && hover) {  // the rest of the row, to the right of the name and hosts
+      const fill = document.createElement('span');
+      fill.className = 'row-fill';
+      fill.title = `Pick out ${g} on the chart (click again to stop)`;
+      wrap.appendChild(fill);
+    }
     el.appendChild(wrap);
+  }
+  if (hover) {
+    const specAt = (t) => {
+      const chip = t.closest('.chip');
+      if (chip) return `id:${chip.dataset.id}`;
+      const row = t.closest('.chip-row');
+      return row ? `cat:${row.dataset.group}` : null;
+    };
+    // mouse only: a tap on a phone also sends pointerover, which would leave the other lines faded
+    el.addEventListener('pointerover', (e) => { if (e.pointerType === 'mouse') hover(specAt(e.target)); });
+    el.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') hover(null); });
+    el.addEventListener('click', (e) => {
+      const row = e.target.closest('.chip-row');
+      if (!row || e.target.closest('button, .chip')) return;
+      const pinned = hover(`cat:${row.dataset.group}`, true);
+      el.querySelectorAll('.chip-row').forEach((r) => r.classList.toggle('pinned', pinned === `cat:${r.dataset.group}`));
+    });
   }
   sync();
   return {
@@ -357,7 +384,8 @@ const ispChangeLines = {
     ctx.save();
     ctx.font = `11px ${Chart.defaults.font.family}`;
     ctx.textBaseline = 'bottom';
-    for (const c of changes) {
+    const placed = [];  // labels already drawn, so close changes stack instead of hiding each other
+    for (const c of [...changes].sort((p, q) => p.ts - q.ts)) {
       const px = x.getPixelForValue(c.ts * 1000);
       if (!(px >= a.left && px <= a.right)) continue;
       ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
@@ -365,8 +393,12 @@ const ispChangeLines = {
       const label = `${c.from} → ${c.isp}`;
       const w = ctx.measureText(label).width;
       const lx = px + 6 + w > a.right ? px - 6 - w : px + 6;  // flip to the left near the right edge
-      ctx.fillStyle = css('--card'); ctx.fillRect(lx - 3, a.bottom - 18, w + 6, 15);
-      ctx.fillStyle = color; ctx.fillText(label, lx, a.bottom - 4);
+      let row = 0;
+      while (placed.some((r) => r.row === row && lx < r.x2 + 4 && lx + w > r.x1 - 4)) row++;
+      placed.push({ row, x1: lx, x2: lx + w });
+      const by = a.bottom - 4 - row * 17;
+      ctx.fillStyle = css('--card'); ctx.fillRect(lx - 3, by - 14, w + 6, 15);
+      ctx.fillStyle = color; ctx.fillText(label, lx, by);
     }
     ctx.restore();
   },
@@ -639,9 +671,9 @@ function renderSummaryBar(s) {
     stat('Hosts up', `${up(sites)}<small>/ ${sites.length}</small>`, 'Sites whose latest ping answered (not counting regions or IPv6)', upCls(sites)),
     mine.length ? stat('Your hosts up', `${up(mine)}<small>/ ${mine.length}</small>`, 'Your own extra_targets whose latest ping answered', upCls(mine)) : '',
     isp && isp.uptime24h != null ? stat('ISP uptime', `${fmtPct(isp.uptime24h, isp.uptime24h < 100 ? 2 : 0)}<small>24h</small>`, `Share of ${isp.connection}'s ISP checks in the last 24 hours that reached the internet`, isp.uptime24h >= 99.9 ? 'good' : isp.uptime24h >= 99 ? 'warn' : 'bad') : '',
-    stat('Avg latency', `${fmtMs(mean(sites.map((p) => p.avg5m)))}<small>ms</small>`, 'Average of every site\'s 5-minute average, not counting regions'),
     nearest ? stat('Internet latency', `${fmtMs(nearest.avg5m)}<small>ms</small>`, '5-minute average to the Ookla speedtest server closest to you: the base latency of your connection')
       : near ? stat('Nearest city', `${fmtMs(near.avg5m)}<small>ms ${esc(near.name)}</small>`, `5-minute average to ${near.name}, the closest of the region cities (the fastest Ookla server there)`) : '',
+    stat('Avg latency', `${fmtMs(mean(sites.map((p) => p.avg5m)))}<small>ms</small>`, 'Average of every site\'s 5-minute average, not counting regions'),
     stat('Jitter', `${fmtMs(mean(sites.map((p) => p.jitter5m)))}<small>ms</small>`, 'Average change between consecutive pings to each site, last 5 minutes'),
     stat('Packet loss', fmtLoss(mean(sites.map((p) => p.loss5m)), 2), 'Average packet loss across sites in the last 5 minutes'),
     dns != null ? stat('DNS', `${fmtMs(dns)}<small>ms</small>`, 'Average DNS lookup time in the last 5 minutes') : '',
@@ -659,6 +691,7 @@ function renderSummaryBar(s) {
 async function refreshSummary() {
   const s = await api('summary');
   lastPing = s.ping;
+  if (s.isp_changes) CONFIG.isp_changes = s.isp_changes;  // a failover gets its chart line without a reload
   ROUTES = { ...(s.routes || {}), ...CDN_ROUTES };
   renderSummaryBar(s);
   $('#isp-now').innerHTML = (s.isp || []).map((c) => {
@@ -1103,14 +1136,40 @@ function yZoom(root, key, chart) {
 // ------------------------------------------------------------------ ISP markers
 // Each connection's ISP checks are drawn as a row of markers along the top of the System history chart:
 // one colour per connection, one shape per ISP, so a failover stands out.
-const ISP_SHAPES = [['circle', '●'], ['triangle', '▲'], ['rect', '■'], ['rectRot', '◆'], ['star', '★'], ['crossRot', '✕']];
-const ISP_COLORS = ['#fbbf24', '#22d3ee', '#f472b6', '#a3e635', '#c084fc'];
-const ispShapeIndex = {};
-const ispShape = (isp) => {
-  if (!(isp in ispShapeIndex)) ispShapeIndex[isp] = Object.keys(ispShapeIndex).length;
-  return ISP_SHAPES[ispShapeIndex[isp] % ISP_SHAPES.length];
+// ISP checks: a tick for each check (a cross when it failed) in that ISP's colour, one row per connection
+const ISP_COLORS = ['#fbbf24', '#22d3ee', '#f472b6', '#a3e635', '#c084fc', '#fb923c'];
+const ispColorIndex = {};
+const ispColor = (isp) => {
+  if (!(isp in ispColorIndex)) ispColorIndex[isp] = Object.keys(ispColorIndex).length;
+  return ISP_COLORS[ispColorIndex[isp] % ISP_COLORS.length];
 };
-const ispLabel = (ctx) => ` ${ctx.raw.conn} ISP: ${ctx.raw.isp}${ctx.raw.ip ? ` · ${ctx.raw.ip}` : ''}${ctx.raw.changed ? '  (changed)' : ''}`;
+const ispGlyphs = {};
+function ispGlyph(color, failed, size) {  // a small canvas Chart.js draws as the point
+  const k = `${color}${failed}${size}`;
+  if (ispGlyphs[k]) return ispGlyphs[k];
+  const dpr = window.devicePixelRatio || 1;
+  const c = document.createElement('canvas');
+  c.width = c.height = Math.ceil(size * dpr);
+  c.style.width = c.style.height = `${size}px`;
+  const g = c.getContext('2d');
+  g.scale(dpr, dpr);
+  g.strokeStyle = color;
+  g.lineWidth = Math.max(2, size / 5);
+  g.lineCap = g.lineJoin = 'round';
+  const m = g.lineWidth;  // keep the stroke inside the canvas
+  g.beginPath();
+  if (failed) {
+    g.moveTo(m, m); g.lineTo(size - m, size - m);
+    g.moveTo(size - m, m); g.lineTo(m, size - m);
+  } else {
+    g.moveTo(m, size * 0.55); g.lineTo(size * 0.4, size - m); g.lineTo(size - m, m);
+  }
+  g.stroke();
+  return (ispGlyphs[k] = c);
+}
+const ispLabel = (ctx) => (ctx.raw.failed
+  ? ` ${ctx.raw.conn} ISP check failed${ctx.raw.isp ? ` (on ${ctx.raw.isp})` : ''}`
+  : ` ${ctx.raw.conn} ISP: ${ctx.raw.isp}${ctx.raw.ip ? ` · ${ctx.raw.ip}` : ''}${ctx.raw.changed ? '  (changed)' : ''}`);
 
 async function ispOverlay(root, r, onToggle) {
   if (!CONFIG.isp?.enabled) return [];
@@ -1139,25 +1198,35 @@ async function ispOverlay(root, r, onToggle) {
   const off = new Set(store.get('isp:off', []));
   const datasets = [];
   const buttons = [];
+  const keys = [];
   CONFIG.isp.connections.forEach((conn, ci) => {
-    const pts = d.series[conn] || [];
-    const color = ISP_COLORS[ci % ISP_COLORS.length];
-    for (const isp of [...new Set(pts.map((p) => p[1]).filter(Boolean))]) {
-      const [style, glyph] = ispShape(isp);
+    // a failed check is drawn in the colour of the ISP the connection was on (the one before it, or else after it)
+    const raw = d.series[conn] || [];
+    let cur = raw.find((p) => p[1] && p[1] !== 'check failed')?.[1] ?? null;
+    const pts = raw.map((p) => {
+      const failed = p[1] === 'check failed';
+      if (p[1] && !failed) cur = p[1];
+      return { x: p[0], y: 0.965 - ci * 0.06, isp: failed ? cur : p[1], ip: p[2], conn, changed: p[4], failed };
+    }).filter((p) => p.isp || p.failed);
+    for (const isp of [...new Set(pts.map((p) => p.isp))]) {
+      const color = isp ? ispColor(isp) : css('--muted');
       const key = `${conn}|${isp}`;
-      buttons.push(`<button data-key="${esc(key)}" class="${off.has(key) ? 'off' : ''}" title="Show or hide ${esc(conn)} ISP checks">
-        <span style="color:${color}">${glyph}</span>${esc(conn)}: ${esc(isp)}</button>`);
+      keys.push(key);
+      const fails = pts.filter((p) => p.isp === isp && p.failed).length;
+      buttons.push(`<button data-key="${esc(key)}" class="${off.has(key) ? 'off' : ''}" title="Show or hide ${esc(conn)} ISP checks${fails ? ` (✕ = ${fails} failed)` : ''}">
+        <span style="color:${color}">✓</span>${esc(conn)}: ${esc(isp || 'unknown')}</button>`);
       if (off.has(key)) continue;
       datasets.push({
         role: 'isp', label: `${conn} ISP`, yAxisID: 'yIsp', showLine: false,
-        pointStyle: style, pointRadius: (c) => (c.raw?.changed ? 7 : 3.5), pointHoverRadius: 8, pointHitRadius: 8,
-        borderColor: color, backgroundColor: color + 'cc', borderWidth: 1,
-        data: pts.filter((p) => p[1] === isp).map((p) => ({ x: p[0], y: 0.965 - ci * 0.06, isp: p[1], ip: p[2], conn, changed: p[4] })),
+        pointStyle: (c) => ispGlyph(color, !!c.raw?.failed, c.raw?.changed ? 15 : 10),
+        pointRadius: (c) => (c.raw?.changed ? 7.5 : 5), pointHoverRadius: 8, pointHitRadius: 8,
+        borderColor: color, backgroundColor: color, borderWidth: 0,
+        data: pts.filter((p) => p.isp === isp),
       });
     }
   });
-  const allOff = buttons.length && CONFIG.isp.connections.every((conn) => (d.series[conn] || []).every((p) => !p[1] || off.has(`${conn}|${p[1]}`)));
-  legend.innerHTML = buttons.length ? `<button class="isp-title${allOff ? ' off' : ''}" title="Each marker along the top of the chart is an ISP check: colour = connection, shape = ISP. A bigger marker means the ISP or IP changed. Click to show or hide them all.">ISP checks</button>${buttons.join('')}` : '';
+  const allOff = keys.length && keys.every((k) => off.has(k));
+  legend.innerHTML = buttons.length ? `<button class="isp-title${allOff ? ' off' : ''}" title="Each mark along the top of the chart is an ISP check, in that ISP's colour: a tick when it worked, a cross when it failed, one row per connection. A bigger mark means the ISP or IP changed. Click to show or hide them all.">ISP checks</button>${buttons.join('')}` : '';
   return datasets;
 }
 
@@ -1246,7 +1315,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
         if (!collapse || members.length === 1) { blocks.push({ summary: null, members, open: true }); continue; }
         const mid = members[Math.floor((members.length - 1) / 2)];
         blocks.push({
-          summary: { key: members.map((x) => x.key).join('+') + '+', label: cat + sfx, color: mid.color, dash, cat, count: members.length },
+          summary: { key: members.map((x) => x.key).join('+') + '+', label: cat + sfx, color: mid.color, dash, cat, count: members.length, ids: members.map((x) => x.id) },
           members, open: expanded.has(cat),
         });
       }
@@ -1270,21 +1339,22 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     const datasets = [];
     for (const it of series) {
       const pts = d.series[it.key] || [];
+      const tag = { cat: it.ids ? it.cat : catOf(it), ids: it.ids || [it.id] };  // what hovering a chip or category matches
       if (metric === 'loss') {
         datasets.push({
-          key: it.key, label: it.label, unit: '%', borderColor: it.color, backgroundColor: it.color, borderDash: it.dash || [],
+          ...tag, key: it.key, label: it.label, unit: '%', borderColor: it.color, backgroundColor: it.color, borderDash: it.dash || [],
           stepped: 'middle', spanGaps: false, data: pts.map((p) => ({ x: p[0], y: p[4] })),
         });
         continue;
       }
       if (drawBand) {
-        const edge = { role: 'band', key: it.key, label: it.label, borderColor: it.color + '73', borderWidth: 1, borderDash: [4, 3], spanGaps: false, pointHoverRadius: 0, pointHitRadius: 0 };
+        const edge = { ...tag, role: 'band', key: it.key, label: it.label, borderColor: it.color + '73', borderWidth: 1, borderDash: [4, 3], spanGaps: false, pointHoverRadius: 0, pointHitRadius: 0 };
         // upper edge fills down to the lower edge (the next dataset)
         datasets.push({ ...edge, fill: '+1', backgroundColor: it.color + '1f', data: pts.map((p) => ({ x: p[0], y: p[hiI] })) });
         datasets.push({ ...edge, fill: false, data: pts.map((p) => ({ x: p[0], y: p[loI] })) });
       }
       datasets.push({
-        role: 'avg', key: it.key, label: it.label, unit: 'ms', borderColor: it.color, backgroundColor: it.color, borderWidth: 2, spanGaps: false,
+        ...tag, role: 'avg', key: it.key, label: it.label, unit: 'ms', borderColor: it.color, backgroundColor: it.color, borderWidth: 2, spanGaps: false,
         borderDash: it.dash || [],
         data: pts.map((p) => ({ x: p[0], y: p[1], lo: band === 'none' ? null : p[loI], hi: p[hiI], bandName })),
       });
@@ -1297,7 +1367,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
 
     lastTable = { blocks, stats: d.stats };
     renderTable();
-    const k = hoverKey; hoverKey = null; highlight(k);  // keep the highlight across live refreshes
+    const k = hoverSpec; hoverSpec = null; highlight(k);  // keep the highlight across live refreshes
     return r.live;
   };
 
@@ -1364,25 +1434,39 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     chart.update('none');
     renderTable();
   }
-  // Hovering a table row picks out its line in the chart: thicker, with the others faded.
-  let hoverKey = null;
-  function highlight(key) {
-    if (key === hoverKey) return;
-    hoverKey = key;
-    const on = key && chart.data.datasets.some((ds) => ds.key === key);
+  // Hovering a table row, chip or category picks out its lines in the chart: thicker, with the others faded.
+  // spec: "key:<series>" (a table row), "id:<item>" (a chip) or "cat:<category>"
+  let hoverSpec = null;
+  let pinned = null;  // a category tapped above the chart stays picked out until it's tapped again
+  const matches = (ds, spec) => {
+    const i = spec.indexOf(':'), kind = spec.slice(0, i), v = spec.slice(i + 1);
+    return kind === 'key' ? ds.key === v : kind === 'cat' ? ds.cat === v : !!ds.ids?.includes(v);
+  };
+  function highlight(spec) {
+    if (spec === hoverSpec) return;
+    hoverSpec = spec;
+    const on = spec && chart.data.datasets.some((ds) => ds.key && !ds.hidden && matches(ds, spec));
     for (const ds of chart.data.datasets) {
       if (!ds.key) continue;
       ds.baseColor ??= ds.borderColor;
       ds.baseWidth ??= ds.borderWidth ?? 1.75;
-      const me = ds.key === key;
+      const me = on && matches(ds, spec);
       ds.borderColor = on && !me ? ds.baseColor.slice(0, 7) + '33' : ds.baseColor;
       ds.borderWidth = on && me && ds.role !== 'band' ? ds.baseWidth + 1.5 : ds.baseWidth;
       ds.order = on && me ? -1 : 0;
     }
     chart.update('none');
   }
-  $('.stats', root).addEventListener('mouseover', (e) => highlight(e.target.closest('tr[data-key]')?.dataset.key || null));
-  $('.stats', root).addEventListener('mouseleave', () => highlight(null));
+  $('.stats', root).addEventListener('mouseover', (e) => {
+    const k = e.target.closest('tr[data-key]')?.dataset.key;
+    highlight(k ? `key:${k}` : pinned);
+  });
+  $('.stats', root).addEventListener('mouseleave', () => highlight(pinned));
+  const chipHover = (spec, pin) => {
+    if (pin) pinned = pinned === spec ? null : spec;
+    highlight(pin ? pinned : spec ?? pinned);
+    return pinned;
+  };
   // with chipRows, a category opened above the chart is opened in the table too, and the other way round
   const toggleCat = (c) => {
     if (expanded.has(c)) expanded.delete(c); else expanded.add(c);
@@ -1390,7 +1474,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     refresh();
   };
   const chips = chipFilter($('.chips', root), id, items, refresh, defaultOff,
-    chipRows ? { isOpen: (g) => expanded.has(g), toggle: toggleCat } : null);
+    chipRows ? { isOpen: (g) => expanded.has(g), toggle: toggleCat } : null, chipHover);
   chips.addToggleAll(root);
   const range = rangeControl($('.range', root), id, defaultRange, refresh);
   // every category's hosts in the table and chart at once, or back to one line per category
@@ -1595,7 +1679,9 @@ function setupUpdateButton() {
   const u = CONFIG.update, b = $('#update-btn');
   if (!u || CONFIG.public) return;
   if (!u.available) {  // up to date: a tick on the version pill, and when it was last checked
-    if (u.latest) {
+    if (CONFIG.dev) {
+      $('#version').title = `Dev build: newer than the latest release (${u.latest}, checked ${fmtAgo(u.checked)}). Click for the releases.`;
+    } else if (u.latest) {
       $('#version').textContent = `v${CONFIG.version} ✓`;
       $('#version').title = `Up to date: ${u.latest} is the latest release (checked ${fmtAgo(u.checked)}). Click for what's new.`;
     }
@@ -1604,7 +1690,8 @@ function setupUpdateButton() {
   b.hidden = false;
   if (u.method !== 'button') {
     b.textContent = `v${u.latest} available`;
-    b.title = u.method === 'docker' ? 'Update with: docker compose pull && docker compose up -d' : 'Update with: netbae update';
+    b.title = u.method === 'docker' ? 'Update with: docker compose pull && docker compose up -d'
+      : u.method === 'nix' ? 'Update with Nix: nix flake update netbae, then nixos-rebuild switch' : 'Update with: netbae update';
     b.addEventListener('click', () => window.open(u.url, '_blank', 'noopener'));
     return;
   }
@@ -1804,12 +1891,16 @@ async function main() {
 
   const sp = CONFIG.speedtest;
   if (CONFIG.repo) $('#repo-link').href = CONFIG.repo;
-  $('#version').textContent = `v${CONFIG.version}`;
-  $('#version').href = CONFIG.repo ? `${CONFIG.repo}/releases/tag/v${CONFIG.version}` : '#';
+  const vlabel = `${CONFIG.dev ? 'dev' : 'v'}${CONFIG.version}`;  // dev: a build newer than the latest release
+  $('#version').textContent = vlabel;
+  $('#version').href = !CONFIG.repo ? '#' : CONFIG.dev ? `${CONFIG.repo}/releases` : `${CONFIG.repo}/releases/tag/v${CONFIG.version}`;
   setupUpdateButton();
   $('#docker-note').hidden = !CONFIG.docker_bridge || !!CONFIG.public;
   $('#public-badge').hidden = !CONFIG.public;
-  $('#footer').innerHTML = `<a href="${esc(CONFIG.repo || '#')}" target="_blank" rel="noopener">netBae ${esc(CONFIG.version)}</a> by `
+  const acc = $('#access-link');  // one hostname for both dashboards, with Cloudflare Access sign-in
+  if (CONFIG.public && CONFIG.sign_in) Object.assign(acc, { hidden: false, href: 'login', textContent: 'Sign in', title: 'Sign in with Cloudflare Access to see the private dashboard' });
+  else if (CONFIG.signed_in) Object.assign(acc, { hidden: false, href: 'logout', textContent: 'Sign out', title: `Signed in as ${CONFIG.signed_in} with Cloudflare Access` });
+  $('#footer').innerHTML = `<a href="${esc(CONFIG.repo || '#')}" target="_blank" rel="noopener">netBae ${esc(vlabel)}</a> by `
     + '<a href="https://github.com/jchin14" target="_blank" rel="noopener">jchin14</a> · '
     + '<a href="https://buymeacoffee.com/jchin14" target="_blank" rel="noopener">buy me a coffee</a> · '
     + `${scheduleText()} · `

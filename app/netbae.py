@@ -5,10 +5,13 @@ Collects ping latency, DNS response times, Ookla speedtests and system stats
 into SQLite and serves a dashboard + JSON API. Python standard library only.
 """
 import argparse
+import base64
 import copy
 import glob
 import ctypes
 import ctypes.util
+import hashlib
+import hmac
 import ipaddress
 import http.client
 import json
@@ -46,7 +49,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.18.5"
+VERSION = "1.19.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -115,7 +118,9 @@ DEFAULT_CONFIG = {
     # optional read-only copy of the dashboard for sharing (e.g. through a Cloudflare Tunnel)
     "public": {"enabled": False, "host": "0.0.0.0", "port": 8080,
                "requests_per_minute": 120, "total_requests_per_minute": 1200, "hide": [],
-               "show_hostname": False, "show_city": True},
+               "show_hostname": False, "show_city": True,
+               # Cloudflare Access sign-in on the public address: signed-in visitors get the private dashboard
+               "access_team": "", "access_aud": ""},
     # raw samples -> 1-minute summaries -> hourly summaries; 0 = keep forever
     "storage": {"database": os.path.join(WIN_DATA_DIR, "netbae.db") if IS_WINDOWS else "/var/lib/netbae/netbae.db",
                 "raw_retention_days": 7, "minute_retention_days": 90, "retention_days": 0},
@@ -441,7 +446,8 @@ def resolve_game_server(provider, pref="auto", bind=None):
             return None
         return {"host": host(code), "port": 7770, "method": "udp", "label": GAMELIFT_REGIONS[code]}
     if provider == "isp":  # the first router past yours: usually your ISP's BNG/BRAS, where your connection lands
-        hops = [(n, ip) for n, ip, _ in traceroute("1.1.1.1", 5, bind) if ip]
+        # (looked up during a ping round, which already keeps speedtests waiting: an ungated trace)
+        hops = [(n, ip) for n, ip, _ in traceroute.raw("1.1.1.1", 5, bind) if ip]
         gw = default_gateway() if not bind else None
         first = next(((n, ip) for n, ip in hops if n > 1 and ip != gw), None)
         if not first:
@@ -809,6 +815,13 @@ def load_config(path):
     ids = [t["id"] for t in cfg["ping"]["targets"]]
     if len(ids) != len(set(ids)):
         raise SystemExit("duplicate ping targets in config")
+    pub = cfg["public"]
+    pub["access_team"] = re.sub(r"^https?://|\.cloudflareaccess\.com.*$", "", str(pub["access_team"] or "").strip().lower())
+    pub["access_aud"] = str(pub["access_aud"] or "").strip()
+    if bool(pub["access_team"]) != bool(pub["access_aud"]):
+        raise SystemExit("[public] access_team and access_aud go together: set both for Cloudflare Access sign-in, or neither")
+    if pub["access_team"] and not re.fullmatch(r"[a-z0-9-]+", pub["access_team"]):
+        raise SystemExit('[public] access_team is your Cloudflare Zero Trust team name, e.g. "myteam" for myteam.cloudflareaccess.com')
     if str(cfg["web"]["auto_update"]).lower() not in ("weekly", "daily", "off"):
         raise SystemExit('[web] auto_update must be "weekly", "daily" or "off"')
     if not 0 < float(cfg["speedtest"]["busy_percent"]) <= 100:
@@ -1833,6 +1846,61 @@ def _inetutils_traceroute():
     return _INETUTILS[0]
 
 
+class ProbeGate:
+    """Keeps speedtests and probes (pings, DNS checks, traceroutes) apart, so probes don't slow a test down and
+    the test's traffic doesn't show up as latency spikes or slow hops. A speedtest closes the gate, waits for
+    running probes to finish, runs, then opens it again. While it's closed, new probes wait or are skipped."""
+
+    def __init__(self):
+        self.cv = threading.Condition()
+        self.active = 0  # probes running
+        self.closed = 0  # speedtests running or waiting to start
+
+    def enter(self, wait):
+        """Start a probe: False if a speedtest is running and wait is False. With wait, waits for the test
+        (at most 15 minutes, in case one hangs)."""
+        with self.cv:
+            if not self.cv.wait_for(lambda: not self.closed, 900 if wait else 0) and not wait:
+                return False
+            self.active += 1
+            return True
+
+    def leave(self):
+        with self.cv:
+            self.active -= 1
+            self.cv.notify_all()
+
+    def gated(self, wait=False):
+        """Decorator: run fn as a probe; without wait, skip it (returning None) while a speedtest runs."""
+        def deco(fn):
+            def run(*a, **kw):
+                if not self.enter(wait):
+                    return None
+                try:
+                    return fn(*a, **kw)
+                finally:
+                    self.leave()
+            run.raw = fn  # for calls from inside a probe, which already holds the gate
+            return run
+        return deco
+
+    def close(self, timeout=180):
+        """Called before a speedtest: stop new probes and wait for running ones (at most timeout seconds)."""
+        with self.cv:
+            self.closed += 1
+            if not self.cv.wait_for(lambda: self.active == 0, timeout):
+                log.warning("speedtest starting with %d pings or traces still running", self.active)
+
+    def open(self):
+        with self.cv:
+            self.closed -= 1
+            self.cv.notify_all()
+
+
+PROBES = ProbeGate()
+
+
+@PROBES.gated(wait=True)  # waits for a running speedtest
 def traceroute(host, max_hops=25, bind=None):
     """[(hop, ip or None, rtt_ms or None)] using the system traceroute (or tracepath / tracert)."""
     if IS_WINDOWS:
@@ -2728,6 +2796,7 @@ class Monitor:
         self.region_lookups = set()
         self.game_cache = {}
         self.trace_lock = threading.Lock()
+        self.down_last = {}  # ping round kind -> ids that failed last round (see recheck_burst)
         self.first_traces_done = threading.Event()
         self.hop_geo = HopGeo(self.db)
         self.docker_bridge = docker_bridge()
@@ -3017,6 +3086,7 @@ class Monitor:
             servers = [sv for sv in self.cfg["dns"]["servers"] if sv["family"] == 4 or v6]
             jobs = [(sv, h) for sv in servers for h in cc["hostnames"]]
 
+            @PROBES.gated(wait=True)  # lookups, pings and traces wait for a running speedtest
             def resolve(job):
                 try:
                     return dns_resolve(job[0]["host"], job[1], self.cfg["dns"]["timeout_seconds"])
@@ -3025,6 +3095,7 @@ class Monitor:
             answers = list(self.pool.map(resolve, jobs))
             ips = sorted({ip for a in answers if a[0] for ip in a[0]})
 
+            @PROBES.gated(wait=True)
             def ping_many(ip):  # a few pings, so one lost or slow reply doesn't decide the ranking
                 rtts = []
                 for i in range(int(cc["pings"])):
@@ -3106,6 +3177,7 @@ class Monitor:
             return pick
         return servers[0], (self.address(servers[0]["host"], 4) if fam else servers[0]["host"])
 
+    @PROBES.gated()  # skipped while a speedtest runs: a gap in the chart rather than slowed pings
     def collect_region_pings(self):
         ts = time.time()
         timeout = self.cfg["ping"]["timeout_seconds"]
@@ -3120,18 +3192,45 @@ class Monitor:
             srv, addr = pick
             t["host"] = f'{srv["host"]}:{srv["port"]}'
             return tcp_ping(addr, srv["port"], timeout) if addr else None
-        results = list(self.pool.map(probe, targets))
+        results = self.recheck_burst(targets, list(self.pool.map(probe, targets)), probe, "region")
         self.db.insert_many("INSERT OR IGNORE INTO ping VALUES (?,?,?)",
                             [(ts, self.db.name_id(t["id"]), r) for t, r in zip(targets, results)
                              if r is not SKIP and (t["host"] or r is not None)])
 
+    RECHECK_MIN = 5  # this many failures in one round looks like this machine stalled, not the hosts
+
+    def recheck_burst(self, targets, results, probe, what):
+        """When several pings in a round fail at once, ping those hosts again a second later and keep the
+        answers. On a busy machine (swapping, slow disk) a short stall makes every ping in flight miss its
+        reply, router included, so hosts looked down when they weren't. A host that also misses the re-check
+        is recorded as failed; one or two failed hosts (ordinary packet loss) are never re-checked, and nor are
+        hosts that were already failing in the last round (down for a while, not a stall)."""
+        was_down = self.down_last.get(what, set())
+        failed = [i for i, r in enumerate(results) if r is None and targets[i]["id"] not in was_down]
+        if len(failed) < self.RECHECK_MIN:
+            self.down_last[what] = {t["id"] for t, r in zip(targets, results) if r is None}
+            return results
+        time.sleep(1)
+        again = list(self.pool.map(probe, [targets[i] for i in failed]))
+        out = list(results)
+        for i, r in zip(failed, again):
+            if r is not SKIP:
+                out[i] = r
+        answered = sum(r is not None and r is not SKIP for r in again)
+        log.info("%s pings: %d of %d failed at once, %d answered a re-check a second later%s", what, len(failed),
+                 len(results), answered, " (this machine or the network stalled briefly)" if answered else "")
+        self.down_last[what] = {t["id"] for t, r in zip(targets, out) if r is None}
+        return out
+
+    @PROBES.gated()  # skipped while a speedtest runs: a gap in the chart rather than slowed pings
     def collect_ping(self):
         ts = time.time()
         targets = [t for t in self.cfg["ping"]["targets"] if t["method"] != "region"]
-        results = list(self.pool.map(self.ping_one, targets))
+        results = self.recheck_burst(targets, list(self.pool.map(self.ping_one, targets)), self.ping_one, "host")
         self.db.insert_many("INSERT OR IGNORE INTO ping VALUES (?,?,?)",
                             [(ts, self.db.name_id(t["id"]), r) for t, r in zip(targets, results) if r is not SKIP])
 
+    @PROBES.gated()  # skipped while a speedtest runs: a gap in the chart rather than slowed lookups
     def collect_dns(self):
         ts = time.time()
         timeout = self.cfg["dns"]["timeout_seconds"]
@@ -3369,6 +3468,7 @@ class Monitor:
         row = self._error_row(None)
         row["server_id"] = server_id
         log.info("running speedtest %s (server=%s)", label, server_id or "auto")
+        PROBES.close()
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=st["timeout_seconds"],
                                **SUBPROCESS_FLAGS)
@@ -3404,6 +3504,8 @@ class Monitor:
             row["error"] = f"could not run {st['binary']}: {e}"
         except subprocess.TimeoutExpired:
             row["error"] = "speedtest timed out"
+        finally:
+            PROBES.open()
         if row["error"]:
             log.warning("speedtest %s failed: %s", label, row["error"])
         return row
@@ -3546,6 +3648,7 @@ def api_config(m, q):
     c = m.cfg
     return {
         "version": VERSION,
+        "dev": is_dev_build(m),
         "repo": REPO_URL,
         "chart_band": c["web"]["chart_band"],
         "update": update_summary(m),
@@ -3554,10 +3657,7 @@ def api_config(m, q):
             "SELECT isp, MIN(ts), MAX(ts) FROM isp WHERE connection = ? AND isp IS NOT NULL GROUP BY isp ORDER BY MAX(ts) DESC",
             (c["isp"]["main_name"],))] if c["isp"]["enabled"] else [],
         # when the main connection moved to another ISP, for the lines on the latency charts
-        "isp_changes": [{"ts": t, "isp": i, "from": p} for t, i, p in m.db.query(
-            "SELECT ts, isp, prev FROM (SELECT ts, isp, LAG(isp) OVER (ORDER BY ts) AS prev FROM isp"
-            " WHERE connection = ? AND isp IS NOT NULL) WHERE prev IS NOT NULL AND isp != prev ORDER BY ts DESC LIMIT 100",
-            (c["isp"]["main_name"],))] if c["isp"]["enabled"] else [],
+        "isp_changes": isp_changes(m),
         "info": m.static_info,
         "data_since": m.db.scalar("SELECT MIN(ts) FROM system"),  # when this install started recording
         "ping": {"interval_seconds": c["ping"]["interval_seconds"], "offset_seconds": c["ping"]["offset_seconds"],
@@ -3679,6 +3779,25 @@ def api_system_history(m, q):
         for k, v in zip(keys, vals):
             series[k].append([int(b * bucket * 1000), r2(v)])
     return {"from": frm, "to": to, "bucket": bucket, "series": series}
+
+
+def isp_changes(m):
+    """When the main connection moved to another ISP (newest first, at most 100), for the dashed lines on the
+    latency charts. Also sent with every summary, so a failover shows up without reloading the page; worked
+    out again only when there's a new ISP check."""
+    if not m.cfg["isp"]["enabled"]:
+        return []
+    main = m.cfg["isp"]["main_name"]
+    newest = m.db.scalar("SELECT MAX(ts) FROM isp WHERE connection = ?", (main,))
+    cached = getattr(m, "_isp_changes", None)
+    if cached and cached[0] == newest:
+        return cached[1]
+    out = [{"ts": t, "isp": i, "from": p} for t, i, p in m.db.query(
+        "SELECT ts, isp, prev FROM (SELECT ts, isp, LAG(isp) OVER (ORDER BY ts) AS prev FROM isp"
+        " WHERE connection = ? AND isp IS NOT NULL) WHERE prev IS NOT NULL AND isp != prev ORDER BY ts DESC LIMIT 100",
+        (main,))]
+    m._isp_changes = (newest, out)
+    return out
 
 
 def isp_current(m):
@@ -3820,9 +3939,11 @@ def version_tuple(v):
 
 
 def update_method():
-    """How this install can update itself from the dashboard: "button", "docker" or "manual"."""
+    """How this install can update itself from the dashboard: "button", "docker", "nix" or "manual"."""
     if os.environ.get("NETBAE_DOCKER"):
         return "docker"
+    if os.environ.get("NETBAE_NIX"):  # the Nix package: updated by the system's Nix config, never by itself
+        return "nix"
     if IS_WINDOWS:
         r = run_cmd(["schtasks", "/Query", "/TN", UPDATE_TASK])
         return "button" if r else "manual"
@@ -3840,6 +3961,13 @@ def check_latest_release(m):
                          "checked": time.time(), "error": None}
     except Exception as e:
         m.update_info = dict(m.update_info or {}, checked=time.time(), error=str(e)[:200])
+
+
+def is_dev_build(m):
+    """True when this version is newer than the latest release: a build that was never released (needs the
+    update check, so it's False until GitHub has answered)."""
+    latest = (m.update_info or {}).get("latest")
+    return bool(latest) and version_tuple(VERSION) > version_tuple(latest)
 
 
 def update_summary(m):
@@ -3976,7 +4104,8 @@ def api_summary(m, q):
     conns = st_by_label(m, "connection", now)
     flags = {r["name"]: r.get("flag", "") for r in m.cfg["speedtest"]["regions"]}
     return {
-        "now": now, "ping": ping, "dns": dns, "isp": isp_current(m), "routes": latest_routes(m),
+        "now": now, "ping": ping, "dns": dns, "isp": isp_current(m), "isp_changes": isp_changes(m),
+        "routes": latest_routes(m),
         # average CPU and memory use over the last 24 hours, for the summary bar (the System tile shows them live)
         "system": dict(zip(("cpu", "mem"), (m.db.query(
             "SELECT AVG(cpu), AVG(mem) FROM system WHERE ts > ?", (now - 86400,)) or [(None, None)])[0])),
@@ -4355,6 +4484,87 @@ class RateLimiter:
             return wait_s
 
 
+class CloudflareAccess:
+    """Checks Cloudflare Access sign-ins on the public address, so one hostname can serve both dashboards:
+    visitors get the public one, and you get the private one after signing in at /login (the only path the
+    Access application protects). Access sends a signed token (a JWT) with each request it lets through;
+    netBae checks its RS256 signature against your team's published keys, its audience (this application)
+    and its expiry, then keeps it as a cookie so the rest of the site knows you're signed in. A token can't
+    be forged without Cloudflare's private key, so it doesn't matter that the public port is reachable."""
+
+    COOKIE = "netbae_access"
+    SHA256_PREFIX = bytes.fromhex("3031300d060960864801650304020105000420")  # DER DigestInfo for SHA-256
+
+    def __init__(self, team, aud):
+        self.team, self.aud = team, aud
+        self.issuer = f"https://{team}.cloudflareaccess.com"
+        self.keys, self.keys_ts, self.lock = {}, 0.0, threading.Lock()
+
+    @staticmethod
+    def b64(part):
+        return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
+
+    def key(self, kid):
+        """(n, e) for a signing key, from the team's certs (fetched hourly, or at most once a minute when an
+        unknown key turns up, since Cloudflare rotates them)."""
+        with self.lock:
+            age = time.time() - self.keys_ts
+            if age > 3600 or (kid not in self.keys and age > 60):
+                self.keys_ts = time.time()
+                try:
+                    found = {}
+                    for k in http_json(f"{self.issuer}/cdn-cgi/access/certs", timeout=8).get("keys", []):
+                        if k.get("kty") == "RSA" and k.get("kid"):
+                            found[k["kid"]] = (int.from_bytes(self.b64(k["n"]), "big"),
+                                               int.from_bytes(self.b64(k["e"]), "big"))
+                    self.keys = found or self.keys
+                except Exception as e:
+                    log.warning("Cloudflare Access: couldn't fetch the signing keys from %s: %s", self.issuer, e)
+            return self.keys.get(kid)
+
+    def verify(self, token):
+        """The token's claims if it's a valid Access token for this application, else None."""
+        try:
+            head64, body64, sig64 = token.split(".")
+            head, claims = json.loads(self.b64(head64)), json.loads(self.b64(body64))
+            if head.get("alg") != "RS256":
+                return None
+            key = self.key(head.get("kid"))
+            if not key:
+                return None
+            n, e = key
+            size = (n.bit_length() + 7) // 8
+            sig = int.from_bytes(self.b64(sig64), "big")
+            if sig >= n:
+                return None
+            digest = self.SHA256_PREFIX + hashlib.sha256(f"{head64}.{body64}".encode()).digest()
+            expected = b"\x00\x01" + b"\xff" * (size - len(digest) - 3) + b"\x00" + digest  # EMSA-PKCS1-v1_5
+            if not hmac.compare_digest(pow(sig, e, n).to_bytes(size, "big"), expected):
+                return None
+            aud = claims.get("aud")
+            now = time.time()
+            if (self.aud not in (aud if isinstance(aud, list) else [aud]) or claims.get("iss") != self.issuer
+                    or not now < float(claims.get("exp", 0)) + 60 or float(claims.get("nbf", 0)) > now + 60):
+                return None
+            return claims
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return None
+
+    def user(self, headers):
+        """Who's signed in on this request (email, or the service token's name), from Access's header or
+        the cookie set at /login, or None."""
+        tokens = [headers.get("Cf-Access-Jwt-Assertion")]
+        for part in (headers.get("Cookie") or "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name in (self.COOKIE, "CF_Authorization"):
+                tokens.append(value)
+        for t in tokens:
+            claims = self.verify(t) if t else None
+            if claims:
+                return claims.get("email") or claims.get("common_name") or "signed in", claims, t
+        return None
+
+
 GET_ROUTES = {
     "/api/config": api_config, "/api/ping": api_ping, "/api/dns": api_dns,
     "/api/speedtest": api_speedtest, "/api/system": api_system,
@@ -4374,10 +4584,17 @@ def make_handler(monitor, public=False):
     mask = PublicMask(monitor) if public else None
     busy = threading.BoundedSemaphore(32)  # public: at most this many requests worked on at once
     direct_warned = [0.0]
+    access = CloudflareAccess(pcfg["access_team"], pcfg["access_aud"]) if public and pcfg["access_team"] else None
 
     class Handler(BaseHTTPRequestHandler):
         server_version = f"netbae/{VERSION}"
         timeout = 20 if public else None  # public: drop connections that stall mid-request
+        who = None  # public port: (name, claims, token) when signed in with Cloudflare Access
+
+        @property
+        def private(self):
+            """The private dashboard: always on the private port, and on the public one once signed in."""
+            return not public or bool(self.who)
 
         def client_id(self):
             a = peer_ip(self.client_address[0])
@@ -4451,10 +4668,12 @@ def make_handler(monitor, public=False):
             if fn is None:
                 return False
             try:
-                out = fn(monitor, mask.unmask(q) if public else q)
-                if public:
+                out = fn(monitor, q if self.private else mask.unmask(q))
+                if public and self.who and u.path == "/api/config":
+                    out = dict(out, signed_in=self.who[0])
+                elif not self.private:
                     if u.path == "/api/config":
-                        out = dict(out, public=True)
+                        out = dict(out, public=True, sign_in=bool(access))
                         out.pop("update", None)  # updating is only for the private dashboard
                     out = mask.apply(out)
                 self.send_json(out)
@@ -4465,7 +4684,7 @@ def make_handler(monitor, public=False):
             except Exception as e:
                 log.exception("API error on %s", self.path)
                 # the public port never shows internal details (paths, addresses) in an error
-                self.send_json({"error": "server error" if public else str(e)}, 500)
+                self.send_json({"error": str(e) if self.private else "server error"}, 500)
             return True
 
         def do_GET(self):
@@ -4474,13 +4693,56 @@ def make_handler(monitor, public=False):
             if not busy.acquire(blocking=False):
                 return self.send_json({"error": "busy, try again shortly"}, 503, {"Retry-After": "5"})
             try:
-                if self.public_gate():
-                    self.serve_get()
+                self.who = access.user(self.headers) if access else None
+                path = urlparse(self.path).path
+                if not (self.who or self.public_gate()):  # signed in: no rate limit, not counted as a visitor
+                    return
+                if access and path == "/login":
+                    return self.sign_in()
+                if access and path == "/logout":
+                    return self.sign_out()
+                self.serve_get()
             finally:
                 busy.release()
 
+        def redirect(self, to, cookie=None):
+            self.send_response(302)
+            self.send_header("Location", to)
+            self.send_header("Cache-Control", "no-store")
+            if cookie:
+                self.send_header("Set-Cookie", cookie)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def sign_in(self):
+            """/login, the one path the Access application protects: Cloudflare has signed you in by the time the
+            request gets here, so keep its token as a cookie for the whole site and go to the dashboard."""
+            if not self.who:  # Access isn't in front of /login: nothing to sign in with
+                body = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
+                        "<title>netBae sign-in</title><body style='font:16px system-ui;max-width:36em;margin:3em auto;padding:0 16px'>"
+                        "<h1>Sign-in isn't set up yet</h1><p>This address has no Cloudflare Access application on "
+                        "<code>/login</code>, or it isn't for this dashboard. In Cloudflare Zero Trust, add a self-hosted "
+                        "application for this hostname with the path <code>login</code>, and put its Application Audience "
+                        "(AUD) tag in <code>[public] access_aud</code>. See the netBae README.</p><p><a href='./'>Back to the "
+                        "dashboard</a></p>").encode()
+                self.send_response(403)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return self.wfile.write(body)
+            _, claims, token = self.who
+            age = max(60, int(float(claims.get("exp", 0)) - time.time()))
+            log.info("public dashboard: %s signed in with Cloudflare Access", self.who[0])
+            self.redirect("/", f"{CloudflareAccess.COOKIE}={token}; Path=/; Max-Age={age}; HttpOnly; Secure; SameSite=Lax")
+
+        def sign_out(self):
+            """Forget netBae's cookie, then Cloudflare's own sign-out ends the Access session too."""
+            self.redirect("/cdn-cgi/access/logout",
+                          f"{CloudflareAccess.COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax")
+
         def serve_get(self):
-            if self.dispatch(GET_ROUTES if public else PRIVATE_ROUTES):
+            if self.dispatch(PRIVATE_ROUTES if self.private else GET_ROUTES):
                 return
             path = urlparse(self.path).path
             if path == "/api/isp/logo":
@@ -4525,7 +4787,9 @@ def make_handler(monitor, public=False):
             return urlparse(origin).netloc.lower() in hosts
 
         def do_POST(self):
-            if public:  # nothing can be started or changed from the public dashboard
+            if public:
+                self.who = access.user(self.headers) if access else None
+            if not self.private:  # nothing can be started or changed from the public dashboard
                 return self.send_json({"error": "this is a read-only public dashboard"}, 403)
             if not self.same_origin():
                 log.warning("refused %s from another website (Origin %s)", self.path, self.headers.get("Origin"))

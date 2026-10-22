@@ -47,7 +47,7 @@ curl -fsSLO https://raw.githubusercontent.com/jchin14/netBae/main/docker-compose
 docker compose up -d
 ```
 
-**Open** `http://<that-machine>/` from any device on your network.
+**Open** `http://<that-machine>/` from any device on your network. If port 80 was taken, the installer picks the next free one (81, 82 …) and prints the address, e.g. `http://<that-machine>:81/`; `netbae status` shows it too.
 
 **Useful commands:**
 
@@ -69,7 +69,7 @@ docker compose up -d
 - [Install](#install): supported systems, what the installer does on Linux, macOS and Windows, Docker, where things live
 - [Everyday use](#everyday-use): [Uninstall](#uninstall)
 - [Configuration](#configuration): [All options](#all-options) · [Game servers](#game-servers) · [Regions](#region-speedtests-and-pings) · [Secondary connection](#monitoring-a-secondary-connection)
-- [Sharing a public dashboard](#sharing-a-public-dashboard): [netbae tunnel](#the-easy-way-netbae-tunnel) · [With Docker](#with-docker) · [What visitors see](#what-visitors-see) · [By hand](#by-hand)
+- [Sharing a public dashboard](#sharing-a-public-dashboard): [netbae tunnel](#the-easy-way-netbae-tunnel) · [With Docker](#with-docker) · [What visitors see](#what-visitors-see) · [Signing in](#signing-in-to-your-own-dashboard) · [By hand](#by-hand)
 - [How it measures](#how-it-measures)
 - [Averages and storage](#averages-and-storage)
 - [Behind a reverse proxy](#behind-a-reverse-proxy) · [API](#api) · [FAQ](#faq) · [How it's tested](#how-its-tested) · [Contributing](#contributing) · [Support](#support) · [Licence](#licence)
@@ -83,7 +83,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 | **Ping, every 30 seconds** | your router and your ISP's first hop (BNG), DNS resolvers, Google/YouTube, streaming (Netflix, Twitch, Disney+, HBO Max, Paramount+, plus Stan, ABC iview, SBS On Demand, 7plus, 9Now, 10, Foxtel, Kayo and Sky News in Australia), Facebook/Instagram/Reddit/X/TikTok, AI (ChatGPT, Claude, Grok), calls and chat (Slack, Teams, Zoom, Webex, Meet), Microsoft/Apple/AWS/GitHub/Atlassian, hosting data centres (AWS, Oracle Cloud, Azure, OVHcloud, Vultr, DigitalOcean, Linode, Hetzner), CDNs (Akamai, Fastly, Cloudflare, CloudFront, Azure Front Door, Bunny, Gcore), Chinese clouds and CDNs (Alibaba, Tencent, Huawei, Baidu, ByteDance, CDNetworks), Usenet in the US and Europe, and **game servers** (Steam & CS2, Fortnite, Discord voice, AWS GameLift, Battle.net, Minecraft) |
 | **Grouped overview** | one card per category with its average ping; click a card to see every host in it |
 | **Charts that show jitter** | the average as a line with a shaded P5-P95 (or min-max) band; zoom and drag the y-axis |
-| **Speedtests** | the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages |
+| **Speedtests** | the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages. Pings, DNS checks and traceroutes pause while a test runs, so neither skews the other |
 | **Worldwide view** | latency to 19 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them |
 | **Which ISP you're on** | each connection's public IP and ISP, checked every 10 minutes and marked on the System history chart, so failovers stand out |
 | **Routes** | every 12 hours, the route to each target: **on-net**, **direct**, via an **IX** (named) or **transit** through carriers like Cogent, Arelion or GTT, with each hand-over labelled **peering** or **paid transit** |
@@ -106,6 +106,7 @@ The [TL;DR](#tldr) has the install commands. Run the same command again any time
 | **macOS** | 12 Monterey or later, Apple silicon or Intel (uses Homebrew) |
 | **Windows** | 10 and 11 (and Server 2019+), x64 or arm64, with its own PowerShell installer (`install.ps1`) |
 | **Docker** | Linux hosts (Pi, NAS, Proxmox, servers) on amd64, arm64 and arm/v7, with host networking |
+| **NixOS** | a flake with a package and a `services.netbae` module, on x86_64 and arm64 (see [NixOS](#nixos) below) |
 
 <details>
 <summary><b>What the installer does on Linux</b></summary>
@@ -123,7 +124,7 @@ On Proxmox, use a VM or a *privileged* LXC container; unprivileged LXC can block
 <details>
 <summary><b>What the installer does on macOS</b></summary>
 
-Install [Homebrew](https://brew.sh) first, then run the Quick start command in Terminal and enter your Mac password when `sudo` asks. The dashboard is at `http://<your-mac>.local/` (the installer prints the exact address). The installer:
+Install [Homebrew](https://brew.sh) first, then run the install command from the [TL;DR](#tldr) in Terminal and enter your Mac password when `sudo` asks. The dashboard is at `http://<your-mac>.local/` (the installer prints the exact address). The installer:
 
 1. uses (or `brew install`s) a Python 3.11+; macOS's own `python3` is too old
 2. installs the Ookla CLI from Ookla's Homebrew tap (`teamookla/speedtest`). Homebrew always runs as your user, never as root.
@@ -175,6 +176,52 @@ Images: `ghcr.io/jchin14/netbae` for amd64, arm64 (Pi 3/4/5 on 64-bit) and arm/v
 </details>
 
 <details>
+<summary><b>NixOS</b></summary>
+
+<a id="nixos"></a>**The quick way:** the same install command as on any Linux system. On NixOS it adds netBae as a module instead of installing packages: it copies netBae to `/etc/nixos/netbae/`, writes `/etc/nixos/netbae.nix` (which turns the service on and opens its port), adds `./netbae.nix` to the `imports` in your `configuration.nix` (keeping a backup), and runs `nixos-rebuild switch`. Your settings stay in `/etc/netbae/config.toml`, and every `netbae` command works as on other systems (`netbae update` re-runs the installer). If the rebuild fails, your configuration is put back as it was. If `/etc/nixos` is a git repository (as flakes need), the new files are staged for you to commit.
+
+**With your own flake:** add netBae as an input and turn the service on:
+
+```nix
+{
+  inputs.netbae.url = "github:jchin14/netBae";
+  inputs.netbae.inputs.nixpkgs.follows = "nixpkgs";
+
+  outputs = { nixpkgs, netbae, ... }: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      modules = [
+        netbae.nixosModules.default
+        {
+          services.netbae = {
+            enable = true;
+            openFirewall = true;   # reach the dashboard from other devices
+            # port = 8080;         # default 80
+            settings = {           # anything from config.toml, as Nix
+              speedtest.interval_minutes = 120;
+              ping.extra_targets = [ { name = "My server"; host = "example.com"; group = "Mine"; } ];
+              ping.disable = [ "Streaming AU" ];
+            };
+          };
+        }
+        # ... your other modules
+      ];
+    };
+  };
+}
+```
+
+Then `sudo nixos-rebuild switch`, and open `http://<this-machine>/`.
+
+- **Commands:** `netbae status`, `logs`, `restart`, `check`, `version` and `config` work either way. With settings in Nix, `netbae config` tells you to change them there; `netbae update` runs `nix flake update netbae` and `nixos-rebuild switch` when `/etc/nixos/flake.nix` has a `netbae` input. `netbae tunnel` isn't available on NixOS yet: use NixOS's own `services.cloudflared` or `services.tailscale` to share the public dashboard.
+- **Service:** `netbae.service` runs as its own unprivileged user (`DynamicUser`) with only the network capabilities it needs (`CAP_NET_RAW` for ping, `CAP_NET_BIND_SERVICE` for port 80), and keeps its history in `/var/lib/netbae` (really `/var/lib/private/netbae`).
+- **Config:** `settings` becomes netBae's `config.toml`; anything you leave out keeps netBae's default. To edit a file instead, set `services.netbae.configFile = "/etc/netbae/config.toml";` (with `[storage] database` under `/var/lib/netbae` and `[web] auto_update = "off"`), as the installer does.
+- **Licences:** netBae's licence (free for personal use) and the Ookla Speedtest CLI's aren't free software in Nix's sense. The module builds just those two from a package set that allows them, so you don't need `allowUnfree`. Set `services.netbae.speedtestPackage = null;` to run without speedtests.
+- **Updates:** netBae never updates itself on NixOS: the dashboard shows when a new release is out, and `netbae update` (or `nix flake update netbae` and `nixos-rebuild switch`) installs it.
+- **Uninstall:** `netbae uninstall [--purge]` undoes what the installer did and rebuilds. With your own flake, remove `services.netbae` and the input instead.
+- **Without NixOS:** `nix run github:jchin14/netBae -- -c ./config.toml` runs it in the foreground (with a config whose `[storage] database` is somewhere you can write). Ping needs `CAP_NET_RAW`, so run it as root or use your system's capability-wrapped `ping`.
+</details>
+
+<details>
 <summary><b>Where things live</b></summary>
 
 | | Linux | macOS | Windows |
@@ -190,7 +237,7 @@ Images: `ghcr.io/jchin14/netbae` for amd64, arm64 (Pi 3/4/5 on 64-bit) and arm/v
 
 The `netbae` command does everything day to day; the full list is in the [TL;DR](#tldr) and `netbae help`. On Windows it works in cmd and PowerShell, and commands that change something (update, restart, config, tunnel, uninstall) ask for admin rights. Updates never overwrite your config. When a new version is out, the private dashboard shows an **Update to vX** button in the header: it runs the same update as `netbae update` and reloads the page once the new version is running. The dashboard itself has no admin rights; the button asks a small system job the installer sets up (a systemd path unit on Linux, a launchd job on a Mac, a SYSTEM scheduled task on Windows), which only runs the official update. netBae also updates itself automatically, at most once a week at 3:30 am when a new release is out (`[web] auto_update`). In Docker the header shows the new version with the `docker compose pull` command instead.
 
-The ping chart draws one line per category (the average of its hosts) and the DNS chart one line per resolver (IPv4 and IPv6 together); click a row in the table under a chart to expand it into its hosts or addresses. On the dashboard, each chart's time menu has the last 15 minutes to a year, **A day…** (pick a date, then step with ◀ ▶) and a custom range. A badge shows whether a chart is **Live** or showing past data, and the header says when any chart isn't live. Once your connection has been on more than one ISP, the ping and DNS charts get an **ISP** selector that keeps only the times you were on that ISP, so you can compare providers.
+The ping chart draws one line per category (the average of its hosts) and the DNS chart one line per resolver (IPv4 and IPv6 together). In the table under a chart, click a category to expand it into its hosts or addresses, and click a host to hide or show its line; hovering a row picks out its line. The DNS table also shows the route to each public resolver. In the chip list above a chart, the arrow opens a category, its name hides or shows it, and the rest of the row picks out its line (tap again to stop), which works with a finger on a phone too. Click a speedtest table's column headings to sort it by speed, ping, time and so on. On the dashboard, each chart's time menu has the last 15 minutes to a year, **A day…** (pick a date, then step with ◀ ▶) and a custom range. A badge shows whether a chart is **Live** or showing past data, and the header says when any chart isn't live. Once your connection has been on more than one ISP, the ping and DNS charts get an **ISP** selector that keeps only the times you were on that ISP, so you can compare providers.
 
 ### Uninstall
 
@@ -296,6 +343,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[public] hide` | `[]` | more addresses, prefixes or domains to hide, e.g. `["198.51.100.0/24", "example.com"]` |
 | `[public] show_hostname` | `false` | show this machine's name (often includes yours, e.g. `Sams-Pi`) |
 | `[public] show_city` | `true` | `false` shows only the country of your ISP location and drops each route's first city |
+| `[public] access_team` / `access_aud` | `""` / `""` | Cloudflare Access sign-in on the public address, so you get your own dashboard there: your Zero Trust team name and the application's AUD tag, see [Signing in](#signing-in-to-your-own-dashboard) |
 | `[[connections]] name` / `bind` | | a secondary connection: its name and the IP or interface to send from, see [below](#monitoring-a-secondary-connection) |
 | `[[connections]] targets` | `1.1.1.1`, `8.8.8.8`, `google.com` | what to ping over it, or `"all"` for every main target |
 | `[[connections]] speedtest` | `true` | |
@@ -305,7 +353,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 
 ### Ping targets
 
-netBae's built-in list (74 hosts in 15 groups) lives in its own file, [`app/targets.toml`](app/targets.toml), along with the built-in DNS servers, DNS domains and CDN names, installed next to `netbae.py` (`/opt/netbae/targets.toml` on Linux and in Docker, `/usr/local/lib/netbae` on macOS, `C:\Program Files\netBae` on Windows). It's replaced on every update, so new default targets show up by themselves. Don't edit it: add your own hosts with `extra_targets` and switch built-in ones off with `disable` in `config.toml`:
+netBae's built-in list (78 hosts in 15 groups) lives in its own file, [`app/targets.toml`](app/targets.toml), along with the built-in DNS servers, DNS domains and CDN names, installed next to `netbae.py` (`/opt/netbae/targets.toml` on Linux and in Docker, `/usr/local/lib/netbae` on macOS, `C:\Program Files\netBae` on Windows). It's replaced on every update, so new default targets show up by themselves. Don't edit it: add your own hosts with `extra_targets` and switch built-in ones off with `disable` in `config.toml`:
 
 ```toml
 [ping]
@@ -394,7 +442,16 @@ The connection gets its own group of ping tiles and its own row in the speedtest
 
 netBae can serve a read-only copy of your dashboard for people outside your home. It's off by default.
 
-It isn't a separate app: it's the same dashboard, served by the same netBae service on a second port (8080), with a stricter set of rules. You keep full control on port 80 while visitors use port 8080, and every answer on the public port is checked and masked before it leaves. Your own dashboard shows, under the ISP line in the header, whether the public one is shared, its address, whether it's reachable from the internet and how many people visited in the last hour (visits from your own network aren't counted, and the count restarts with netBae).
+It isn't a separate app: it's the same dashboard, served by the same netBae service on a second port, with a stricter set of rules. Every answer on the public port is checked and masked before it leaves.
+
+**The two ports** are separate settings, and neither follows the other:
+
+| | Setting | Default | Who reaches it |
+|---|---|---|---|
+| Your own dashboard | `[web] port` | `80`, or the next free port (81, 82 …) if 80 was taken at install | devices on your network |
+| The public dashboard | `[public] port` | `8080` | the tunnel, when `[public] host = "127.0.0.1"` (what `netbae tunnel` sets) |
+
+Change either with `netbae config`. The tunnel must point at the public port, never at your own dashboard's port. Your own dashboard shows, under the ISP line in the header, whether the public one is shared, its address, whether it's reachable from the internet and how many people visited in the last hour (visits from your own network aren't counted, and the count restarts with netBae).
 
 ### The easy way: `netbae tunnel`
 
@@ -417,7 +474,7 @@ netBae installs `cloudflared` or Tailscale from their official sources if needed
 - More than one hostname? Give several (`netbae tunnel cloudflare netbae.example.com status.example.org`) or run it again with another: each run adds to the hostnames already shared, all through the same tunnel. `netbae tunnel remove <hostname>` stops sharing on one.
 - `netbae tunnel status` shows what's shared and where.
 - `netbae tunnel off` stops sharing and turns the public dashboard off (your Cloudflare login is kept, so turning it back on is one command).
-- Made a tunnel in the Cloudflare dashboard instead? `netbae tunnel cloudflare --token <token>` runs it. Give it a public hostname with service `http://127.0.0.1:8080`.
+- Made a tunnel in the Cloudflare dashboard instead? `netbae tunnel cloudflare --token <token>` runs it. Give it a public hostname with service `http://127.0.0.1:8080` (your `[public] port`).
 - Docker: `netbae tunnel` isn't available in the container, see [With Docker](#with-docker) below.
 
 ### With Docker
@@ -479,6 +536,25 @@ The same charts and tables as on your own dashboard, with these differences:
 
   Internal addresses (router, this machine) and the DNS servers are shown as on your own dashboard.
 
+### Signing in to your own dashboard
+
+With a Cloudflare Tunnel, your public address can double as your own dashboard away from home. Visitors see the public view. You click **Sign in** in the header, sign in through Cloudflare Access, and the same address shows your full dashboard with the Run and Update buttons. **Sign out** goes back to the public view. At home, your own dashboard's port never needs a sign-in.
+
+Set it up once in [Cloudflare Zero Trust](https://one.dash.cloudflare.com/):
+
+1. **Access → Applications → Add an application → Self-hosted.** Enter your dashboard's hostname (e.g. `netbae.example.com`) with the path `login`. Only `/login` is protected, so the rest stays public.
+2. **Add a policy:** action **Allow**, include **Emails**, your email address. Access is free for up to 50 users, and you can sign in with an emailed code, Google, GitHub and others.
+3. **Copy two values:** the application's **Application Audience (AUD) tag**, from its overview, and your team name, the `<team>` in `<team>.cloudflareaccess.com` (under **Settings → Custom pages**).
+4. **Add them to the config** with `netbae config`, which restarts netBae:
+
+   ```toml
+   [public]
+   access_team = "myteam"
+   access_aud = "4714c1358e65fe4b408ad6d432a5f878f08194bdb4752441fd56faefa9b2b6f2"
+   ```
+
+**Why it's safe:** after you sign in, Cloudflare sends netBae a signed token. netBae checks the signature against your team's published keys, that the token is for this application and that it hasn't expired, then keeps it as a cookie until it expires. Without a valid token, every request gets the public view, so a missing or wrong Access setup can't expose your dashboard; `/login` just says sign-in isn't set up yet. Signed-in requests aren't rate-limited or counted as visitors.
+
 ### By hand
 
 ```toml
@@ -501,7 +577,7 @@ A small program, `cloudflared`, runs on the Pi and makes an outgoing connection 
 3. Add a **public hostname**: e.g. `netbae.example.com`, service type `HTTP`, URL `127.0.0.1:8080` (use the Pi's LAN IP if `cloudflared` runs on another machine).
 4. Open `https://netbae.example.com`. Cloudflare adds HTTPS automatically.
 
-Point the tunnel at the public port (8080), never at port 80. Want only invited people to see it? Add a **Cloudflare Access** application for the hostname with an email one-time-PIN rule. It's free for up to 50 users.
+Point the tunnel at the public port (8080), never at your own dashboard's port. To get your own dashboard on the same address, see [Signing in](#signing-in-to-your-own-dashboard). To let only invited people see the public one, protect the whole hostname (no path) with a Cloudflare Access application instead.
 
 #### Tailscale Funnel (no domain needed)
 
@@ -509,15 +585,15 @@ If you use [Tailscale](https://tailscale.com/), run `sudo tailscale funnel --bg 
 
 ## How it measures
 
-- **Ping:** one ICMP echo per host per interval, using the system `ping`. Hosts that block ping can use a timed TCP connect instead.
+- **Ping:** one ICMP echo per host per interval, using the system `ping`. Hosts that block ping can use a timed TCP connect instead. When 5 or more hosts that answered last time fail in the same round, they're pinged again a second later and the answers kept: on a busy machine (swapping or a slow disk), a short stall makes every ping in flight miss its reply, router included, and they'd all look down. Hosts that also miss the re-check count as failed, and one or two failures (ordinary packet loss) are never re-checked. The log notes each re-check.
 - **Router:** `gateway` reads the default route from the kernel (`/proc/net/route`; `route get default` on macOS, `route print` on Windows), so it follows whatever router you're using.
 - **Sites:** each name is pinged at the address it resolves to, which for big services is their nearest edge or CDN server. That's the path your real traffic takes.
 - **IPv4 and IPv6:** when this machine has an IPv6 route, each site is pinged at its IPv4 address and, if it has one, its IPv6 address, stored as two separate series (the public resolvers' IPv4 addresses are paired with their IPv6 ones, e.g. 1.1.1.1 with 2606:4700:4700::1111). Regions use the same speedtest server over IPv6 when it has an IPv6 address, otherwise the fastest one in that city that does. Sites without IPv6 just have no IPv6 line, and nothing is recorded for IPv6 on an IPv4-only network. Fake "IPv6" addresses that still go over IPv4 (IPv4-mapped `::ffff:` and NAT64 `64:ff9b::`) are ignored. Routes are traced over both too.
 - **DNS and CDN:** CDNs such as Akamai, Google and Microsoft answer with a server near the DNS resolver that asked (or near you, if the resolver passes on part of your address with EDNS Client Subnet, like Quad9's 9.9.9.11). Cloudflare is the exception: it uses the same anycast addresses everywhere and your ISP's routing picks the site, so it's there as a baseline. Every 30 minutes each resolver looks up the `[cdn] hostnames`; every address it hands out is pinged 5 times and traced every 6 hours. A resolver's score is the average latency to its addresses, averaged per hostname so a name with six addresses counts the same as one with one, and the dashboard lists the resolvers fastest first with a 7-day average. A resolver near the top is one whose answers send you to nearby servers.
 - **DNS:** one UDP A-record query per resolver and domain, timed in Python, over IPv4 and IPv6. "DHCP DNS" is read from the system's resolver settings (`/etc/resolv.conf` or systemd-resolved on Linux and macOS, the network adapter settings on Windows) at startup. An IPv6 DNS server with the same MAC address as the default gateway (from the ARP and neighbour tables) is the router, shown as Router v6; failing that, the router's link-local IPv6 address is used if it answers DNS.
-- **ISP:** an HTTPS request to [ipinfo.io](https://ipinfo.io) through each connection (main and secondary) returns its public IP and ISP. The header shows the current one, and the charts mark every check: one colour per connection and one shape per ISP. Click a marker type above a chart to hide it. ipinfo.io sees your public IP, about 4,500 requests a month per connection at the default interval (its free tier allows 50,000).
+- **ISP:** an HTTPS request to [ipinfo.io](https://ipinfo.io) through each connection (main and secondary) returns its public IP and ISP. The header shows the current one, and the System history chart marks every check along its top, one row per connection: a tick in the ISP's colour, or a cross when the check failed (coloured for the ISP the connection was on). A larger mark means the ISP or IP changed. Click an ISP above the chart to hide its marks. ipinfo.io sees your public IP, about 4,500 requests a month per connection at the default interval (its free tier allows 50,000).
 - **Routes:** the system `traceroute` (`tracert` on Windows) to each target every 12 hours, and right after netBae starts for any target that has no recent route. Each hop's network comes from [Team Cymru's IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) over DNS. A route is **on-net** if the destination is inside your ISP, **direct** if your ISP connects straight to the destination's network (a private interconnect), **IX** if your ISP hands the traffic over across an internet exchange (hops on an exchange's peering LAN, using [PeeringDB](https://www.peeringdb.com)'s prefix list, refreshed daily), even when a transit carrier follows the exchange, and **transit** if your ISP hands it straight to another carrier. Each hand-over is also labelled with the business relationship between the two networks (**peering**, **paid transit**, or **to customer**) from [CAIDA's AS relationships](https://www.caida.org/catalog/datasets/as-relationships/), inferred from public BGP data, published monthly and downloaded once a month (~10 MB on disk). Each hop also gets a **location**, from the city code most backbone routers carry in their name (`be3021.ccr41.syd01.atlas.cogentco.com` is Sydney), or else from ipinfo.io's IP geolocation, marked `~` as approximate. A geolocated city is dropped if the hop answered too fast to be that far away (light in fibre covers about 100 km per millisecond of round trip), which weeds out anycast addresses like 8.8.8.8. Geolocation results are cached for 30 days and capped at 300 lookups a day. Traceroute only sees routers that answer it, so treat it as a strong hint, not proof.
-- **Speedtests:** the official Ookla CLI, auto-selecting the closest server unless you choose one. A new install runs its first test a few minutes after starting, once the first routes are traced. Before each scheduled test, netBae checks whether the network is busy (see `busy_check` under [All options](#all-options)), and the bottom of the dashboard lists how often each kind of test runs.
+- **Speedtests:** the official Ookla CLI, auto-selecting the closest server unless you choose one. A new install runs its first test a few minutes after starting, once the first routes are traced. Before each scheduled test, netBae checks whether the network is busy (see `busy_check` under [All options](#all-options)), and the bottom of the dashboard lists how often each kind of test runs. Every test (scheduled, **Run now**, region, global and secondary) first waits for any running ping, DNS check or trace to finish. During the test, pings and DNS checks are skipped, so the charts show a short gap instead of the test's own traffic, and traces wait until it's done. System stats keep recording.
 - **System:** the model name comes from the device tree on a Raspberry Pi (`/proc/device-tree/model`), DMI/BIOS info on PCs and VMs, `sysctl` on a Mac and the registry on Windows.
 
 ## Averages and storage
@@ -535,12 +611,12 @@ History is kept in SQLite at three resolutions:
 - 1-minute summaries (count, average, min, max and a latency histogram) for `minute_retention_days` (90)
 - hourly summaries, speedtests and system history for `retention_days` (0 = forever)
 
-Charts automatically use the right one, so a whole year loads instantly even on a Pi. P5 and P95 are exact for ranges up to 6 hours (worked out from every sample) and within a few percent beyond that: percentiles of 1-minute summaries can't be combined, so each summary also counts its samples in 48 latency bins (0.3 ms to 1 s, each 18% wider than the last), and those counts add up exactly over any range. History from before 1.8 has no histograms and shows the older, rougher P5/P95 (the average of each minute's lowest and highest). Two reference files sit next to the database and refresh themselves: PeeringDB's internet-exchange prefixes (`peeringdb-ix.json`, daily) and CAIDA's AS relationships (`as-rel-YYYYMM.db`, about 10 MB, monthly). With the defaults (74 hosts, 18 regions, 18 DNS servers × 5 domains), the database levels off at about 2.3 GB once it holds 90 days, then grows by about 300 MB a year (about 2.6 GB after the first year):
+Charts automatically use the right one, so a whole year loads instantly even on a Pi. P5 and P95 are exact for ranges up to 6 hours (worked out from every sample) and within a few percent beyond that: percentiles of 1-minute summaries can't be combined, so each summary also counts its samples in 48 latency bins (0.3 ms to 1 s, each 18% wider than the last), and those counts add up exactly over any range. History from before 1.8 has no histograms and shows the older, rougher P5/P95 (the average of each minute's lowest and highest). Two reference files sit next to the database and refresh themselves: PeeringDB's internet-exchange prefixes (`peeringdb-ix.json`, daily) and CAIDA's AS relationships (`as-rel-YYYYMM.db`, about 10 MB, monthly). With the defaults (78 hosts, 20 regions, 20 DNS servers × 5 domains, most of them over IPv4 and IPv6), the database levels off at roughly 2.5 GB once it holds 90 days, then grows by about 300 MB a year (roughly 2.8 GB after the first year):
 
 | What | Kept | Size |
 |---|---|---|
-| Every ping and DNS lookup | 7 days | ~455 MB (ping 375, DNS 80) |
-| 1-minute summaries | 90 days | ~1.85 GB (ping 0.95, DNS 0.9) |
+| Every ping and DNS lookup | 7 days | ~485 MB (ping 395, DNS 90) |
+| 1-minute summaries | 90 days | ~2 GB (ping 1, DNS 1) |
 | Hourly summaries, speedtests, system, ISP checks, routes | forever | ~300 MB a year |
 
 Host names, DNS servers and domains are stored once and referred to by number, and each table is stored in (host, time) order so it needs only one extra index (by time).
@@ -557,12 +633,12 @@ netbae.home.lan {
 }
 ```
 
-There's no login, so keep it on your LAN. If you need auth, add it at the proxy. To let other people see it, use the [public dashboard](#sharing-a-public-dashboard) instead.
+Your own dashboard has no login, so keep it on your LAN, or add auth at the proxy. To reach it from outside, use the [public dashboard](#sharing-a-public-dashboard) with [Cloudflare Access sign-in](#signing-in-to-your-own-dashboard), or a VPN such as Tailscale. To let other people see it, use the public dashboard.
 
 ## API
 
 Everything on the dashboard comes from a small JSON API you can use from Home Assistant, Grafana or scripts:
-`/api/summary`, `/api/config`, `/api/system`, `/api/system/history`, `/api/ping`, `/api/dns`, `/api/speedtest`, `/api/isp` (query: `from`, `to` in Unix seconds, plus `targets` / `servers` / `domain`), `/api/traceroute?target=<id>` (hops and route history, with each network's relationship to the one before it), and `POST /api/speedtest/run?scope=main|regions|conn:<name>`. `/api/sharing` (your own dashboard only) reports the public dashboard's tunnels and visitors. The [public dashboard](#sharing-a-public-dashboard) serves the same `GET` API, rate-limited and masked, and refuses `POST`.
+`/api/summary`, `/api/config`, `/api/system`, `/api/system/history`, `/api/ping`, `/api/dns`, `/api/speedtest`, `/api/isp` (query: `from`, `to` in Unix seconds, plus `targets` / `servers` / `domain`), `/api/traceroute?target=<id>` (hops and route history, with each network's relationship to the one before it), `/api/cdn` (the DNS and CDN ranking), `POST /api/speedtest/run?scope=main|regions|global|conn:<name>` and `POST /api/cdn/run`. Your own dashboard also has `/api/sharing` (the public dashboard's tunnels and visitors), `/api/update` and `POST /api/update/run`. The [public dashboard](#sharing-a-public-dashboard) serves the same `GET` API, rate-limited and masked, and refuses `POST`, except for someone [signed in](#signing-in-to-your-own-dashboard), who gets your own dashboard's API.
 
 ## FAQ
 
