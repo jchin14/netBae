@@ -212,7 +212,16 @@ Images: `ghcr.io/jchin14/netbae` for amd64, arm64 (Pi 3/4/5 on 64-bit) and arm/v
 
 Then `sudo nixos-rebuild switch`, and open `http://<this-machine>/`.
 
-- **Commands:** `netbae status`, `logs`, `restart`, `check`, `version` and `config` work either way. With settings in Nix, `netbae config` tells you to change them there; `netbae update` runs `nix flake update netbae` and `nixos-rebuild switch` when `/etc/nixos/flake.nix` has a `netbae` input. `netbae tunnel` isn't available on NixOS yet: use NixOS's own `services.cloudflared` or `services.tailscale` to share the public dashboard.
+- **Commands:** `netbae status`, `logs`, `restart`, `check`, `version` and `config` work either way. With settings in Nix, `netbae config` tells you to change them there; `netbae update` runs `nix flake update netbae` and `nixos-rebuild switch` when `/etc/nixos/flake.nix` has a `netbae` input. After the install command, `netbae tunnel` works too (see Tunnel below).
+- **Tunnel:** with the install command, `netbae tunnel` works as on other systems, but turns the tunnel on through your NixOS configuration: it writes `/etc/nixos/netbae-tunnel.nix` (imported by `netbae.nix`) and runs `nixos-rebuild switch`. `cloudflared` comes from nixpkgs. With your own flake, set it in Nix (each one also turns on the public dashboard, on `127.0.0.1:8080`):
+  ```nix
+  services.netbae.tunnel.tailscale = true;      # then once: sudo tailscale up; sudo tailscale funnel --bg 8080
+  services.netbae.tunnel.cloudflare = {         # a tunnel made in the Cloudflare dashboard,
+    enable = true;                              # with public hostname -> http://127.0.0.1:8080
+    tokenFile = "/etc/netbae/cloudflared/token";  # or configFile + credentialsFile for your own config.yml
+  };
+  ```
+  Secret files stay outside the Nix store: systemd hands them to `netbae-tunnel.service`, which runs as its own unprivileged user.
 - **Service:** `netbae.service` runs as its own unprivileged user (`DynamicUser`) with only the network capabilities it needs (`CAP_NET_RAW` for ping, `CAP_NET_BIND_SERVICE` for port 80), and keeps its history in `/var/lib/netbae` (really `/var/lib/private/netbae`).
 - **Config:** `settings` becomes netBae's `config.toml`; anything you leave out keeps netBae's default. To edit a file instead, set `services.netbae.configFile = "/etc/netbae/config.toml";` (with `[storage] database` under `/var/lib/netbae` and `[web] auto_update = "off"`), as the installer does.
 - **Licences:** netBae's licence (free for personal use) and the Ookla Speedtest CLI's aren't free software in Nix's sense. The module builds just those two from a package set that allows them, so you don't need `allowUnfree`. Set `services.netbae.speedtestPackage = null;` to run without speedtests.
@@ -475,6 +484,7 @@ netBae installs `cloudflared` or Tailscale from their official sources if needed
 - `netbae tunnel status` shows what's shared and where.
 - `netbae tunnel off` stops sharing and turns the public dashboard off (your Cloudflare login is kept, so turning it back on is one command).
 - Made a tunnel in the Cloudflare dashboard instead? `netbae tunnel cloudflare --token <token>` runs it. Give it a public hostname with service `http://127.0.0.1:8080` (your `[public] port`).
+- NixOS: the same commands, but the tunnel is turned on in your NixOS configuration (see [NixOS](#nixos)).
 - Docker: `netbae tunnel` isn't available in the container, see [With Docker](#with-docker) below.
 
 ### With Docker

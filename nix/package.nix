@@ -23,7 +23,7 @@
 let
   src = lib.fileset.toSource {
     root = ../.;
-    fileset = lib.fileset.unions [ ../app ../config.toml ../LICENSE ];
+    fileset = lib.fileset.unions [ ../app ../config.toml ../LICENSE ../tunnel.sh ];
   };
   # VERSION = "x.y.z" near the top of app/netbae.py
   versionLine = lib.findFirst (l: lib.hasPrefix "VERSION = " l) ''VERSION = "0"''
@@ -44,8 +44,12 @@ stdenvNoCC.mkDerivation {
     install -Dm644 ${chartjs} $out/share/netbae/static/vendor/chart.umd.min.js
     install -Dm644 ${chartjsAdapter} $out/share/netbae/static/vendor/chartjs-adapter-date-fns.bundle.min.js
     install -Dm644 config.toml $out/share/netbae/config.default.toml
+    install -Dm755 tunnel.sh $out/share/netbae/tunnel.sh
+    mkdir -p $out/libexec/netbae
+    ln -s ${python3.interpreter} $out/libexec/netbae/python3  # for tunnel.sh (NixOS has no system Python)
     # ping and traceroute come last on PATH, so a system's own (e.g. NixOS's capability-wrapped ping) wins
-    substitute ${./netbae.sh} $out/bin/netbae --subst-var-by server $out/bin/netbae-server --subst-var version
+    substitute ${./netbae.sh} $out/bin/netbae --subst-var-by server $out/bin/netbae-server --subst-var version \
+      --subst-var out
     chmod +x $out/bin/netbae
     wrapProgram $out/bin/netbae --suffix PATH : ${lib.makeBinPath [ curl ]}  # for netbae update
     makeWrapper ${python3.interpreter} $out/bin/netbae-server \

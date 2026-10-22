@@ -4,6 +4,7 @@ set -euo pipefail
 
 SERVER=@server@
 VERSION=@version@
+OUT=@out@
 NIXOS_FILE=/etc/nixos/netbae.nix   # written by install.sh on NixOS ("installer-managed")
 SRC=/etc/nixos/netbae              # netBae's source, imported by that file
 MARK="Added by the netBae installer"
@@ -75,8 +76,11 @@ case "${1:-help}" in
       as_root cp "$conf" "$conf.netbae-backup"
       as_root sed -i -e 's# \./netbae\.nix##' -e '/^ *imports = \[ *\]; *$/d' "$conf"
     fi
-    as_root rm -rf "$NIXOS_FILE" "$SRC"
-    if [[ -d /etc/nixos/.git ]]; then as_root git -C /etc/nixos add -A netbae.nix netbae configuration.nix 2>/dev/null || true; fi
+    as_root rm -rf "$NIXOS_FILE" "$SRC" /etc/nixos/netbae-tunnel.nix
+    if [[ -d /etc/nixos/.git ]]; then
+      as_root git -C /etc/nixos add -A netbae.nix netbae configuration.nix 2>/dev/null || true
+      as_root git -C /etc/nixos add -A netbae-tunnel.nix 2>/dev/null || true  # only if it was ever staged
+    fi
     as_root nixos-rebuild switch
     echo "netBae removed. Ookla's speedtest CLI went with it."
     if [[ ${2:-} == --purge ]]; then
@@ -87,9 +91,24 @@ case "${1:-help}" in
     fi
     ;;
   tunnel)
-    echo "netbae tunnel isn't available on NixOS yet. To share the public dashboard, use NixOS's own"
-    echo "services.cloudflared or services.tailscale (see \"Sharing a public dashboard\" in the README)."
-    exit 1
+    if ! installed_by_script; then
+      cat <<'TXT'
+This netBae comes from your NixOS configuration, so set its tunnel there too, then nixos-rebuild switch:
+
+  services.netbae.tunnel.tailscale = true;            # then once: sudo tailscale up; sudo tailscale funnel --bg 8080
+  services.netbae.tunnel.cloudflare = {               # a tunnel made in the Cloudflare dashboard,
+    enable = true;                                    # with public hostname -> http://127.0.0.1:8080
+    tokenFile = "/etc/netbae/cloudflared/token";
+  };
+
+Either one turns on the read-only public dashboard (on 127.0.0.1:8080). For a temporary address:
+  nix shell nixpkgs#cloudflared -c cloudflared tunnel --url http://127.0.0.1:8080
+TXT
+      exit 0
+    fi
+    # tunnel.sh writes /etc/nixos/netbae-tunnel.nix (imported by netbae.nix) and rebuilds
+    if [[ $EUID -eq 0 ]]; then exec env NETBAE_NIX_OUT="$OUT" bash "$OUT/share/netbae/tunnel.sh" "${@:2}"; fi
+    exec sudo env NETBAE_NIX_OUT="$OUT" PATH="$PATH" bash "$OUT/share/netbae/tunnel.sh" "${@:2}"
     ;;
   *)
     cat <<HELP
@@ -102,6 +121,8 @@ netbae - manage the netBae internet monitor (NixOS)
   netbae check        validate the config and show the next speedtest times
   netbae restart | start | stop
   netbae version
+  netbae tunnel       share a read-only dashboard publicly (Cloudflare or Tailscale, no port forwarding)
+  netbae tunnel status | off | remove <hostname>
   netbae uninstall [--purge]
 HELP
     ;;

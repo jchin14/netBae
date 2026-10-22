@@ -81,7 +81,7 @@ nixos_install() {
 
   rm -rf "$nixdir/netbae.new"
   mkdir -p "$nixdir/netbae.new"
-  cp -a "$SRC_DIR/app" "$SRC_DIR/nix" "$SRC_DIR/config.toml" "$SRC_DIR/LICENSE" "$nixdir/netbae.new/"
+  cp -a "$SRC_DIR/app" "$SRC_DIR/nix" "$SRC_DIR/config.toml" "$SRC_DIR/LICENSE" "$SRC_DIR/tunnel.sh" "$nixdir/netbae.new/"
   rm -rf "$nixdir/netbae.new/app/__pycache__" "$nixdir/netbae.new/app/static/vendor"
   echo "$NETBAE_REPO" >"$nixdir/netbae.new/REPO"
   rm -rf "$nixdir/netbae.old"; [[ -d $nixdir/netbae ]] && mv "$nixdir/netbae" "$nixdir/netbae.old"
@@ -98,13 +98,37 @@ nixos_install() {
   printf '%s\n' "$defaults" >"$CONF_DIR/config.toml.default"
   chmod 644 "$CONF_DIR/config.toml" "$CONF_DIR/config.toml.default"
   port=$(sed -n '/^\[web\]/,/^\[/s/^port *= *\([0-9]*\).*/\1/p' "$CONF_DIR/config.toml" | head -1)
+  # another web server on the port (netBae itself doesn't count): move to the next free one and save it
+  local want=${port:-80} holder p mine
+  mine=$(systemctl show -p MainPID --value netbae 2>/dev/null || true)
+  nixos_port_holder() {  # program listening on port $1 other than netBae, or nothing
+    local line
+    line=$(ss -Hltnp "sport = :$1" 2>/dev/null | head -1 || true)
+    [[ -z $line ]] && return 0
+    [[ -n $mine && $mine != 0 && $line == *"pid=$mine,"* ]] && return 0
+    line=$(grep -o 'users:(("[^"]*"' <<<"$line" | cut -d'"' -f2 || true)
+    echo "${line:-another program}"
+  }
+  holder=$(nixos_port_holder "$want")
+  if [[ -n $holder ]]; then
+    for ((p = want + 1; p < want + 20; p++)); do [[ -z $(nixos_port_holder "$p") ]] && break; done
+    [[ -z $(nixos_port_holder "$p") ]] || die "port $want and the 19 after it are all in use. Set a free [web] port in $CONF_DIR/config.toml and re-run."
+    c_warn "port $want is used by '$holder' - using port $p instead (saved as [web] port in $CONF_DIR/config.toml)"
+    if grep -q '^\[web\]' "$CONF_DIR/config.toml" && sed -n '/^\[web\]/,/^\[/p' "$CONF_DIR/config.toml" | grep -q '^port *='; then
+      sed -i -E '/^\[web\]/,/^\[/ s/^port *= *[0-9]+/port = '"$p"'/' "$CONF_DIR/config.toml"
+    else
+      sed -i -E '0,/^\[web\]/ s/^\[web\]$/[web]\nport = '"$p"'/' "$CONF_DIR/config.toml"
+    fi
+    port=$p
+  fi
 
   cat >"$nixdir/netbae.nix" <<NIX
 # Added by the netBae installer (https://github.com/$NETBAE_REPO). Managed by it: netbae update rewrites this
 # file and netbae uninstall removes it. Your settings go in $CONF_DIR/config.toml (netbae config).
-{ ... }:
+{ lib, ... }:
 {
-  imports = [ ./netbae/nix/module.nix ];
+  # netbae-tunnel.nix is written by netbae tunnel
+  imports = [ ./netbae/nix/module.nix ] ++ lib.optional (builtins.pathExists ./netbae-tunnel.nix) ./netbae-tunnel.nix;
   services.netbae = {
     enable = true;
     configFile = "$CONF_DIR/config.toml";
@@ -160,6 +184,7 @@ NIX
   echo "    Config:     netbae config     ($CONF_DIR/config.toml)"
   echo "    Logs:       netbae logs"
   echo "    Update:     netbae update     (or re-run the install command)"
+  echo "    Share:      netbae tunnel     (a read-only dashboard on the internet, no port forwarding)"
   echo "    NixOS:      $nixdir/netbae.nix (imported by configuration.nix)"
 }
 if [[ $OS == Linux ]] && is_nixos; then

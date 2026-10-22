@@ -33,11 +33,24 @@ else
   UNIT=/etc/systemd/system/netbae-tunnel.service
   PY=python3
 fi
+# NixOS (installer-managed): the netbae command passes the Nix package's path. Services come from the NixOS
+# configuration, so the tunnel is set in /etc/nixos/netbae-tunnel.nix and turned on with nixos-rebuild.
+NIX_OUT=${NETBAE_NIX_OUT:-}
+if [[ -n $NIX_OUT ]]; then
+  PY=$NIX_OUT/libexec/netbae/python3
+  SVC_USER=nobody   # netBae runs as a systemd DynamicUser; the quick tunnel runs as nobody
+  NIX_TUNNEL=/etc/nixos/netbae-tunnel.nix
+  unset UNIT
+fi
 CONF=$CONF_DIR/config.toml
 CF_DIR=$CONF_DIR/cloudflared
 [[ -f $CONF ]] || die "netBae isn't installed here ($CONF not found)"
 
-as_svc() { if [[ $OS == Darwin ]] || ! command -v runuser >/dev/null; then sudo -u "$SVC_USER" "$@"; else runuser -u "$SVC_USER" -- "$@"; fi; }
+as_svc() {
+  if [[ -n $NIX_OUT ]]; then runuser -u "$SVC_USER" -- env HOME=/tmp "$@"
+  elif [[ $OS == Darwin ]] || ! command -v runuser >/dev/null; then sudo -u "$SVC_USER" "$@"
+  else runuser -u "$SVC_USER" -- "$@"; fi
+}
 ask() {  # ask "question" default -> answer (reads the terminal, also when piped)
   local a
   read -r -p "$1 " a </dev/tty || a=""
@@ -77,7 +90,7 @@ public_on() {
   conf_set public enabled true
   conf_set public host '"127.0.0.1"'   # only the tunnel (on this machine) can reach it
   conf_set public port "$PPORT"
-  as_svc "$PY" "$(app_dir)/netbae.py" -c "$CONF" --check-config >/dev/null || die "the config has errors - fix $CONF and re-run"
+  check_config >/dev/null || die "the config has errors - fix $CONF and re-run"
   c_info "Public dashboard: on, at http://127.0.0.1:$PPORT (only reachable from this machine)"
   if [[ $(cat "$CONF") != "$before" ]] || ! curl -fsS --max-time 2 "http://127.0.0.1:$PPORT/api/config" >/dev/null 2>&1; then
     restart_netbae
@@ -94,11 +107,24 @@ public_off() {
   c_info "Public dashboard: off"
 }
 app_dir() { if [[ $OS == Darwin ]]; then echo /usr/local/lib/netbae; else echo /opt/netbae; fi; }
+check_config() {
+  if [[ -n $NIX_OUT ]]; then "$NIX_OUT/bin/netbae-server" -c "$CONF" --check-config
+  else as_svc "$PY" "$(app_dir)/netbae.py" -c "$CONF" --check-config; fi
+}
 
 # ---------------------------------------------------------------- cloudflared
 find_cf() { command -v cloudflared 2>/dev/null || ls /opt/homebrew/bin/cloudflared /usr/local/bin/cloudflared 2>/dev/null | head -1; }
 install_cloudflared() {
   CF=$(find_cf || true)
+  if [[ -n $NIX_OUT && -z $CF ]]; then  # nixpkgs' cloudflared, for signing in and the quick tunnel
+    c_info "Getting cloudflared from nixpkgs"
+    CF=$(nix-build '<nixpkgs>' -A cloudflared --no-out-link 2>/dev/null \
+         || nix --extra-experimental-features 'nix-command flakes' build nixpkgs#cloudflared --no-link --print-out-paths)
+    CF=$CF/bin/cloudflared
+    [[ -x $CF ]] || die "couldn't get cloudflared from nixpkgs"
+    return
+  fi
+  if [[ -n $NIX_OUT ]]; then return; fi  # the tunnel service uses the NixOS module's cloudflared
   if [[ -n $CF ]]; then update_cloudflared; return; fi
   c_info "Installing cloudflared (Cloudflare's tunnel program)"
   if [[ $OS == Darwin ]]; then
@@ -153,7 +179,9 @@ install_cloudflared_binary() {  # Cloudflare's own release build, for distros wi
 
 # netbae-tunnel: our own service running cloudflared as the unprivileged netBae user
 cf_service() {  # cf_service <args after "cloudflared tunnel --no-autoupdate">
-  if [[ $OS == Darwin ]]; then
+  if [[ -n $NIX_OUT ]]; then
+    if [[ $* == *--token-file* ]]; then nix_tunnel token keep; else nix_tunnel config keep; fi
+  elif [[ $OS == Darwin ]]; then
     local args="" a
     for a in "$CF" tunnel --no-autoupdate "$@"; do args+="    <string>$a</string>"$'\n'; done
     touch "$TLOG"; chown "$SVC_USER" "$TLOG"; chmod 640 "$TLOG"
@@ -202,7 +230,10 @@ EOF
   fi
 }
 cf_service_remove() {
-  if [[ $OS == Darwin ]]; then
+  if [[ -n $NIX_OUT ]]; then
+    grep -q 'cloudflare' "$NIX_TUNNEL" 2>/dev/null || return 1
+    nix_tunnel none keep
+  elif [[ $OS == Darwin ]]; then
     [[ -f $TPLIST ]] || return 1
     launchctl bootout "system/$TLABEL" 2>/dev/null || true
     rm -f "$TPLIST"
@@ -217,8 +248,57 @@ cf_service_active() {
   else systemctl is-active --quiet netbae-tunnel; fi
 }
 cf_dir() {
-  install -d -m 0750 "$CF_DIR"
-  chown "root:$(id -gn "$SVC_USER")" "$CF_DIR"
+  if [[ -n $NIX_OUT ]]; then  # netBae's DynamicUser reads config.yml (for its status); secrets stay root-only
+    install -d -m 0755 "$CF_DIR"
+  else
+    install -d -m 0750 "$CF_DIR"
+    chown "root:$(id -gn "$SVC_USER")" "$CF_DIR"
+  fi
+}
+secret() {  # secret <file>: readable by the tunnel service only (on NixOS systemd hands it over as root)
+  if [[ -n $NIX_OUT ]]; then chown root:root "$1"; chmod 0600 "$1"
+  else chown "root:$(id -gn "$SVC_USER")" "$1"; chmod 0640 "$1"; fi
+}
+
+# NixOS: the tunnel lives in /etc/nixos/netbae-tunnel.nix, imported by the installer's netbae.nix
+nix_tunnel() {  # nix_tunnel <cloudflare: token|config|none|keep> <tailscale: true|false|keep>
+  local cf=$1 ts=$2 old="" n=/etc/nixos/netbae.nix
+  [[ -f $NIX_TUNNEL ]] && old=$(cat "$NIX_TUNNEL")
+  if [[ $cf == keep ]]; then
+    cf=none; [[ $old == *tokenFile* ]] && cf=token; [[ $old == *credentialsFile* ]] && cf=config
+  fi
+  if [[ $ts == keep ]]; then ts=false; [[ $old == *"tailscale = true"* ]] && ts=true; fi
+  # netbae.nix from before netBae 1.19.1 doesn't import the tunnel file yet
+  if [[ -f $n ]] && ! grep -q netbae-tunnel.nix "$n"; then
+    sed -i -e 's|^{ \.\.\. }:$|{ lib, ... }:|' \
+      -e 's|imports = \[ \./netbae/nix/module\.nix \];|imports = [ ./netbae/nix/module.nix ] ++ lib.optional (builtins.pathExists ./netbae-tunnel.nix) ./netbae-tunnel.nix;|' "$n"
+    grep -q netbae-tunnel.nix "$n" || die "couldn't add netbae-tunnel.nix to the imports in $n"
+  fi
+  if [[ $cf == none && $ts == false ]]; then
+    [[ -f $NIX_TUNNEL ]] || return 0
+    rm -f "$NIX_TUNNEL"
+  else
+    {
+      echo "# Written by netbae tunnel and imported by netbae.nix. netbae tunnel off removes it."
+      echo "{ ... }:"
+      echo "{"
+      [[ $ts == true ]] && echo "  services.netbae.tunnel.tailscale = true;"
+      case $cf in
+        token) printf '  services.netbae.tunnel.cloudflare = {\n    enable = true;\n    tokenFile = "%s";\n  };\n' "$CF_DIR/token" ;;
+        config) printf '  services.netbae.tunnel.cloudflare = {\n    enable = true;\n    configFile = "%s";\n    credentialsFile = "%s";\n  };\n' \
+                  "$CF_DIR/config.yml" "$CF_DIR/credentials.json" ;;
+      esac
+      echo "}"
+    } >"$NIX_TUNNEL"
+  fi
+  if [[ -f /etc/nixos/flake.nix && -d /etc/nixos/.git ]]; then
+    git -C /etc/nixos add -A netbae.nix netbae-tunnel.nix 2>/dev/null || true  # flakes only see files git knows
+  fi
+  c_info "Running nixos-rebuild switch"
+  if ! nixos-rebuild switch; then
+    if [[ -n $old ]]; then printf '%s\n' "$old" >"$NIX_TUNNEL"; else rm -f "$NIX_TUNNEL"; fi
+    die "nixos-rebuild failed (see above); $NIX_TUNNEL was put back as it was"
+  fi
 }
 wait_for_url() {  # wait_for_url https://host - the dashboard answering through the tunnel
   c_info "Waiting for $1 to answer (DNS can take a minute)"
@@ -265,7 +345,7 @@ cmd_cloudflare() {
   cf_dir
   if [[ -n $token ]]; then  # a tunnel set up in the Cloudflare dashboard
     printf '%s' "$token" >"$CF_DIR/token"
-    chown "root:$(id -gn "$SVC_USER")" "$CF_DIR/token"; chmod 0640 "$CF_DIR/token"
+    secret "$CF_DIR/token"
     public_on
     cf_service run --token-file "$CF_DIR/token"
     sleep 8
@@ -303,7 +383,7 @@ cmd_cloudflare() {
     cfj create --cred-file "$CF_DIR/credentials.json" "$name" >/dev/null
     id=$(cfj list -o json -n "$name" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')
   fi
-  chown "root:$(id -gn "$SVC_USER")" "$CF_DIR/credentials.json"; chmod 0640 "$CF_DIR/credentials.json"
+  secret "$CF_DIR/credentials.json"
   for h in "${hosts[@]}"; do
     if ! cfj route dns "$id" "$h" 2>/tmp/netbae-route.$$; then
       if grep -qi 'already' /tmp/netbae-route.$$ && [[ $(ask "A DNS record for $h already exists. Replace it? [y/N]" n) == [yY]* ]]; then
@@ -332,7 +412,8 @@ write_cf_config() {  # write_cf_config <tunnel id> <hostname>...
   {
     echo "# Written by netbae tunnel. The tunnel only reaches netBae's read-only public port."
     echo "tunnel: $id"
-    echo "credentials-file: $CF_DIR/credentials.json"
+    if [[ -n $NIX_OUT ]]; then echo "credentials-file: /run/credentials/netbae-tunnel.service/credentials.json"
+    else echo "credentials-file: $CF_DIR/credentials.json"; fi
     echo "ingress:"
     for h in "$@"; do printf '  - hostname: %s\n    service: http://127.0.0.1:%s\n' "$h" "$PPORT"; done
     echo "  - service: http_status:404"
@@ -355,10 +436,16 @@ cmd_remove() {
 
 # ---------------------------------------------------------------- tailscale
 find_ts() {
-  command -v tailscale 2>/dev/null || ls /Applications/Tailscale.app/Contents/MacOS/Tailscale 2>/dev/null || true
+  command -v tailscale 2>/dev/null || ls /run/current-system/sw/bin/tailscale \
+    /Applications/Tailscale.app/Contents/MacOS/Tailscale 2>/dev/null || true
 }
 cmd_tailscale() {
   TS=$(find_ts)
+  if [[ -n $NIX_OUT ]] && ! grep -q 'tailscale = true' "$NIX_TUNNEL" 2>/dev/null; then
+    c_info "Turning on Tailscale in your NixOS configuration"
+    nix_tunnel keep true
+    TS=/run/current-system/sw/bin/tailscale
+  fi
   if [[ -z $TS ]]; then
     [[ $OS == Darwin ]] && die "install Tailscale from https://tailscale.com/download/mac, sign in, then re-run: netbae tunnel tailscale"
     c_info "Installing Tailscale (official install script)"
@@ -383,9 +470,11 @@ cmd_status() {
   local en
   en=$(conf_get public enabled)
   echo "Public dashboard: ${en:-false} (host $(conf_get public host), port $PPORT)"
-  if [[ -f ${UNIT:-$TPLIST} ]]; then
+  local svc_file=${UNIT:-${TPLIST:-}}
+  [[ -n $NIX_OUT ]] && svc_file=$NIX_TUNNEL
+  if [[ -f $svc_file ]] && { [[ -z $NIX_OUT ]] || grep -q cloudflare "$svc_file"; }; then
     local how="your own domain"
-    [[ -f $CF_DIR/token ]] && [[ $(cat "${UNIT:-$TPLIST}") == *token-file* ]] && how="a Cloudflare dashboard tunnel"
+    [[ -f $CF_DIR/token ]] && grep -Eq 'token-file|tokenFile' "$svc_file" && how="a Cloudflare dashboard tunnel"
     echo "Cloudflare Tunnel: $(cf_service_active && echo running || echo 'not running') ($how)"
     [[ -f $CF_DIR/config.yml ]] && sed -n 's/^  - hostname: /    https:\/\//p' "$CF_DIR/config.yml"
   else

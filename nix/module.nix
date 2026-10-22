@@ -12,6 +12,8 @@ let
   };
   toml = pkgs.formats.toml { };
   dataDir = "/var/lib/netbae";
+  cf = cfg.tunnel.cloudflare;
+  tunnelOn = cf.enable || cfg.tunnel.tailscale;
   # your settings on top of what the module needs; everything else uses netBae's own defaults
   settings = lib.recursiveUpdate {
     web = {
@@ -19,6 +21,8 @@ let
       auto_update = "off"; # updates come from your Nix config, not from netBae itself
     };
     storage.database = "${dataDir}/netbae.db";
+    # a tunnel shares the read-only public dashboard, which then only listens on this machine
+    public = lib.optionalAttrs tunnelOn { enabled = true; host = "127.0.0.1"; };
   } cfg.settings;
   configFile = if cfg.configFile != null then cfg.configFile else toml.generate "netbae.toml" settings;
 in
@@ -69,6 +73,37 @@ in
       '';
     };
 
+    tunnel = {
+      cloudflare = {
+        enable = lib.mkEnableOption ''
+          a Cloudflare Tunnel to the read-only public dashboard (netbae-tunnel.service). Give either
+          `tokenFile` (a tunnel made in the Cloudflare dashboard) or `configFile` and `credentialsFile`
+          (a tunnel on your own domain, as `netbae tunnel cloudflare <hostname>` sets up)'';
+        tokenFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "/etc/netbae/cloudflared/token";
+          description = "File with the tunnel token (a path string, so the secret stays out of the Nix store).";
+        };
+        configFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "/etc/netbae/cloudflared/config.yml";
+          description = "cloudflared's config.yml: the tunnel id and the hostnames that reach the public dashboard.";
+        };
+        credentialsFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "/etc/netbae/cloudflared/credentials.json";
+          description = "The tunnel's credentials.json (a path string, so the secret stays out of the Nix store).";
+        };
+        package = lib.mkPackageOption pkgs "cloudflared" { };
+      };
+      tailscale = lib.mkEnableOption ''
+        Tailscale, for sharing the public dashboard with Tailscale Funnel (`netbae tunnel tailscale` turns
+        the Funnel on)'';
+    };
+
     configFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
@@ -81,6 +116,39 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [{
+      assertion = !cf.enable || cf.tokenFile != null || (cf.configFile != null && cf.credentialsFile != null);
+      message = "services.netbae.tunnel.cloudflare needs tokenFile, or configFile and credentialsFile";
+    }];
+
+    services.tailscale.enable = lib.mkIf cfg.tunnel.tailscale true;
+
+    # the tunnel runs as its own unprivileged user; systemd hands it the secret file
+    systemd.services.netbae-tunnel = lib.mkIf cf.enable {
+      description = "netBae public dashboard tunnel (Cloudflare)";
+      wantedBy = [ "multi-user.target" ];
+      wants = [ "network-online.target" ];
+      after = [ "network-online.target" "netbae.service" ];
+      serviceConfig = {
+        ExecStart = if cf.tokenFile != null
+          then "${lib.getExe cf.package} tunnel --no-autoupdate run --token-file %d/token"
+          else "${lib.getExe cf.package} tunnel --no-autoupdate --config ${cf.configFile} run --credentials-file %d/credentials.json";
+        LoadCredential = if cf.tokenFile != null
+          then [ "token:${cf.tokenFile}" ]
+          else [ "credentials.json:${cf.credentialsFile}" ];
+        DynamicUser = true;
+        Restart = "always";
+        RestartSec = 5;
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        CapabilityBoundingSet = "";
+        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" "AF_NETLINK" ];
+      };
+    };
+
     networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ cfg.port ];
     environment.systemPackages = [ cfg.package ]; # the netbae command
 
@@ -89,7 +157,8 @@ in
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
-      path = [ pkgs.iputils pkgs.traceroute ] ++ lib.optional (cfg.speedtestPackage != null) cfg.speedtestPackage;
+      path = [ pkgs.iputils pkgs.traceroute ] ++ lib.optional (cfg.speedtestPackage != null) cfg.speedtestPackage
+        ++ lib.optional cfg.tunnel.tailscale config.services.tailscale.package; # to see the Funnel's status
       environment = {
         HOME = dataDir; # the Ookla CLI keeps its accepted-licence file here
         PYTHONUNBUFFERED = "1";

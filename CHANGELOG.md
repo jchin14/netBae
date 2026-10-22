@@ -18,6 +18,13 @@ The main steps so far, with the full details per version below.
 | 1.15 | An Update button on the dashboard and weekly automatic updates |
 | 1.19 | NixOS support (install command and a Nix flake), Cloudflare Access sign-in for your own dashboard away from home, speedtests that pause the other tests |
 
+## 1.19.2 - 2026-10-22
+
+`netbae tunnel` on NixOS, and the NixOS install picks a free port when another web server has port 80.
+
+- **`netbae tunnel` on NixOS:** share the public dashboard through Cloudflare (quick, your own domain or a dashboard token) or Tailscale Funnel with the same commands as on other systems. On NixOS it turns the tunnel on in your NixOS configuration and rebuilds. Flake users get `services.netbae.tunnel.cloudflare` and `services.netbae.tunnel.tailscale` options.
+- On NixOS, the install command (and `netbae update`) now checks whether another program already uses the dashboard's port. If one does, it moves netBae to the next free port, saves it in the config, opens that port in the firewall and shows it in the dashboard address. Before, netBae moved to another port by itself, but the firewall only allowed the old one.
+
 ## 1.19.0 - 2026-10-22
 
 NixOS support, Cloudflare Access sign-in for your own dashboard away from home, speedtests that pause the other tests, live ISP change lines, and fewer false "down" hosts on a busy machine.
