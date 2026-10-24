@@ -14,6 +14,8 @@ port = 80             # dashboard at http://<this-machine>/ ; if it's taken, the
 update_check = true   # check GitHub for new releases (every 6 hours) and show an Update button on the dashboard
 auto_update = "weekly"  # install new releases automatically at 3:30 am: "weekly" (at most once a week), "daily" or "off"
                         # (does nothing in Docker or on installs without the Update button: update with netbae update)
+start_at_boot = true  # start netBae when this machine boots; false = only after netbae start
+                      # (applied by netbae config / start / restart, the installer and netbae update)
 chart_band = "none"   # spread band on the latency charts by default: "none", "p5-p95" or "min-max"
                       # (each browser remembers its own choice; drawn with 12 or fewer lines)
 
@@ -103,7 +105,8 @@ pings = 5              # pings per address each run
 trace_hours = 6        # trace each address at most this often (0 = don't trace)
 
 [speedtest]
-enabled = true         # scheduled speedtests (main, regions and secondary connections)
+enabled = true         # automatic speedtests: the schedule (main, regions and secondary connections) and the
+                       # first test after a new install. false = only when you press Run now
 manual = true          # the dashboard's Run buttons; works even when enabled = false
 interval_minutes = 60
 offset_minutes = 0     # e.g. 6 -> runs at hh:06 instead of hh:00

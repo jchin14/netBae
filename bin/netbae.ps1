@@ -41,7 +41,18 @@ function Stop-NetBae {
     Get-Process speedtest -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$AppDir\*" } |
         Stop-Process -Force -ErrorAction SilentlyContinue
 }
-function Start-NetBae { Start-ScheduledTask -TaskName $TaskName }
+function Start-NetBae { Set-BootTriggers; Start-ScheduledTask -TaskName $TaskName }
+# [web] start_at_boot: the task's triggers start netBae at boot and bring it back within 5 minutes if it stops.
+# Off: the same triggers, turned off (as install.ps1 sets it up).
+function Set-BootTriggers {
+    $on = (& $Py "$AppDir\netbae.py" -c $Conf --print-start-at-boot 2>$null) -ne 'false'
+    $triggers = @(
+        (New-ScheduledTaskTrigger -AtStartup),
+        (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 5))
+    )
+    if (-not $on) { $triggers | ForEach-Object { $_.Enabled = $false } }
+    $null = Set-ScheduledTask -TaskName $TaskName -Trigger $triggers
+}
 
 switch ($Command) {
     { $_ -in 'update', 'upgrade' } {

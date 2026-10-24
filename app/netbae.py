@@ -49,7 +49,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.19.2"
+VERSION = "1.19.5"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -114,7 +114,8 @@ def resolver_twins(servers):
 V6_TWIN = resolver_twins(BUILTIN["dns_servers"])
 
 DEFAULT_CONFIG = {
-    "web": {"host": "0.0.0.0", "port": 80, "chart_band": "none", "update_check": True, "auto_update": "weekly"},
+    "web": {"host": "0.0.0.0", "port": 80, "chart_band": "none", "update_check": True, "auto_update": "weekly",
+            "start_at_boot": True},
     # optional read-only copy of the dashboard for sharing (e.g. through a Cloudflare Tunnel)
     "public": {"enabled": False, "host": "0.0.0.0", "port": 8080,
                "requests_per_minute": 120, "total_requests_per_minute": 1200, "hide": [],
@@ -824,6 +825,8 @@ def load_config(path):
         raise SystemExit('[public] access_team is your Cloudflare Zero Trust team name, e.g. "myteam" for myteam.cloudflareaccess.com')
     if str(cfg["web"]["auto_update"]).lower() not in ("weekly", "daily", "off"):
         raise SystemExit('[web] auto_update must be "weekly", "daily" or "off"')
+    if not isinstance(cfg["web"]["start_at_boot"], bool):
+        raise SystemExit("[web] start_at_boot must be true or false")
     if not 0 < float(cfg["speedtest"]["busy_percent"]) <= 100:
         raise SystemExit("[speedtest] busy_percent must be between 1 and 100")
     if float(cfg["speedtest"]["busy_wait_minutes"]) < 0:
@@ -3943,7 +3946,8 @@ def update_method():
     if os.environ.get("NETBAE_DOCKER"):
         return "docker"
     if os.environ.get("NETBAE_NIX"):  # the Nix package: updated by the system's Nix config, never by itself
-        return "nix"
+        # set up by the install command (/etc/nixos/netbae.nix): `netbae update` re-runs it
+        return "manual" if "Added by the netBae installer" in (read_file("/etc/nixos/netbae.nix") or "") else "nix"
     if IS_WINDOWS:
         r = run_cmd(["schtasks", "/Query", "/TN", UPDATE_TASK])
         return "button" if r else "manual"
@@ -3985,6 +3989,14 @@ def api_update_status(m, q):
     log_file = os.path.join(os.path.dirname(os.path.abspath(m.db.path)), "update.log")
     tail = (read_file(log_file) or "").splitlines()[-15:]
     return dict(update_summary(m), log=tail)
+
+
+def api_check_update(m, q):
+    """Check GitHub for a newer release now (clicking the version on the dashboard). At most once every 30
+    seconds, since GitHub allows 60 unauthenticated API requests an hour."""
+    if time.time() - (m.update_info or {}).get("checked", 0) > 30:
+        check_latest_release(m)
+    return dict(update_summary(m), error=(m.update_info or {}).get("error"), dev=is_dev_build(m))
 
 
 def api_run_update(m, q):
@@ -4571,7 +4583,8 @@ GET_ROUTES = {
     "/api/system/history": api_system_history, "/api/summary": api_summary, "/api/isp": api_isp,
     "/api/traceroute": api_traceroute, "/api/cdn": api_cdn,
 }
-POST_ROUTES = {"/api/speedtest/run": api_run_speedtest, "/api/cdn/run": api_run_cdn, "/api/update/run": api_run_update}
+POST_ROUTES = {"/api/speedtest/run": api_run_speedtest, "/api/cdn/run": api_run_cdn, "/api/update/run": api_run_update,
+               "/api/update/check": api_check_update}
 PRIVATE_ROUTES = dict(GET_ROUTES, **{"/api/sharing": api_sharing, "/api/update": api_update_status})  # not public
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
@@ -4861,6 +4874,8 @@ def main():
     ap = argparse.ArgumentParser(description="netBae internet connection monitor")
     ap.add_argument("-c", "--config", default=os.environ.get("NETBAE_CONFIG", DEFAULT_CONFIG_PATH))
     ap.add_argument("--print-port", action="store_true", help="print the configured web port and exit")
+    ap.add_argument("--print-start-at-boot", action="store_true",
+                    help="print [web] start_at_boot (true or false) and exit; read by the installer and netbae command")
     ap.add_argument("--check-config", action="store_true", help="validate and print the effective config")
     ap.add_argument("--log-file", help="log to this file (rotated at 1 MB, 5 kept) instead of stderr")
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -4875,6 +4890,9 @@ def main():
     cfg = load_config(args.config)
     if args.print_port:
         print(cfg["web"]["port"])
+        return
+    if args.print_start_at_boot:
+        print(str(cfg["web"]["start_at_boot"]).lower())
         return
     if args.check_config:
         print(json.dumps(cfg, indent=2))

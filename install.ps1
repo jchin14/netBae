@@ -277,6 +277,7 @@ function Install-NetBae {
         $r = Invoke-Native $Py "$AppDir\netbae.py" -c $ConfFile --check-config
         if ($r.Code -ne 0) { Write-Host $r.Output; throw "config check failed - fix $ConfFile and re-run" }
         $Port = [int](Invoke-Native $Py "$AppDir\netbae.py" -c $ConfFile --print-port).Output.Trim()
+        $Boot = (Invoke-Native $Py "$AppDir\netbae.py" -c $ConfFile --print-start-at-boot).Output.Trim() -ne 'false'
 
         # ------------------------------------------------------------ port check
         function Get-PortHolder($p) { Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue | Select-Object -First 1 }
@@ -297,13 +298,16 @@ function Install-NetBae {
         # A real Windows service needs pywin32 or a wrapper exe; a boot-time task needs nothing extra.
         # Task Scheduler only restarts a task that fails to launch, so a 5-minute repeating trigger
         # brings netBae back if it ever exits (IgnoreNew makes it a no-op while it's running).
-        Info "Installing scheduled task '$TaskName' (runs at boot as $SvcAccount)"
+        Info "Installing scheduled task '$TaskName' ($(if ($Boot) { 'runs at boot' } else { 'start_at_boot is off' }) as $SvcAccount)"
         $taskArgs = "`"$AppDir\netbae.py`" -c `"$ConfFile`" --log-file `"$LogFile`""
         $action = New-ScheduledTaskAction -Execute $Py -Argument $taskArgs -WorkingDirectory $DataDir
+        # [web] start_at_boot = false: the same triggers, turned off, so netBae only runs after netbae start
+        # (a past one-off trigger could still fire through StartWhenAvailable). netbae.ps1 switches these too.
         $triggers = @(
             (New-ScheduledTaskTrigger -AtStartup),
             (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 5))
         )
+        if (-not $Boot) { $triggers | ForEach-Object { $_.Enabled = $false } }
         $principal = New-ScheduledTaskPrincipal -UserId $SvcAccount -LogonType ServiceAccount -RunLevel Limited
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
             -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `

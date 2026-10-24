@@ -18,6 +18,14 @@ The main steps so far, with the full details per version below.
 | 1.15 | An Update button on the dashboard and weekly automatic updates |
 | 1.19 | NixOS support (install command and a Nix flake), Cloudflare Access sign-in for your own dashboard away from home, speedtests that pause the other tests |
 
+## 1.19.5 - 2026-10-24
+
+A setting to choose whether netBae starts at boot, and a click on the version number checks for updates.
+
+- **Start at boot setting:** `[web] start_at_boot = false` stops netBae from starting when the machine boots, so it only runs after `netbae start`. `netbae config`, `start`, `restart` and `netbae update` apply it on Linux, macOS, Windows and NixOS (`services.netbae.startAtBoot` for flake users). In Docker, use the container's restart policy.
+- Click the version number on your dashboard to check for updates right away. If a new release is out, it asks whether to install it now; if you're up to date, it opens the release notes as before.
+- On a NixOS install made with the install command, the dashboard now says to update with `netbae update` instead of `nix flake update`.
+
 ## 1.19.2 - 2026-10-22
 
 `netbae tunnel` on NixOS, and the NixOS install picks a free port when another web server has port 80.

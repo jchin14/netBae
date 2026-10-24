@@ -42,6 +42,16 @@ case "${1:-help}" in
     fi
     as_root "${EDITOR:-nano}" "$conf"
     if as_root "$SERVER" -c "$conf" --check-config >/dev/null; then
+      # [web] start_at_boot lives in the NixOS configuration too: copy a change there and rebuild
+      boot=$(as_root "$SERVER" -c "$conf" --print-start-at-boot)
+      if installed_by_script && ! grep -q "startAtBoot = $boot;" "$NIXOS_FILE"; then
+        if grep -q "startAtBoot = " "$NIXOS_FILE"; then
+          as_root sed -i -E "s/startAtBoot = (true|false);/startAtBoot = $boot;/" "$NIXOS_FILE"
+        else
+          as_root sed -i -E "s/^( *)openFirewall = /\1startAtBoot = $boot;  # [web] start_at_boot; netbae config updates it\n\1openFirewall = /" "$NIXOS_FILE"
+        fi
+        rebuild
+      fi
       as_root systemctl restart netbae && echo "config OK - netBae restarted"
     else
       echo "config has errors - not restarted" >&2; exit 1

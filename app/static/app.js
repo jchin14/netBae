@@ -1675,50 +1675,87 @@ function systemPanel() {
 // ------------------------------------------------------------------ boot
 // Update button (private dashboard only): shown when GitHub has a newer release. Pressing it asks the system's
 // update job to run `netbae update`; the page reloads itself once the new version is serving.
-function setupUpdateButton() {
-  const u = CONFIG.update, b = $('#update-btn');
-  if (!u || CONFIG.public) return;
+// Clicking the version checks GitHub right away: with an update it offers to install it, otherwise it opens
+// this version's release notes.
+function updateHowTo(u) {
+  return u.method === 'docker' ? 'Update with: docker compose pull && docker compose up -d'
+    : u.method === 'nix' ? 'Update with Nix: nix flake update netbae, then nixos-rebuild switch' : 'Update with: netbae update';
+}
+function renderUpdate(u) {  // the version pill and the Update button, from an update summary
+  const b = $('#update-btn'), v = $('#version');
   if (!u.available) {  // up to date: a tick on the version pill, and when it was last checked
+    b.hidden = true;
     if (CONFIG.dev) {
-      $('#version').title = `Dev build: newer than the latest release (${u.latest}, checked ${fmtAgo(u.checked)}). Click for the releases.`;
+      v.title = `Dev build: newer than the latest release (${u.latest}, checked ${fmtAgo(u.checked)}). Click to check again.`;
     } else if (u.latest) {
-      $('#version').textContent = `v${CONFIG.version} ✓`;
-      $('#version').title = `Up to date: ${u.latest} is the latest release (checked ${fmtAgo(u.checked)}). Click for what's new.`;
+      v.textContent = `v${CONFIG.version} ✓`;
+      v.title = `Up to date: ${u.latest} is the latest release (checked ${fmtAgo(u.checked)}). Click to check again and see what's new.`;
     }
     return;
   }
+  v.textContent = `v${CONFIG.version}`;
+  v.title = `netBae ${u.latest} is out. Click to update.`;
   b.hidden = false;
+  if (b.disabled) return;  // updating
   if (u.method !== 'button') {
     b.textContent = `v${u.latest} available`;
-    b.title = u.method === 'docker' ? 'Update with: docker compose pull && docker compose up -d'
-      : u.method === 'nix' ? 'Update with Nix: nix flake update netbae, then nixos-rebuild switch' : 'Update with: netbae update';
-    b.addEventListener('click', () => window.open(u.url, '_blank', 'noopener'));
+    b.title = updateHowTo(u);
     return;
   }
   b.textContent = `Update to v${u.latest}`;
-  b.title = `Install netBae ${u.latest} now (your config and history are kept). Click the version for what's new.`
+  b.title = `Install netBae ${u.latest} now (your config and history are kept).`
     + (u.auto !== 'off' ? ` It also updates itself automatically (${u.auto}, at 3:30 am).` : '');
-  const wait = () => {
-    b.disabled = true; b.textContent = 'Updating…';
-    const until = Date.now() + 10 * 60000;
-    const poll = setInterval(async () => {
-      try {
-        const c = await fetch('api/config', { cache: 'no-store' }).then((r) => r.json());
-        if (c.version !== CONFIG.version) { clearInterval(poll); location.reload(); return; }
-      } catch { /* restarting */ }
-      if (Date.now() > until) {
-        clearInterval(poll);
-        const s = await api('update').catch(() => ({ log: [] }));
-        b.disabled = false; b.textContent = "Update didn't finish";
-        b.title = (s.log || []).join('\n') || 'See update.log in the netBae data folder';
-      }
-    }, 5000);
-  };
-  b.addEventListener('click', async () => {
-    const r = await fetch('api/update/run', { method: 'POST' }).then((x) => x.json()).catch(() => ({}));
-    if (r.started) wait(); else { b.textContent = 'Update failed'; b.title = r.reason || ''; }
+}
+function waitForUpdate() {
+  const b = $('#update-btn');
+  b.hidden = false; b.disabled = true; b.textContent = 'Updating…';
+  const until = Date.now() + 10 * 60000;
+  const poll = setInterval(async () => {
+    try {
+      const c = await fetch('api/config', { cache: 'no-store' }).then((r) => r.json());
+      if (c.version !== CONFIG.version) { clearInterval(poll); location.reload(); return; }
+    } catch { /* restarting */ }
+    if (Date.now() > until) {
+      clearInterval(poll);
+      const s = await api('update').catch(() => ({ log: [] }));
+      b.disabled = false; b.textContent = "Update didn't finish";
+      b.title = (s.log || []).join('\n') || 'See update.log in the netBae data folder';
+    }
+  }, 5000);
+}
+async function startUpdate() {
+  const u = CONFIG.update;
+  if (u.method !== 'button') { window.open(u.url, '_blank', 'noopener'); return; }
+  const r = await fetch('api/update/run', { method: 'POST' }).then((x) => x.json()).catch(() => ({}));
+  if (r.started) waitForUpdate();
+  else { const b = $('#update-btn'); b.hidden = false; b.textContent = 'Update failed'; b.title = r.reason || ''; }
+}
+function setupUpdateButton() {
+  const u = CONFIG.update, v = $('#version');
+  if (!u || CONFIG.public) return;  // visitors: the version just links to its release
+  renderUpdate(u);
+  $('#update-btn').addEventListener('click', startUpdate);
+  v.addEventListener('click', async (e) => {
+    e.preventDefault();
+    if ($('#update-btn').disabled) return;  // already updating
+    const label = v.textContent;
+    v.textContent = 'checking…';
+    const r = await fetch('api/update/check', { method: 'POST' }).then((x) => x.json()).catch(() => null);
+    v.textContent = label;
+    if (r) { CONFIG.update = Object.assign(u, r); CONFIG.dev = r.dev; renderUpdate(u); }
+    if (r && r.available) {
+      const how = u.method === 'button' ? 'Your config and history are kept, and the page reloads when it\'s done.'
+        : `This install updates outside the dashboard. ${updateHowTo(u)}\n\nOpen the release notes?`;
+      if (confirm(`netBae ${u.latest} is available (you have ${CONFIG.version}).\n\n`
+        + (u.method === 'button' ? `Update now? ${how}` : how))) startUpdate();
+      return;
+    }
+    if (r && r.error && !r.latest) { alert(`Couldn't check for updates: ${r.error}`); return; }
+    // up to date (or the check failed): this version's release notes, as the link always did
+    const w = window.open(v.href, '_blank');  // (with 'noopener' it would always return null)
+    if (w) w.opener = null; else location.href = v.href;  // a popup blocker: open it here instead
   });
-  if (u.requested) wait();  // already running (e.g. the page was reloaded during an update)
+  if (u.requested) waitForUpdate();  // already running (e.g. the page was reloaded during an update)
 }
 
 // header note when any chart is showing past data rather than live

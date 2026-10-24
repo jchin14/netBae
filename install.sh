@@ -98,6 +98,8 @@ nixos_install() {
   printf '%s\n' "$defaults" >"$CONF_DIR/config.toml.default"
   chmod 644 "$CONF_DIR/config.toml" "$CONF_DIR/config.toml.default"
   port=$(sed -n '/^\[web\]/,/^\[/s/^port *= *\([0-9]*\).*/\1/p' "$CONF_DIR/config.toml" | head -1)
+  local boot
+  boot=$(sed -n '/^\[web\]/,/^\[/s/^start_at_boot *= *\(true\|false\).*/\1/p' "$CONF_DIR/config.toml" | head -1)
   # another web server on the port (netBae itself doesn't count): move to the next free one and save it
   local want=${port:-80} holder p mine
   mine=$(systemctl show -p MainPID --value netbae 2>/dev/null || true)
@@ -133,6 +135,7 @@ nixos_install() {
     enable = true;
     configFile = "$CONF_DIR/config.toml";
     port = ${port:-80};
+    startAtBoot = ${boot:-true};  # [web] start_at_boot; netbae config updates it
     openFirewall = true;
   };
 }
@@ -454,6 +457,7 @@ chmod 644 "$CONF_DIR/config.toml"
 as_svc_user "$PY" "$APP_DIR/netbae.py" -c "$CONF_DIR/config.toml" --check-config >/dev/null \
   || die "config check failed - fix $CONF_DIR/config.toml and re-run"
 PORT=$("$PY" "$APP_DIR/netbae.py" -c "$CONF_DIR/config.toml" --print-port 2>/dev/null)
+BOOT=$("$PY" "$APP_DIR/netbae.py" -c "$CONF_DIR/config.toml" --print-start-at-boot 2>/dev/null || echo true)
 
 # Who listens on a TCP port (empty if it's free). Call once netBae itself is stopped.
 port_holder() {
@@ -544,6 +548,8 @@ EOF
   plutil -lint "$PLIST" >/dev/null || die "generated $PLIST is invalid"
   launchctl enable "system/$LABEL"
   launchctl bootstrap system "$PLIST" || die "launchctl bootstrap failed (see $LOG_FILE)"
+  # [web] start_at_boot = false: keep it running now, but launchd won't load it at the next boot
+  [[ $BOOT == true ]] || launchctl disable "system/$LABEL"
 
   # The dashboard's Update button: the service can't run the installer itself, so it creates
   # $DATA_DIR/update-request and this root job runs `netbae update` (then removes the request).
@@ -663,7 +669,7 @@ PathExists=$DATA_DIR/update-request
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable netbae >/dev/null 2>&1
+if [[ $BOOT == true ]]; then systemctl enable netbae >/dev/null 2>&1; else systemctl disable netbae >/dev/null 2>&1 || true; fi
 systemctl enable --now netbae-update.path >/dev/null 2>&1 || c_warn "couldn't enable the dashboard's Update button (netbae-update.path)"
 systemctl restart netbae
 

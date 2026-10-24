@@ -50,6 +50,13 @@ in
       description = "Port of the dashboard (also `settings.web.port`).";
     };
 
+    startAtBoot = lib.mkOption {
+      type = lib.types.bool;
+      default = cfg.settings.web.start_at_boot or true;
+      defaultText = lib.literalExpression "settings.web.start_at_boot or true";
+      description = "Start netBae at boot. Off: it only runs after `netbae start` (or `systemctl start netbae`).";
+    };
+
     openFirewall = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -154,7 +161,7 @@ in
 
     systemd.services.netbae = {
       description = "netBae internet connection monitor";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = lib.optional cfg.startAtBoot "multi-user.target";
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
       path = [ pkgs.iputils pkgs.traceroute ] ++ lib.optional (cfg.speedtestPackage != null) cfg.speedtestPackage

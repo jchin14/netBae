@@ -21,6 +21,16 @@ as_root() { if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi; }
 as_svc() {
   if [[ $(uname -s) == Darwin ]]; then as_root sudo -u _netbae "$@"; elif command -v runuser >/dev/null; then as_root runuser -u netbae -- "$@"; else as_root sudo -u netbae "$@"; fi
 }
+# [web] start_at_boot: whether the service starts at boot (it can still be started by hand either way)
+boot_setting() { as_svc "$PY" "$APP/netbae.py" -c "$CONF" --print-start-at-boot 2>/dev/null || echo true; }
+apply_boot() {
+  local on; on=$(boot_setting)
+  if [[ $(uname -s) == Darwin ]]; then
+    if [[ $on == true ]]; then as_root launchctl enable "system/$LABEL"; else as_root launchctl disable "system/$LABEL"; fi
+  elif [[ $on == true ]]; then as_root systemctl enable netbae >/dev/null 2>&1
+  else as_root systemctl disable netbae >/dev/null 2>&1 || true
+  fi
+}
 version() { "$PY" -c "import sys; sys.path.insert(0, '$APP'); import netbae; print(netbae.VERSION)" 2>/dev/null || echo unknown; }
 
 # service control: systemd on Linux, launchd on macOS
@@ -29,6 +39,7 @@ svc() {
     case $1 in
       status) systemctl status netbae --no-pager ;;
       logs) journalctl -u netbae -f ;;
+      start|restart) apply_boot; as_root systemctl "$1" netbae ;;
       *) as_root systemctl "$1" netbae ;;
     esac
     return
@@ -40,14 +51,20 @@ svc() {
         || { echo "netBae is not running (not loaded in launchd)"; return 3; }
       ;;
     logs) as_root tail -n 50 -f "$LOG" ;;  # the log is only readable by the service user and root
-    start) as_root launchctl bootstrap system "$PLIST" 2>/dev/null || as_root launchctl kickstart "system/$LABEL" ;;
+    start)
+      as_root launchctl enable "system/$LABEL"  # launchd won't load a disabled job, even by hand
+      as_root launchctl bootstrap system "$PLIST" 2>/dev/null || as_root launchctl kickstart "system/$LABEL"
+      apply_boot
+      ;;
     stop) as_root launchctl bootout "system/$LABEL" ;;
     restart)
+      as_root launchctl enable "system/$LABEL"
       if launchctl print "system/$LABEL" >/dev/null 2>&1; then
         as_root launchctl kickstart -k "system/$LABEL"
       else
         as_root launchctl bootstrap system "$PLIST"
       fi
+      apply_boot
       ;;
   esac
 }
