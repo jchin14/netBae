@@ -18,6 +18,12 @@ The main steps so far, with the full details per version below.
 | 1.15 | An Update button on the dashboard and weekly automatic updates |
 | 1.19 | NixOS support (install command and a Nix flake), Cloudflare Access sign-in for your own dashboard away from home, speedtests that pause the other tests |
 
+## 1.19.7 - 2026-10-24
+
+A fix for the dashboard's Update button on macOS.
+
+- macOS: the Update button (and automatic updates) could stop partway through, leaving netBae stopped until it was installed again. Updates now finish and restart netBae.
+
 ## 1.19.6 - 2026-10-24
 
 The test workflows are now part of the public repo.

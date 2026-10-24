@@ -555,7 +555,11 @@ EOF
   # $DATA_DIR/update-request and this root job runs `netbae update` (then removes the request).
   local up=/Library/LaunchDaemons/$LABEL.update.plist up_self
   # Run by that job (the Update button)? Then leave it loaded: booting it out would kill this script.
-  if [[ ${XPC_SERVICE_NAME:-} == "$LABEL.update" ]]; then up_self=1; else up_self=""; fi
+  # XPC_SERVICE_NAME isn't always set to the job's label, so also check the job's own marker and whether
+  # the job is running right now (older installs' jobs don't set the marker).
+  up_self=""
+  if [[ -n ${NETBAE_UPDATE_JOB:-} || ${XPC_SERVICE_NAME:-} == "$LABEL.update" ]] \
+     || launchctl print "system/$LABEL.update" 2>/dev/null | grep -q "state = running"; then up_self=1; fi
   [[ -n $up_self ]] || launchctl bootout "system/$LABEL.update" 2>/dev/null || true
   cat >"$up" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -568,6 +572,7 @@ EOF
     <string>/bin/sh</string><string>-c</string>
     <string>[ -e $DATA_DIR/update-request ] || exit 0; rm -f $DATA_DIR/update-request; /usr/local/bin/netbae update &gt;$DATA_DIR/update.log 2&gt;&amp;1</string>
   </array>
+  <key>EnvironmentVariables</key><dict><key>NETBAE_UPDATE_JOB</key><string>1</string></dict>
   <key>WatchPaths</key><array><string>$DATA_DIR/update-request</string></array>
 </dict>
 </plist>
