@@ -18,6 +18,12 @@ The main steps so far, with the full details per version below.
 | 1.15 | An Update button on the dashboard and weekly automatic updates |
 | 1.19 | NixOS support (install command and a Nix flake), Cloudflare Access sign-in for your own dashboard away from home, speedtests that pause the other tests |
 
+## 1.19.6 - 2026-10-24
+
+The test workflows are now part of the public repo.
+
+- Every release and every pull request is now tested automatically on Linux (Debian, Ubuntu, Fedora), macOS, Windows, Docker and NixOS, and the results are on the repo's Actions tab.
+
 ## 1.19.5 - 2026-10-24
 
 A setting to choose whether netBae starts at boot, and a click on the version number checks for updates.

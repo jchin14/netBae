@@ -1,0 +1,25 @@
+name: Linux install
+
+# The real install.sh end to end in systemd containers: install, update, uninstall, re-install, purge.
+# Runs on every push and PR to the public repo, and on dev only when scripts/release.sh or gh workflow run linux-install.yml starts it
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]   # the public repo, where Actions minutes are free (dev's branch is dev)
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: ["debian:bookworm", "debian:trixie", "ubuntu:24.04", "fedora:latest"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install, update and uninstall on ${{ matrix.distro }}
+        run: bash scripts/test-linux-install.sh "${{ matrix.distro }}"

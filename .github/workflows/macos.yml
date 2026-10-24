@@ -1,0 +1,62 @@
+name: macOS install
+
+# The full installer on a real Mac (GitHub's runners have passwordless sudo and Homebrew).
+# Runs on every push and PR to the public repo, and on dev only when scripts/release.sh or gh workflow run macos.yml starts it
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]   # the public repo, where Actions minutes are free (dev's branch is dev)
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: sudo bash install.sh
+      - name: Daemon is running and system stats are filled in
+        run: |
+          netbae status
+          sleep 35   # two system samples, so CPU % has a delta
+          curl -fsS localhost/ | grep -q netBae
+          curl -fsS localhost/api/system | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          print(json.dumps({k: d[k] for k in ("cpu", "mem", "uptime", "load")}, indent=1), d["info"])
+          assert d["cpu"] is not None and d["mem"]["total"] > 0 and d["uptime"] > 0, d
+          assert d["info"]["model"] and d["info"]["os"].startswith("macOS"), d["info"]'
+          curl -fsS localhost/api/summary | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["ping"][0]["host"] != "gateway", d["ping"][0]'
+          netbae check >/dev/null
+      - name: Re-running updates in place
+        run: |
+          echo '# marker' | sudo tee -a /usr/local/etc/netbae/config.toml
+          sudo bash install.sh | tee out.txt
+          grep -q "Updating netBae" out.txt
+          grep -q "# marker" /usr/local/etc/netbae/config.toml
+          netbae restart && sleep 3 && netbae status
+      - name: The dashboard's Update button runs netbae update
+        run: |
+          for i in $(seq 40); do curl -fsS -m 3 http://127.0.0.1/api/config >/dev/null && break; sleep 3; done   # just restarted
+          curl -fsS -X POST http://127.0.0.1/api/update/run | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["started"], r'
+          for i in $(seq 80); do
+            if [ ! -e /usr/local/var/netbae/update-request ] && sudo grep -Eq 'and running|nothing to update' /usr/local/var/netbae/update.log 2>/dev/null; then break; fi
+            sleep 3
+          done
+          sudo tail -n 20 /usr/local/var/netbae/update.log
+          sudo grep -Eq 'and running|nothing to update' /usr/local/var/netbae/update.log
+          grep -q "# marker" /usr/local/etc/netbae/config.toml
+          sudo bash install.sh >/dev/null   # the button installed the latest public release; put this commit back
+      - name: Show log
+        if: always()
+        run: sudo tail -n 50 /usr/local/var/log/netbae.log || true
+      - name: Uninstall
+        run: |
+          sudo bash /usr/local/lib/netbae/uninstall.sh --purge
+          if launchctl print system/com.github.netbae >/dev/null 2>&1; then echo "daemon still loaded"; exit 1; fi
+          if id _netbae >/dev/null 2>&1; then echo "_netbae user still exists"; exit 1; fi
+          [[ ! -e /usr/local/etc/netbae && ! -e /Library/LaunchDaemons/com.github.netbae.plist && ! -e /Library/LaunchDaemons/com.github.netbae.update.plist ]]

@@ -1,0 +1,40 @@
+name: CI
+
+# Runs on every push and PR to the public repo, and on dev only when scripts/release.sh or gh workflow run ci.yml starts it
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]   # the public repo, where Actions minutes are free (dev's branch is dev)
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck
+        run: shellcheck -S warning install.sh uninstall.sh tunnel.sh build-installer.sh bin/netbae nix/netbae.sh scripts/*.sh  # the public repo only has test-linux-install.sh
+      - name: Python syntax
+        run: python3 -m py_compile app/netbae.py
+      - name: Validate default config
+        run: python3 app/netbae.py -c config.toml --check-config
+      - name: Smoke test
+        run: |
+          sed -e 's#/var/lib/netbae/netbae.db#/tmp/netbae-ci.db#' -e 's/^port = 80 .*/port = 8099/' \
+              -e 's/^enabled = true/enabled = false/' config.toml > /tmp/ci.toml
+          python3 app/netbae.py -c /tmp/ci.toml &
+          sleep 12
+          curl -fsS localhost:8099/ | grep -q netBae
+          curl -fsS localhost:8099/api/summary | python3 -c 'import json,sys; d=json.load(sys.stdin); assert len(d["ping"]) >= 18'
+          curl -fsS localhost:8099/api/system | python3 -m json.tool > /dev/null
+          curl -fsS "localhost:8099/api/ping?from=$(( $(date +%s) - 86400 ))" | python3 -m json.tool > /dev/null
+      - name: Build single-file installer
+        run: bash build-installer.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netbae-installer
+          path: dist/netbae-installer.sh

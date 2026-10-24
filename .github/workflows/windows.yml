@@ -1,0 +1,134 @@
+name: Windows install
+
+# The full PowerShell installer on a real Windows Server runner (admin, no winget needed: the installer
+# falls back to python.org / Ookla's zip).
+# Runs on every push and PR to the public repo, and on dev only when scripts/release.sh or gh workflow run windows.yml starts it
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]   # the public repo, where Actions minutes are free (dev's branch is dev)
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell   # Windows PowerShell 5.1, what `irm | iex` runs in on a stock Windows
+
+jobs:
+  install:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PowerShell syntax
+        run: |
+          $bad = 0
+          foreach ($f in Get-ChildItem -Recurse -Include *.ps1) {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errs) | Out-Null
+            foreach ($e in $errs) { Write-Host "$($f.Name):$($e.Extent.StartLineNumber): $($e.Message)"; $bad++ }
+          }
+          if ($bad) { exit 1 }
+      - name: Install
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+      - name: Task is running and system stats are filled in
+        run: |
+          $netbae = "$env:ProgramFiles\netBae\bin\netbae.cmd"
+          & $netbae status; if ($LASTEXITCODE) { exit 1 }
+          # http.sys holds port 80 on the runner, so the installer should have moved to the next free port
+          $base = "http://localhost:$((Select-String -Path "$env:ProgramData\netBae\config.toml" -Pattern '^port = (\d+)').Matches[0].Groups[1].Value)"
+          Write-Host "dashboard: $base"
+          "NETBAE_URL=$base" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          $task = Get-ScheduledTask -TaskName netBae
+          $task.Principal | Format-List UserId, LogonType, RunLevel
+          if ($task.Principal.UserId -notmatch 'LOCAL SERVICE|LOKALER DIENST') { throw "unexpected task user $($task.Principal.UserId)" }
+          Start-Sleep -Seconds 35   # two system samples, so CPU % has a delta
+          if ((Invoke-WebRequest -UseBasicParsing "$base/").Content -notmatch 'netBae') { throw 'dashboard not served' }
+          $s = Invoke-RestMethod "$base/api/system"
+          $s | Select-Object cpu, uptime, load | Format-List
+          $s.mem | Format-List; $s.disk | Format-List; $s.info | Format-List
+          if ($null -eq $s.cpu -or $s.mem.total -le 0 -or $s.uptime -le 0) { throw 'cpu/mem/uptime missing' }
+          if ($s.disk.total -le 0) { throw 'disk missing' }
+          if ($s.info.os -notlike 'Windows*' -or -not $s.info.cpu_model) { throw "bad info: $($s.info | Out-String)" }
+          $sum = Invoke-RestMethod "$base/api/summary"
+          $sum.ping | Select-Object -First 6 | Format-Table name, host, last, avg5m, loss5m
+          if ($sum.ping[0].host -eq 'gateway') { throw 'default gateway not detected' }
+          if (-not ($sum.ping | Where-Object { $null -ne $_.last })) { Write-Host '::warning::no ping replies (Azure runners drop ICMP to the internet)' }
+          & $netbae check | Out-Null; if ($LASTEXITCODE) { exit 1 }
+          $py = (Get-Content "$env:ProgramFiles\netBae\python.txt").Trim()
+          $st = & $py -c "import sys; sys.path.insert(0, r'$env:ProgramFiles\netBae'); import netbae; print(netbae.find_speedtest('auto'))"
+          Write-Host "speedtest binary: $st"
+          $rtt = & $py -c "import sys; sys.path.insert(0, r'$env:ProgramFiles\netBae'); import netbae; print(netbae.icmp_ping('127.0.0.1', 2))"
+          Write-Host "ping 127.0.0.1: $rtt ms"
+          if ($rtt -eq 'None') { throw 'could not parse Windows ping output' }
+          if (-not (Test-Path $st)) { throw 'Ookla speedtest CLI not found' }
+          if (-not (Get-NetFirewallRule -Name netBae-dashboard -ErrorAction SilentlyContinue)) { throw 'firewall rule missing' }
+      - name: A speedtest runs as LOCAL SERVICE
+        run: |
+          Invoke-RestMethod -Method Post "$env:NETBAE_URL/api/speedtest/run" | Format-List
+          $latest = $null
+          foreach ($i in 1..40) {
+            Start-Sleep -Seconds 5
+            $st = (Invoke-RestMethod "$env:NETBAE_URL/api/summary").speedtest
+            if (-not $st.status.running -and $st.latest) { $latest = $st.latest; break }
+          }
+          $latest | Format-List
+          if (-not $latest) { throw 'speedtest did not finish' }
+          if ($latest.error -match 'not found|licen') { throw "speedtest CLI problem: $($latest.error)" }
+          if ($latest.error) { Write-Host "::warning::speedtest failed on the runner: $($latest.error)" }
+      - name: Re-running updates in place (the irm | iex path)
+        run: |
+          Add-Content "$env:ProgramData\netBae\config.toml" '# marker'
+          $env:NETBAE_SRC = $PWD.Path
+          powershell -NoProfile -Command "Get-Content install.ps1 -Raw | Invoke-Expression" *>&1 | Tee-Object -FilePath out.txt
+          if (-not (Select-String -Quiet 'Updating netBae' out.txt)) { throw 'not an update' }
+          if (-not (Select-String -Quiet 'updated to .* and running' out.txt)) { throw 'update failed' }
+          if (-not (Select-String -Quiet '# marker' "$env:ProgramData\netBae\config.toml")) { throw 'config was overwritten' }
+          if (-not (Test-Path "$env:ProgramData\netBae\config.toml.default")) { throw 'config.toml.default missing' }
+          $netbae = "$env:ProgramFiles\netBae\bin\netbae.cmd"
+          & $netbae restart; Start-Sleep -Seconds 5
+          & $netbae status; if ($LASTEXITCODE) { exit 1 }
+          Invoke-WebRequest -UseBasicParsing "$env:NETBAE_URL/api/system" | Out-Null
+      - name: netbae tunnel runs as a LOCAL SERVICE task, status and off clean up
+        run: |
+          $netbae = "$env:ProgramFiles\netBae\bin\netbae.cmd"
+          & $netbae tunnel cloudflare --token eyJhIjoiMCIsInQiOiIwIiwicyI6IjAifQ==   # dummy token: checks the task, not Cloudflare
+          $t = Get-ScheduledTask -TaskName 'netBae tunnel' -ErrorAction SilentlyContinue
+          if (-not $t) { throw 'no netBae tunnel task' }
+          if ($t.Principal.UserId -notlike '*LOCAL SERVICE*') { throw "tunnel runs as $($t.Principal.UserId)" }
+          if ((Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8080/api/config').Content -notlike '*"public":true*') { throw 'public dashboard not on' }
+          & $netbae tunnel status
+          & $netbae tunnel off
+          if (Get-ScheduledTask -TaskName 'netBae tunnel' -ErrorAction SilentlyContinue) { throw 'tunnel task still registered' }
+          if (-not (Select-String -Quiet '^enabled = false' "$env:ProgramData\netBae\config.toml")) { throw 'public dashboard still enabled' }
+      - name: The dashboard's Update button runs netbae update (as LOCAL SERVICE, through the SYSTEM task)
+        run: |
+          $r = Invoke-RestMethod -Method Post "$env:NETBAE_URL/api/update/run"
+          if (-not $r.started) { throw "the Update button request was refused: $($r.reason)" }
+          $log = "$env:ProgramData\netBae\update.log"
+          foreach ($i in 1..100) {
+            if ((Test-Path $log) -and (Select-String -Quiet 'running|nothing to update' $log)) { break }
+            Start-Sleep -Seconds 3
+          }
+          Get-Content $log -Tail 20 -ErrorAction SilentlyContinue
+          if (-not ((Test-Path $log) -and (Select-String -Quiet 'running|nothing to update' $log))) { throw "the Update button didn't update" }
+          # the button installed the latest public release; put this commit back for the uninstall test
+          $env:NETBAE_SRC = $PWD.Path
+          powershell -NoProfile -ExecutionPolicy RemoteSigned -File install.ps1 *>&1 | Out-Null
+      - name: Show log
+        if: always()
+        run: Get-Content "$env:ProgramData\netBae\netbae.log" -Tail 50 -ErrorAction SilentlyContinue
+      - name: Uninstall
+        run: |
+          & "$env:ProgramFiles\netBae\bin\netbae.cmd" uninstall -Purge
+          if ($LASTEXITCODE) { exit 1 }
+          Start-Sleep -Seconds 3
+          if (Get-ScheduledTask -TaskName netBae -ErrorAction SilentlyContinue) { throw 'task still registered' }
+          if (Get-ScheduledTask -TaskName 'netBae update' -ErrorAction SilentlyContinue) { throw 'update task still registered' }
+          if (Get-NetFirewallRule -Name netBae-dashboard -ErrorAction SilentlyContinue) { throw 'firewall rule still there' }
+          if ((Test-Path "$env:ProgramFiles\netBae") -or (Test-Path "$env:ProgramData\netBae")) { throw 'files left behind' }
+          $p = (Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').GetValue('Path')
+          if ($p -like '*netBae*') { throw 'PATH entry left behind' }
+          try { Invoke-WebRequest -UseBasicParsing "$env:NETBAE_URL/" -TimeoutSec 3 | Out-Null; throw 'still serving' } catch { if ("$_" -eq 'still serving') { throw } }
