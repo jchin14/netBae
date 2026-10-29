@@ -17,6 +17,15 @@ The main steps so far, with the full details per version below.
 | 1.10 - 1.14 | DNS and CDN test, IPv6 for regions, sortable tables, a day view and comparing ISPs, route change history, charts grouped by category |
 | 1.15 | An Update button on the dashboard and weekly automatic updates |
 | 1.19 | NixOS support (install command and a Nix flake), Cloudflare Access sign-in for your own dashboard away from home, speedtests that pause the other tests |
+| 1.20 | A redesigned dashboard: a status line at the top, cleaner cards and much less scrolling |
+
+## 1.20.0 - 2026-10-30
+
+A cleaner, more modern dashboard with a status line at the top and much less scrolling.
+
+- **A cleaner, more modern dashboard:** a status line at the top says in a few words how your connection is doing (healthy, hosts not answering, packet loss or no internet), readings use larger monospaced numbers with small units, section titles and labels are small capitals, cards are flatter, and the time range is a row of buttons (15m to 1y, Day, Custom) instead of a drop-down. Charts have lighter gridlines. Dark mode is a deeper navy, and light mode is cleaner too.
+- **Much less scrolling:** the status is now the first item of the summary bar, ping and DNS categories sit side by side instead of one per line (open one to see its hosts), and the stats tables under the charts fold away behind a Show table button (remembered per browser). The speedtests by server, DNS and CDN, and global speedtest tables show their top rows with a Show all button, and the speedtests by server table has its own full-width card. The header no longer stays on screen while you scroll.
+- AdGuard DNS starts hidden on the ping and DNS charts, since its servers are far away from many places and its line squashed the others. Click its chip to show it again.
 
 ## 1.19.7 - 2026-10-24
 

@@ -59,12 +59,19 @@
         <div id="speed-summary" class="speed-summary"><span class="muted">No results yet</span></div>
         <div id="speed-details" class="speed-details"></div>
         <div id="speed-meta" class="muted small"></div>
-        <div class="table-wrap"><table id="region-table" class="stats" hidden></table></div>
       </div>
       <div class="card" id="system-card">
         <div class="card-head"><h2>System</h2><span id="sys-model" class="muted small"></span></div>
         <div id="sys-body" class="sys-body"></div>
       </div>
+    </section>
+
+    <section class="card panel" id="panel-regions">
+      <div class="panel-head">
+        <h2>Speedtests by server <span class="muted small" id="regions-note">closest server, connections and regions: latest and 7-day averages</span></h2>
+        <div class="controls"></div>
+      </div>
+      <div class="table-wrap"><table id="region-table" class="stats" hidden></table></div>
     </section>
 
     <section class="card panel" id="panel-ping">
@@ -148,6 +155,7 @@
     <section class="card panel" id="panel-global" hidden>
       <div class="panel-head">
         <h2>Global speedtests <span class="muted small" id="global-note"></span></h2>
+        <div class="controls"></div>
       </div>
       <div class="table-wrap"><table class="stats" id="global-table"></table></div>
     </section>

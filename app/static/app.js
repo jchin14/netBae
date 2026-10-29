@@ -12,6 +12,8 @@ const RANGES = [
   ['7d', 604800], ['30d', 2592000], ['90d', 7776000], ['1y', 31536000], ['day', null], ['custom', null],
 ];
 const REFRESH_MS = 15000;
+// AdGuard's servers are far away from many places, so its line would squash the others: hidden until you show it
+const HIDDEN_BY_DEFAULT = (it) => /^adguard/i.test(it.cat || it.label || '');
 
 const $ = (sel, el = document) => el.querySelector(sel);
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -125,7 +127,9 @@ function rangeControl(el, key, defaultRange, onChange) {
   const saved = store.get(`range:${key}`, { r: defaultRange });
   el.innerHTML = `
     <span class="live-badge"></span>
-    <select aria-label="Time range">${RANGES.map(([k]) => `<option value="${k}">${k === 'custom' ? 'Custom…' : k === 'day' ? 'A day…' : 'Last ' + k}</option>`).join('')}</select>
+    <select class="range-select" aria-label="Time range">${RANGES.map(([k]) => `<option value="${k}">${k === 'custom' ? 'Custom…' : k === 'day' ? 'A day…' : 'Last ' + k}</option>`).join('')}</select>
+    <span class="seg" role="group" aria-label="Time range">${RANGES.map(([k]) => `<button type="button" data-r="${k}"
+      title="${k === 'custom' ? 'Pick a start and end' : k === 'day' ? 'One whole day' : 'The last ' + k}">${k === 'custom' ? 'Custom' : k === 'day' ? 'Day' : k}</button>`).join('')}</span>
     <span class="day" hidden>
       <button class="btn ghost prev" title="Previous day" aria-label="Previous day">◀</button>
       <input type="date" class="date" aria-label="Day">
@@ -138,6 +142,12 @@ function rangeControl(el, key, defaultRange, onChange) {
     </span>`;
   const sel = $('select', el), custom = $('.custom', el), from = $('.from', el), to = $('.to', el);
   const dayBox = $('.day', el), date = $('.date', el);
+  $('.seg', el).addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || b.dataset.r === sel.value) return;
+    sel.value = b.dataset.r;
+    sel.dispatchEvent(new Event('change'));
+  });
   sel.value = saved.r;
   if (!sel.value) sel.value = defaultRange;
   const now = Date.now() / 1000;
@@ -152,6 +162,7 @@ function rangeControl(el, key, defaultRange, onChange) {
   el.closest('.panel-head')?.querySelector('h2')?.append(badge);  // next to the chart's title
   const show = () => {
     custom.hidden = sel.value !== 'custom'; dayBox.hidden = sel.value !== 'day';
+    el.querySelectorAll('.seg button').forEach((b) => b.classList.toggle('on', b.dataset.r === sel.value));
     const r = ctl.get();
     badge.className = `live-badge ${r?.live ? 'live' : 'past'}`;
     badge.textContent = r?.live ? '● Live' : sel.value === 'day' && date.value
@@ -351,6 +362,7 @@ function themeChartDefaults() {
   Chart.defaults.color = css('--muted');
   Chart.defaults.borderColor = css('--grid');
   Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+  Chart.defaults.scale.ticks.font = { family: css('--mono'), size: 10.5 };
 }
 
 // Tooltip mode: only the line(s) right under the pointer, nearest first, instead of every series.
@@ -406,8 +418,8 @@ const ispChangeLines = {
 
 function lineChart(canvas, { yTitle, y1Title, yMax, plugins = [] } = {}) {
   const scales = {
-    x: { type: 'time', ticks: { maxRotation: 0, autoSkipPadding: 18 }, grid: { color: css('--grid') } },
-    y: { beginAtZero: true, max: yMax, title: { display: !!yTitle, text: yTitle }, grid: { color: css('--grid') } },
+    x: { type: 'time', ticks: { maxRotation: 0, autoSkipPadding: 18 }, grid: { display: false }, border: { color: css('--border') } },
+    y: { beginAtZero: true, max: yMax, title: { display: !!yTitle, text: yTitle }, grid: { color: css('--grid') }, border: { display: false } },
   };
   if (y1Title) scales.y1 = { position: 'right', beginAtZero: true, title: { display: true, text: y1Title }, grid: { drawOnChartArea: false } };
   scales.yIsp = { display: false, min: 0, max: 1 }; // ISP markers ride along the top of the chart
@@ -684,8 +696,25 @@ function renderSummaryBar(s) {
     sys.mem != null ? stat('Memory', `${Math.round(sys.mem)}<small>% 24h</small>`, 'Average memory use on this machine over the last 24 hours (the System tile below shows it live)', pctCls(sys.mem)) : '',
   ].filter(Boolean);
   const bar = $('#summary-bar');
-  bar.innerHTML = items.join('') + '<button id="tiles-toggle" class="btn ghost" type="button" title="Open or close every ping group below"></button>';
+  bar.innerHTML = statusHtml(s, sites, up(sites), bar) + items.join('') + '<button id="tiles-toggle" class="btn ghost" type="button" title="Open or close every ping group below"></button>';
   bar.hidden = !sites.length;
+}
+
+// The bar's first item: how the connection is doing in a few words, the worst of the main connection's internet
+// check, hosts not answering and packet loss. The bar's left edge takes its colour.
+function statusHtml(s, sites, upCount, bar) {
+  const main = (s.isp || [])[0];
+  const offline = main && main.latest && main.latest.error && !/HTTP \d{3}/.test(main.latest.error);
+  const down = sites.length - upCount;
+  const loss = mean(sites.map((p) => p.loss5m)) || 0;
+  const [cls, state] = offline || upCount === 0 ? ['bad', 'No internet']
+    : down > sites.length * 0.1 || loss >= 5 ? ['bad', down ? `${down} hosts down` : 'Heavy packet loss']
+      : down || loss >= 1 ? ['warn', down ? `${down} host${down > 1 ? 's' : ''} down` : 'Some packet loss']
+        : ['good', 'Healthy'];
+  bar.classList.remove('good', 'warn', 'bad');
+  bar.classList.add(cls);
+  return `<div class="stat status-stat" title="From the last 5 minutes of pings${main ? ` and ${esc(main.connection)}'s ISP check` : ''}">
+    <div class="label">Status</div><div class="state"><span class="dot"></span>${esc(state)}</div></div>`;
 }
 
 async function refreshSummary() {
@@ -792,7 +821,7 @@ function renderRegions(st) {
   const ok = st.last_ok;
   const regions = st.regions || [];
   const conns = st.connections || [];
-  $('#region-table').hidden = !regions.length && !conns.length;
+  $('#region-table').hidden = $('#panel-regions').hidden = !regions.length && !conns.length;
   if (regions.length || conns.length) {
     const latestCells = (x) => (!x || x.ts == null ? '<td colspan="6" class="muted" style="text-align:left">not tested yet</td>'
       : x.error ? `<td colspan="6" class="error-text" style="text-align:left" title="${esc(x.error)}">failed: ${esc(x.error.slice(0, 60))}</td>`
@@ -1052,6 +1081,21 @@ function niceCeil(v) {
 }
 
 // A small button at the end of a chart panel's controls
+// A panel's table (and its pager) folds away behind a button, so the page is mostly charts. Remembered per
+// browser; folded by default. preview: a table without a chart keeps its first rows (its best) when folded.
+function tableToggle(root, label, preview = false) {
+  const key = `table:${root.id}`;
+  const b = panelButton(root, '', '', () => { store.set(key, !store.get(key, false)); show(); });
+  const show = () => {
+    const open = store.get(key, false);
+    root.classList.toggle(preview ? 'table-preview' : 'table-folded', !open);
+    b.textContent = preview ? (open ? 'Show fewer' : `Show all ${label}`) : open ? `Hide ${label}` : `Show ${label}`;
+    b.title = open ? `Fold the ${label} away` : `Show the whole ${label}`;
+    b.setAttribute('aria-expanded', String(open));
+  };
+  show();
+}
+
 function panelButton(root, text, title, onClick) {
   const b = document.createElement('button');
   b.className = 'btn ghost panel-btn';
@@ -1232,9 +1276,13 @@ async function ispOverlay(root, r, onToggle) {
 
 // collapse: hosts are drawn as one line per category (catOf) until that category's table row is clicked to
 // expand it, which keeps chart rendering light even with a hundred hosts.
-function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams, lossLabel, defaultHide = [],
+function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams, lossLabel, defaultHide = HIDDEN_BY_DEFAULT,
   collapse = false, catOf = (it) => it.group, memberNoun = 'hosts', chipRows = false, routeKey = null, catRoute = false }) {
-  const defaultOff = items.filter((it) => defaultHide.includes(it.id)).map((it) => it.id);
+  const defaultOff = items.filter((it) => defaultHide(it)).map((it) => it.id);
+  // lines hidden by default start hidden once in browsers that saved their own choice before (then it's theirs)
+  const saved = store.get(`off3:${id}`, null);
+  if (saved && defaultOff.length && !store.get(`hid1:${id}`, false)) store.set(`off3:${id}`, [...new Set([...saved, ...defaultOff])]);
+  store.set(`hid1:${id}`, true);
   const expanded = new Set(store.get(`expand:${id}`, []));
   const off = new Set(store.get(`lineoff:${id}`, []));  // lines hidden by clicking their row in the table
   const root = $(`#${id}`);
@@ -1852,6 +1900,11 @@ async function main() {
 
   panels.push(speedPanel());
   panels.push(systemPanel());
+  for (const [id, label, preview] of [['panel-ping', 'table'], ['panel-dns', 'table'], ['panel-speed', 'table'],
+    ['panel-regions', 'servers', true], ['panel-cdn', 'resolvers', true], ['panel-global', 'tests', true]]) {
+    const root = document.getElementById(id);
+    if (root) tableToggle(root, label, preview);
+  }
 
   const startTest = async (scope) => {
     const btn = $('#run-speedtest');
