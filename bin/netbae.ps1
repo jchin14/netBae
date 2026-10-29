@@ -116,7 +116,9 @@ switch ($Command) {
         $purge = $Rest | Where-Object { $_ -in '-purge', '--purge', '/purge' }
         $tmp = Join-Path $env:TEMP 'netbae-uninstall.ps1'   # run from outside the folder it deletes
         Copy-Item "$AppDir\uninstall.ps1" $tmp -Force
-        if ($purge) { & $tmp -Purge -Deferred } else { & $tmp -Deferred }
+        # started by netbae.cmd (powershell -File): the folder is removed once this process has exited
+        $after = if ([Environment]::CommandLine -like '*netbae.ps1*') { $PID } else { 0 }
+        if ($purge) { & $tmp -Purge -AfterPid $after } else { & $tmp -AfterPid $after }
         Remove-Item $tmp -Force -ErrorAction SilentlyContinue
     }
     default {

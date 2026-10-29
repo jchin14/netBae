@@ -124,7 +124,8 @@ jobs:
         run: |
           & "$env:ProgramFiles\netBae\bin\netbae.cmd" uninstall -Purge
           if ($LASTEXITCODE) { exit 1 }
-          Start-Sleep -Seconds 3
+          # the install folder goes from a hidden process a few seconds after netbae.cmd finishes
+          foreach ($i in 1..20) { if (-not (Test-Path "$env:ProgramFiles\netBae")) { break }; Start-Sleep -Seconds 1 }
           if (Get-ScheduledTask -TaskName netBae -ErrorAction SilentlyContinue) { throw 'task still registered' }
           if (Get-ScheduledTask -TaskName 'netBae update' -ErrorAction SilentlyContinue) { throw 'update task still registered' }
           if (Get-NetFirewallRule -Name netBae-dashboard -ErrorAction SilentlyContinue) { throw 'firewall rule still there' }
