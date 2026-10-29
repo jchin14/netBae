@@ -19,6 +19,12 @@ The main steps so far, with the full details per version below.
 | 1.19 | NixOS support (install command and a Nix flake), Cloudflare Access sign-in for your own dashboard away from home, speedtests that pause the other tests |
 | 1.20 | A redesigned dashboard: a status line at the top, cleaner cards and much less scrolling |
 
+## 1.20.2 - 2026-10-30
+
+A fix for the Windows installer ending with an error after a successful install.
+
+- Fixed (Windows): the installer could end with an error (`Exception setting "NetAdapter"`) after netBae was already installed and running, on PCs where Windows reports a network adapter more than once. It now finds the address for the dashboard link another way.
+
 ## 1.20.1 - 2026-10-30
 
 1.20 with a fix for a false antivirus warning on Windows.

@@ -348,8 +348,14 @@ function Install-NetBae {
             if (Test-Path $LogFile) { Get-Content $LogFile -Tail 30 }
             throw "netBae failed to start (see $LogFile)"
         }
-        $ip = Get-NetIPConfiguration -ErrorAction SilentlyContinue | Where-Object { $_.IPv4DefaultGateway } |
-            Select-Object -First 1 | ForEach-Object { $_.IPv4Address.IPAddress } | Select-Object -First 1
+        # This PC's address on the default route, for the dashboard link. Not Get-NetIPConfiguration: it throws
+        # ("Exception setting NetAdapter") on machines where an adapter matches more than once.
+        $ip = $null
+        try {
+            $route = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop | Sort-Object RouteMetric | Select-Object -First 1
+            $ip = Get-NetIPAddress -InterfaceIndex $route.InterfaceIndex -AddressFamily IPv4 -ErrorAction Stop |
+                Select-Object -First 1 -ExpandProperty IPAddress
+        } catch { }
         if (-not $ip) { $ip = '<this-pc-ip>' }
         $suffix = if ($Port -eq 80) { '' } else { ":$Port" }
         Write-Host ''
