@@ -1215,6 +1215,10 @@ const ispLabel = (ctx) => (ctx.raw.failed
   ? ` ${ctx.raw.conn} ISP check failed${ctx.raw.isp ? ` (on ${ctx.raw.isp})` : ''}`
   : ` ${ctx.raw.conn} ISP: ${ctx.raw.isp}${ctx.raw.ip ? ` · ${ctx.raw.ip}` : ''}${ctx.raw.changed ? '  (changed)' : ''}`);
 
+// ISP check marks start hidden (the header already names each connection's ISP). Once shown, every ISP's marks
+// are drawn, including one that turns up later in a failover, except those hidden one by one.
+const ispShown = () => ({ show: store.get('isp:show', false), off: new Set(store.get('isp:off', [])) });
+
 async function ispOverlay(root, r, onToggle) {
   if (!CONFIG.isp?.enabled) return [];
   let legend = $('.isp-legend', root);
@@ -1223,23 +1227,29 @@ async function ispOverlay(root, r, onToggle) {
     legend.className = 'isp-legend';
     $('.chips', root).after(legend);
     legend.addEventListener('click', (e) => {
-      const off = new Set(store.get('isp:off', []));
+      let { show, off } = ispShown();
+      const keys = [...legend.querySelectorAll('button[data-key]')].map((x) => x.dataset.key);
       if (e.target.closest('.isp-title')) {  // the label toggles every ISP marker at once
-        const keys = [...legend.querySelectorAll('button[data-key]')].map((x) => x.dataset.key);
-        const allOff = keys.every((k) => off.has(k));
-        keys.forEach((k) => (allOff ? off.delete(k) : off.add(k)));
+        const anyOn = show && keys.some((k) => !off.has(k));
+        show = !anyOn; off = new Set();
       } else {
         const b = e.target.closest('button[data-key]');
         if (!b) return;
-        if (off.has(b.dataset.key)) off.delete(b.dataset.key); else off.add(b.dataset.key);
+        const k = b.dataset.key;
+        if (!show) { show = true; off = new Set(keys.filter((x) => x !== k)); }  // just this one
+        else if (off.has(k)) off.delete(k);
+        else off.add(k);
+        if (keys.every((x) => off.has(x))) { show = false; off = new Set(); }
       }
+      store.set('isp:show', show);
       store.set('isp:off', [...off]);
       onToggle();
     });
   }
   // routine checks ~14px apart; ISP/IP changes are always included and drawn larger
   const d = await api('isp', { from: r.from.toFixed(0), to: r.to.toFixed(0), points: Math.max(30, Math.round(root.clientWidth / 14)) });
-  const off = new Set(store.get('isp:off', []));
+  const { show, off } = ispShown();
+  const on = { has: (k) => show && !off.has(k) };
   const datasets = [];
   const buttons = [];
   const keys = [];
@@ -1257,9 +1267,9 @@ async function ispOverlay(root, r, onToggle) {
       const key = `${conn}|${isp}`;
       keys.push(key);
       const fails = pts.filter((p) => p.isp === isp && p.failed).length;
-      buttons.push(`<button data-key="${esc(key)}" class="${off.has(key) ? 'off' : ''}" title="Show or hide ${esc(conn)} ISP checks${fails ? ` (✕ = ${fails} failed)` : ''}">
+      buttons.push(`<button data-key="${esc(key)}" class="${on.has(key) ? '' : 'off'}" title="Show or hide ${esc(conn)} ISP checks${fails ? ` (✕ = ${fails} failed)` : ''}">
         <span style="color:${color}">✓</span>${esc(conn)}: ${esc(isp || 'unknown')}</button>`);
-      if (off.has(key)) continue;
+      if (!on.has(key)) continue;
       datasets.push({
         role: 'isp', label: `${conn} ISP`, yAxisID: 'yIsp', showLine: false,
         pointStyle: (c) => ispGlyph(color, !!c.raw?.failed, c.raw?.changed ? 15 : 10),
@@ -1269,7 +1279,7 @@ async function ispOverlay(root, r, onToggle) {
       });
     }
   });
-  const allOff = keys.length && keys.every((k) => off.has(k));
+  const allOff = keys.length && keys.every((k) => !on.has(k));
   legend.innerHTML = buttons.length ? `<button class="isp-title${allOff ? ' off' : ''}" title="Each mark along the top of the chart is an ISP check, in that ISP's colour: a tick when it worked, a cross when it failed, one row per connection. A bigger mark means the ISP or IP changed. Click to show or hide them all.">ISP checks</button>${buttons.join('')}` : '';
   return datasets;
 }
@@ -1752,7 +1762,8 @@ function renderUpdate(u) {  // the version pill and the Update button, from an u
   }
   b.textContent = `Update to v${u.latest}`;
   b.title = `Install netBae ${u.latest} now (your config and history are kept).`
-    + (u.auto !== 'off' ? ` It also updates itself automatically (${u.auto}, at 3:30 am).` : '');
+    + (u.auto === 'immediately' ? ' It also installs new releases by itself as soon as they\'re found.'
+      : u.auto !== 'off' ? ` It also updates itself automatically (${u.auto}, at ${u.auto_time}).` : '');
 }
 function waitForUpdate() {
   const b = $('#update-btn');

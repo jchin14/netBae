@@ -18,6 +18,16 @@ The main steps so far, with the full details per version below.
 | 1.15 | An Update button on the dashboard and weekly automatic updates |
 | 1.19 | NixOS support (install command and a Nix flake), Cloudflare Access sign-in for your own dashboard away from home, speedtests that pause the other tests |
 | 1.20 | A redesigned dashboard: a status line at the top, cleaner cards and much less scrolling |
+| 1.21 | `netbae export` and `netbae import` to move your history, update timing settings |
+
+## 1.21.0 - 2026-10-30
+
+Move your history to another machine with `netbae export` and `netbae import`, more control over automatic updates, and a release download antivirus no longer flags.
+
+- **Move your history to another machine:** `netbae export` saves the whole history (ping, DNS, speedtests, routes, system stats) to one file while netBae keeps running, and `netbae import <file>` puts it in place on the new machine, keeping the history it replaces as a backup. Works on Linux, macOS, Windows and NixOS, and in Docker with `--export` and `--import` (see Moving to another machine in the README).
+- **Update settings:** `[web] update_check_hours` sets how often netBae checks for a new release (default every 6 hours), `[web] auto_update = "immediately"` installs a new release as soon as it's found, and `[web] auto_update_time` picks when daily and weekly updates install (default 3:30 am). Change them with `netbae config`.
+- The ISP check marks along the top of the charts start hidden, since the header already shows each connection's ISP. Click "ISP checks" above a chart to show them (or click one ISP to show just that one); your choice is remembered.
+- The release download is now `netbae-<version>.tar.gz`, a plain archive (`tar -xzf netbae-<version>.tar.gz && cd netbae-<version> && sudo bash install.sh`), instead of the self-extracting `netbae-installer.sh`. Microsoft Defender's machine learning flagged the self-extracting script as a trojan because it decoded and ran hidden code as root, even though the files inside were clean. The `curl | sudo bash` install command is unchanged.
 
 ## 1.20.2 - 2026-10-30
 

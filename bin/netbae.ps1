@@ -20,7 +20,8 @@ function Test-Admin {
 }
 # Re-run this command in an elevated window (UAC prompt) and wait for it.
 function Invoke-Elevated([switch]$KeepOpen) {
-    $a = "-NoProfile -ExecutionPolicy RemoteSigned $(if ($KeepOpen) { '-NoExit ' })-File `"$PSCommandPath`" $Command $($Rest -join ' ')"
+    $quoted = ($Rest | ForEach-Object { "`"$_`"" }) -join ' '   # paths may have spaces
+    $a = "-NoProfile -ExecutionPolicy RemoteSigned $(if ($KeepOpen) { '-NoExit ' })-File `"$PSCommandPath`" $Command $quoted"
     $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $a -Wait -PassThru
     exit $p.ExitCode
 }
@@ -111,6 +112,30 @@ switch ($Command) {
     }
     'check' { if (-not (Invoke-Check)) { exit 1 } }
     'version' { Write-Host "netBae $(Get-Version)" }
+    'export' {
+        # an elevated window starts elsewhere, so the file's full path is worked out here first
+        $out = if ($Rest.Count) { $Rest[0] } else { "netbae-$env:COMPUTERNAME-$(Get-Date -Format yyyy-MM-dd).db" }
+        $out = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($out)
+        if (-not (Test-Admin)) { $Rest = @($out); Invoke-Elevated -KeepOpen }
+        & $Py "$AppDir\netbae.py" -c $Conf --export $out
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        Write-Host "Copy it to the other machine and run there: netbae import $(Split-Path $out -Leaf)"
+    }
+    'import' {
+        if (-not $Rest.Count -or -not (Test-Path $Rest[0] -PathType Leaf)) { Write-Host 'usage: netbae import <file made by netbae export>'; exit 1 }
+        if (-not (Test-Admin)) { $Rest = @((Resolve-Path $Rest[0]).Path) + @($Rest | Select-Object -Skip 1); Invoke-Elevated -KeepOpen }
+        $file = (Resolve-Path $Rest[0]).Path
+        if ($Rest[1] -ne '-y') {
+            $a = Read-Host "Replace this machine's netBae history with $file? (the old one is kept as a backup) [y/N]"
+            if ($a -notmatch '^[yY]') { Write-Host 'nothing changed'; exit 1 }
+        }
+        Stop-NetBae
+        & $Py "$AppDir\netbae.py" -c $Conf --import $file
+        $code = $LASTEXITCODE
+        Start-NetBae
+        if ($code) { exit $code }
+        Write-Host 'netBae restarted with the imported history'
+    }
     'tunnel' { & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "$AppDir\tunnel.ps1" @Rest; exit $LASTEXITCODE }
     'uninstall' {
         $purge = $Rest | Where-Object { $_ -in '-purge', '--purge', '/purge' }
@@ -134,6 +159,8 @@ netbae - manage the netBae internet monitor
   netbae version
   netbae tunnel       share a read-only dashboard publicly (Cloudflare or Tailscale, no port forwarding)
   netbae tunnel status | off | remove <hostname>
+  netbae export [file]   save the whole history (ping, DNS, speedtests...) to one file
+  netbae import <file>   replace this machine's history with an export (the old one is kept)
   netbae uninstall [-Purge]
 '@
     }

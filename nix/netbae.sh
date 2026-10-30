@@ -100,6 +100,27 @@ case "${1:-help}" in
       echo "Config (/etc/netbae) and data (/var/lib/private/netbae) kept. Re-run with --purge to delete them."
     fi
     ;;
+  export)
+    out=${2:-netbae-$(hostname -s 2>/dev/null || echo export)-$(date +%Y-%m-%d).db}
+    as_root "$SERVER" -c "$(config_path)" --export "$out"
+    as_root chown "$(id -u):$(id -g)" "$out"
+    echo "Copy it to the other machine and run there: netbae import $(basename "$out")"
+    ;;
+  import)
+    [[ -n ${2:-} && -f ${2:-} ]] || { echo "usage: netbae import <file made by netbae export>" >&2; exit 1; }
+    f=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
+    if [[ ${3:-} != -y ]]; then
+      read -r -p "Replace this machine's netBae history with $f? (the old one is kept as a backup) [y/N] " a </dev/tty || a=""
+      [[ $a == [yY]* ]] || { echo "nothing changed"; exit 1; }
+    fi
+    as_root systemctl stop netbae
+    # the database is in /var/lib/private/netbae (DynamicUser); systemd sets its owner again on start
+    if as_root "$SERVER" -c "$(config_path)" --import "$f"; then
+      as_root systemctl start netbae && echo "netBae restarted with the imported history"
+    else
+      as_root systemctl start netbae; exit 1
+    fi
+    ;;
   tunnel)
     if ! installed_by_script; then
       cat <<'TXT'
@@ -133,6 +154,8 @@ netbae - manage the netBae internet monitor (NixOS)
   netbae version
   netbae tunnel       share a read-only dashboard publicly (Cloudflare or Tailscale, no port forwarding)
   netbae tunnel status | off | remove <hostname>
+  netbae export [file]   save the whole history (ping, DNS, speedtests...) to one file
+  netbae import <file>   replace this machine's history with an export (the old one is kept)
   netbae uninstall [--purge]
 HELP
     ;;

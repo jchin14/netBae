@@ -11,8 +11,10 @@
 [web]
 host = "0.0.0.0"       # 0.0.0.0 = reachable from other machines on your network
 port = 80             # dashboard at http://<this-machine>/ ; if it's taken, the next free port is used
-update_check = true   # check GitHub for new releases (every 6 hours) and show an Update button on the dashboard
-auto_update = "weekly"  # install new releases automatically at 3:30 am: "weekly" (at most once a week), "daily" or "off"
+update_check = true   # check GitHub for new releases and show an Update button on the dashboard
+update_check_hours = 6  # how often to check, in hours (1 to 168)
+auto_update = "weekly"  # install new releases by itself: "weekly" (at most once a week), "daily", "immediately" (as soon as one is found) or "off"
+auto_update_time = "03:30"  # when "weekly" and "daily" install, local time (24-hour)
                         # (does nothing in Docker or on installs without the Update button: update with netbae update)
 start_at_boot = true  # start netBae when this machine boots; false = only after netbae start
                       # (applied by netbae config / start / restart, the installer and netbae update)

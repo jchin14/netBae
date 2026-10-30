@@ -61,13 +61,15 @@ docker compose up -d
 | `netbae restart` | restart it (also: `start`, `stop`) |
 | `netbae tunnel` | share a read-only dashboard publicly (no port forwarding) |
 | `netbae tunnel status` | what's shared, where, and how many visitors (also: `off`) |
+| `netbae export` | save the whole history to one file, e.g. to move it to another machine |
+| `netbae import <file>` | replace this machine's history with an export |
 | `netbae uninstall` | remove it (`--purge` also deletes config and history; `-Purge` on Windows) |
 
 ## Contents
 
 - [Why netBae](#why-netbae)
 - [Install](#install): supported systems, what the installer does on Linux, macOS and Windows, Docker, where things live
-- [Everyday use](#everyday-use): [Uninstall](#uninstall)
+- [Everyday use](#everyday-use): [Moving to another machine](#moving-to-another-machine) · [Uninstall](#uninstall)
 - [Configuration](#configuration): [All options](#all-options) · [Game servers](#game-servers) · [Regions](#region-speedtests-and-pings) · [Secondary connection](#monitoring-a-secondary-connection)
 - [Sharing a public dashboard](#sharing-a-public-dashboard): [netbae tunnel](#the-easy-way-netbae-tunnel) · [With Docker](#with-docker) · [What visitors see](#what-visitors-see) · [Signing in](#signing-in-to-your-own-dashboard) · [By hand](#by-hand)
 - [How it measures](#how-it-measures)
@@ -98,7 +100,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 
 ## Install
 
-The [TL;DR](#tldr) has the install commands. Run the same command again any time to update; your config and history are kept. It works on:
+The [TL;DR](#tldr) has the install commands. Run the same command again any time to update; your config and history are kept. On a Linux or Mac machine that can't run `curl` against GitHub, download `netbae-<version>.tar.gz` from the [latest release](https://github.com/jchin14/netBae/releases/latest), copy it across and run `tar -xzf netbae-<version>.tar.gz && cd netbae-<version> && sudo bash install.sh`. It works on:
 
 | | Supported |
 |---|---|
@@ -244,9 +246,27 @@ Then `sudo nixos-rebuild switch`, and open `http://<this-machine>/`.
 
 ## Everyday use
 
-The `netbae` command does everything day to day; the full list is in the [TL;DR](#tldr) and `netbae help`. On Windows it works in cmd and PowerShell, and commands that change something (update, restart, config, tunnel, uninstall) ask for admin rights. Updates never overwrite your config. When a new version is out, the private dashboard shows an **Update to vX** button in the header: it runs the same update as `netbae update` and reloads the page once the new version is running. Clicking the version number checks for a new release right away: if there is one it asks whether to install it, otherwise it opens the release notes for your version. The dashboard itself has no admin rights; the button asks a small system job the installer sets up (a systemd path unit on Linux, a launchd job on a Mac, a SYSTEM scheduled task on Windows), which only runs the official update. netBae also updates itself automatically, at most once a week at 3:30 am when a new release is out (`[web] auto_update`). In Docker the header shows the new version with the `docker compose pull` command instead.
+The `netbae` command does everything day to day; the full list is in the [TL;DR](#tldr) and `netbae help`. On Windows it works in cmd and PowerShell, and commands that change something (update, restart, config, tunnel, export, import, uninstall) ask for admin rights. Updates never overwrite your config. When a new version is out, the private dashboard shows an **Update to vX** button in the header: it runs the same update as `netbae update` and reloads the page once the new version is running. Clicking the version number checks for a new release right away: if there is one it asks whether to install it, otherwise it opens the release notes for your version. The dashboard itself has no admin rights; the button asks a small system job the installer sets up (a systemd path unit on Linux, a launchd job on a Mac, a SYSTEM scheduled task on Windows), which only runs the official update. netBae also updates itself automatically, by default at most once a week at 3:30 am when a new release is out. `[web] auto_update` and `auto_update_time` change that: daily, weekly, as soon as a release is found, or never, at the time of day you pick. In Docker the header shows the new version with the `docker compose pull` command instead.
 
 The ping chart draws one line per category (the average of its hosts) and the DNS chart one line per resolver (IPv4 and IPv6 together). In the table under a chart, click a category to expand it into its hosts or addresses, and click a host to hide or show its line; hovering a row picks out its line. The DNS table also shows the route to each public resolver. In the chip list above a chart, the arrow opens a category, its name hides or shows it, and the rest of the row picks out its line (tap again to stop), which works with a finger on a phone too. Click a speedtest table's column headings to sort it by speed, ping, time and so on. On the dashboard, each chart's time menu has the last 15 minutes to a year, **A day…** (pick a date, then step with ◀ ▶) and a custom range. A badge shows whether a chart is **Live** or showing past data, and the header says when any chart isn't live. Once your connection has been on more than one ISP, the ping and DNS charts get an **ISP** selector that keeps only the times you were on that ISP, so you can compare providers.
+
+### Moving to another machine
+
+All of netBae's history (ping, DNS, speedtests, routes, system stats) is one database, so moving it is two commands. On the old machine (it keeps running while it saves):
+
+```bash
+netbae export                      # writes netbae-<hostname>-<date>.db here; or: netbae export ~/backup.db
+```
+
+Copy that file to the new machine (e.g. with `scp`), install netBae there, then:
+
+```bash
+netbae import netbae-oldpi-2026-10-30.db
+```
+
+Import asks before it replaces the new machine's history, stops netBae, puts the export in place and starts netBae again. The history it replaced is kept next to the database as `netbae.db.before-import`. Install the same or a newer netBae on the new machine: a newer one upgrades an older export by itself. Copy `config.toml` across too if you want the same hosts and settings. Histories can't be merged: the import replaces what's there. `netbae export` is also a simple backup.
+
+Docker: `docker exec netbae python3 /opt/netbae/netbae.py --export /data/export.db` saves it to `netbae-data/export.db`. To import, run `docker compose stop netbae`, put the export in `netbae-data/` and run `docker compose run --rm --no-deps netbae --import /data/export.db`, then `docker compose start netbae`.
 
 ### Uninstall
 
@@ -284,8 +304,10 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | Option | Default | |
 |---|---|---|
 | `[web] host` | `"0.0.0.0"` | `0.0.0.0` = reachable from your network; `"::"` for IPv6 too |
-| `[web] update_check` | `true` | check GitHub for a newer release every 6 hours and show an **Update** button in the dashboard's header |
-| `[web] auto_update` | `"weekly"` | install new releases automatically at 3:30 am local time: `"weekly"` (at most once a week), `"daily"` or `"off"`. Not in Docker |
+| `[web] update_check` | `true` | check GitHub for a newer release and show an **Update** button in the dashboard's header |
+| `[web] update_check_hours` | `6` | how often to check for a new release, in hours (1 to 168) |
+| `[web] auto_update` | `"weekly"` | install new releases by itself: `"weekly"` (at most once a week) or `"daily"` at `auto_update_time`, `"immediately"` (as soon as a check finds one), or `"off"`. Not in Docker or on NixOS |
+| `[web] auto_update_time` | `"03:30"` | when `"weekly"` and `"daily"` updates install, local time (24-hour) |
 | `[web] start_at_boot` | `true` | start netBae when the machine boots. `false`: it runs only after `netbae start` and stays stopped after a reboot. Applied by `netbae config`, `start` and `restart`. On NixOS it's `services.netbae.startAtBoot`; in Docker use the container's restart policy instead |
 | `[web] chart_band` | `"none"` | the latency charts' spread band by default: `"none"`, `"p5-p95"` or `"min-max"`. Each browser remembers its own choice, and the band is drawn when 12 or fewer lines are showing |
 | `[web] port` | `80` | if it's taken when netBae starts, the next free port is used and the log says which |
@@ -676,7 +698,7 @@ The destination is named only when it isn't the site itself ("direct to Cloudfla
 
 Every release has to pass these on fresh machines before it's published:
 
-- **Code checks:** shellcheck on the shell scripts, Python syntax, the default config, a smoke test of the app and the single-file installer build.
+- **Code checks:** shellcheck on the shell scripts, Python syntax, the default config, a smoke test of the app and the release archive build.
 - **Linux installer:** the real `install.sh` in systemd containers on Debian 12, Debian 13, Ubuntu 24.04 and Fedora: install, check the service, API, Ookla CLI and data collection, update in place, uninstall keeping the config, reinstall, then uninstall with `--purge` and check nothing is left.
 - **macOS installer:** the full install, update and uninstall on a Mac.
 - **Windows installer:** `install.ps1` on Windows, including a real speedtest through the service, the `irm | iex` path and `-Purge`.

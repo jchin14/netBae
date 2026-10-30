@@ -32,9 +32,9 @@ jobs:
           curl -fsS localhost:8099/api/summary | python3 -c 'import json,sys; d=json.load(sys.stdin); assert len(d["ping"]) >= 18'
           curl -fsS localhost:8099/api/system | python3 -m json.tool > /dev/null
           curl -fsS "localhost:8099/api/ping?from=$(( $(date +%s) - 86400 ))" | python3 -m json.tool > /dev/null
-      - name: Build single-file installer
+      - name: Build the release archive
         run: bash build-installer.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: netbae-installer
-          path: dist/netbae-installer.sh
+          name: netbae-release
+          path: dist/netbae-*.tar.gz

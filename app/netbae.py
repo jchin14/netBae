@@ -49,7 +49,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.20.2"
+VERSION = "1.21.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -115,7 +115,7 @@ V6_TWIN = resolver_twins(BUILTIN["dns_servers"])
 
 DEFAULT_CONFIG = {
     "web": {"host": "0.0.0.0", "port": 80, "chart_band": "none", "update_check": True, "auto_update": "weekly",
-            "start_at_boot": True},
+            "update_check_hours": 6, "auto_update_time": "03:30", "start_at_boot": True},
     # optional read-only copy of the dashboard for sharing (e.g. through a Cloudflare Tunnel)
     "public": {"enabled": False, "host": "0.0.0.0", "port": 8080,
                "requests_per_minute": 120, "total_requests_per_minute": 1200, "hide": [],
@@ -823,8 +823,16 @@ def load_config(path):
         raise SystemExit("[public] access_team and access_aud go together: set both for Cloudflare Access sign-in, or neither")
     if pub["access_team"] and not re.fullmatch(r"[a-z0-9-]+", pub["access_team"]):
         raise SystemExit('[public] access_team is your Cloudflare Zero Trust team name, e.g. "myteam" for myteam.cloudflareaccess.com')
-    if str(cfg["web"]["auto_update"]).lower() not in ("weekly", "daily", "off"):
-        raise SystemExit('[web] auto_update must be "weekly", "daily" or "off"')
+    if str(cfg["web"]["auto_update"]).lower() not in ("weekly", "daily", "immediately", "off"):
+        raise SystemExit('[web] auto_update must be "weekly", "daily", "immediately" or "off"')
+    try:
+        hours = float(cfg["web"]["update_check_hours"])
+    except (TypeError, ValueError):
+        hours = 0
+    if not 1 <= hours <= 168:
+        raise SystemExit("[web] update_check_hours must be between 1 and 168 (a week)")
+    if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", str(cfg["web"]["auto_update_time"]).strip()):
+        raise SystemExit('[web] auto_update_time must be a time of day like "03:30" (24-hour, local time)')
     if not isinstance(cfg["web"]["start_at_boot"], bool):
         raise SystemExit("[web] start_at_boot must be true or false")
     if not 0 < float(cfg["speedtest"]["busy_percent"]) <= 100:
@@ -2856,12 +2864,21 @@ class Monitor:
             t.daemon = True
             t.start()
         if c["web"]["update_check"]:
-            run_aligned("update-check", 6 * 3600, 600, lambda: check_latest_release(self))
-            self.pool.submit(check_latest_release, self)
-            run_aligned("auto-update", 86400, 3.5 * 3600, lambda: auto_update(self))  # 03:30 local time
+            run_aligned("update-check", float(c["web"]["update_check_hours"]) * 3600, 600, self.update_check)
+            self.pool.submit(self.update_check)
+            if str(c["web"]["auto_update"]).lower() in ("daily", "weekly"):
+                hh, mm = str(c["web"]["auto_update_time"]).strip().split(":")
+                run_aligned("auto-update", 86400, int(hh) * 3600 + int(mm) * 60, lambda: auto_update(self))  # local time
         run_aligned("rollup", 60, 10, self.rollup_all)
         run_aligned("cleanup", 3600, 1800, self.cleanup)
         self.pool.submit(self.collect_system)
+
+    def update_check(self):
+        """The regular check for a new release ([web] update_check_hours); with auto_update = "immediately"
+        a new release is installed as soon as it's found."""
+        check_latest_release(self)
+        if str(self.cfg["web"]["auto_update"]).lower() == "immediately":
+            auto_update(self, check=False)
 
     # -- collectors
     def address(self, host, family):
@@ -3981,6 +3998,7 @@ def update_summary(m):
     return {"current": VERSION, "latest": latest, "url": u.get("url"), "checked": u.get("checked"),
             "available": bool(latest) and version_tuple(latest) > version_tuple(VERSION),
             "method": m.update_method, "auto": str(m.cfg["web"]["auto_update"]).lower() if m.update_method == "button" else "off",
+            "auto_time": str(m.cfg["web"]["auto_update_time"]).strip(), "check_hours": m.cfg["web"]["update_check_hours"],
             "requested": os.path.exists(os.path.join(data, "update-request")) or time.time() - m.update_started < 600}
 
 
@@ -4019,13 +4037,15 @@ def api_run_update(m, q):
     return {"started": True}
 
 
-def auto_update(m):
-    """Runs daily at 03:30 local time: installs a newer release if [web] auto_update allows it today
-    ("daily", or "weekly" = at most once every 7 days). Same path as the dashboard's Update button."""
+def auto_update(m, check=True):
+    """Installs a newer release if [web] auto_update allows it now: "daily" or "weekly" (at most once every 7
+    days) run each day at auto_update_time, "immediately" right after a check finds one. Same path as the
+    dashboard's Update button."""
     mode = str(m.cfg["web"]["auto_update"]).lower()
     if mode == "off" or m.update_method != "button":
         return
-    check_latest_release(m)
+    if check:
+        check_latest_release(m)
     if not update_summary(m)["available"]:
         return
     stamp = os.path.join(os.path.dirname(os.path.abspath(m.db.path)), "auto-update-last")
@@ -4034,6 +4054,8 @@ def auto_update(m):
     except ValueError:
         last = 0
     if mode == "weekly" and time.time() - last < 6.5 * 86400:
+        return
+    if mode == "immediately" and time.time() - last < 3600:  # an update that didn't take isn't retried at once
         return
     with open(stamp, "w") as f:
         f.write(f"{time.time()}\n")
@@ -4870,6 +4892,86 @@ def bind_web(host, port, handler, tries=20):
     sys.exit(f"no free port between {port} and {port + tries - 1}; set a different [web] port in the config")
 
 
+# --------------------------------------------------------------------------- moving the history
+# `netbae export` and `netbae import`: the whole history (ping, DNS, speedtests, routes, system stats) is one
+# SQLite database, copied with SQLite's backup API so an export is consistent while netBae keeps running.
+
+def db_summary(path):
+    """'N ping samples, from <date> to <date>' for a netBae database, or raise ValueError if it isn't one."""
+    try:
+        c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if not {"ping", "speedtest"} <= tables:
+            raise ValueError(f"{path} isn't a netBae database")
+        if c.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            raise ValueError(f"{path} is damaged (SQLite's quick_check failed)")
+        first, last = c.execute("SELECT MIN(ts), MAX(ts) FROM ping_1h").fetchone() if "ping_1h" in tables else (None, None)
+        n = c.execute("SELECT COUNT(*) FROM speedtest").fetchone()[0]
+        c.close()
+    except sqlite3.Error as e:
+        raise ValueError(f"{path} isn't a readable SQLite database ({e})")
+    day = lambda t: time.strftime("%Y-%m-%d", time.localtime(t))
+    span = f"history from {day(first)} to {day(last)}" if first else "no ping history yet"
+    return f"{span}, {n} speedtests"
+
+
+def sqlite_copy(src, dst):
+    """Copy a SQLite database to a new file (consistent even while another process is writing to src)."""
+    s = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    d = sqlite3.connect(dst)
+    try:
+        s.backup(d)
+        d.execute("PRAGMA journal_mode=DELETE")  # one self-contained file, no -wal next to it
+    finally:
+        d.close()
+        s.close()
+
+
+def export_db(cfg, out):
+    src = cfg["storage"]["database"]
+    if not os.path.exists(src):
+        raise SystemExit(f"no history to export yet ({src} doesn't exist)")
+    out = os.path.abspath(out)
+    if os.path.exists(out):
+        raise SystemExit(f"{out} already exists; give another name or delete it first")
+    sqlite_copy(src, out)
+    print(f"Exported {db_summary(out)} to {out} ({os.path.getsize(out) / 1e6:.1f} MB)")
+
+
+def import_db(cfg, src):
+    """Replace this machine's history with a copy exported elsewhere (netBae must be stopped). The history it
+    replaces is kept next to it as <database>.before-import."""
+    src = os.path.abspath(src)
+    try:
+        info = db_summary(src)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    dst = cfg["storage"]["database"]
+    d = os.path.dirname(os.path.abspath(dst))
+    os.makedirs(d, exist_ok=True)
+    keep = dst + ".before-import"
+    if os.path.exists(dst):
+        if os.path.exists(keep):
+            os.remove(keep)
+        sqlite_copy(dst, keep)  # takes in anything still in its -wal
+        print(f"This machine's old history is kept in {keep}")
+    tmp = dst + ".importing"
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    sqlite_copy(src, tmp)
+    for ext in ("-wal", "-shm"):
+        if os.path.exists(dst + ext):
+            os.remove(dst + ext)
+    os.replace(tmp, dst)
+    DB(dst).conn().close()  # bring an export from an older netBae up to this version's tables now
+    if hasattr(os, "chown"):  # owned like its folder, i.e. by the account netBae runs as
+        st = os.stat(d)
+        for f in (dst, keep, dst + "-wal", dst + "-shm"):
+            if os.path.exists(f):
+                os.chown(f, st.st_uid, st.st_gid)
+    print(f"Imported {info} into {dst}")
+
+
 def main():
     ap = argparse.ArgumentParser(description="netBae internet connection monitor")
     ap.add_argument("-c", "--config", default=os.environ.get("NETBAE_CONFIG", DEFAULT_CONFIG_PATH))
@@ -4877,6 +4979,9 @@ def main():
     ap.add_argument("--print-start-at-boot", action="store_true",
                     help="print [web] start_at_boot (true or false) and exit; read by the installer and netbae command")
     ap.add_argument("--check-config", action="store_true", help="validate and print the effective config")
+    ap.add_argument("--export", metavar="FILE", help="copy the whole history to FILE and exit (fine while running)")
+    ap.add_argument("--import", dest="import_file", metavar="FILE",
+                    help="replace the history with FILE from --export and exit (stop netBae first)")
     ap.add_argument("--log-file", help="log to this file (rotated at 1 MB, 5 kept) instead of stderr")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
@@ -4894,6 +4999,10 @@ def main():
     if args.print_start_at_boot:
         print(str(cfg["web"]["start_at_boot"]).lower())
         return
+    if args.export:
+        return export_db(cfg, args.export)
+    if args.import_file:
+        return import_db(cfg, args.import_file)
     if args.check_config:
         print(json.dumps(cfg, indent=2))
         st = cfg["speedtest"]

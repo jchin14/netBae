@@ -1,27 +1,25 @@
 #!/usr/bin/env bash
-# Bundles the whole project into one self-extracting file: dist/netbae-installer.sh
+# Bundles the installer and app into one download: dist/netbae-<version>.tar.gz, a plain archive holding a
+# netbae-<version>/ folder. Install from it with:
+#   tar -xzf netbae-<version>.tar.gz && cd netbae-<version> && sudo bash install.sh
+# (Not a self-extracting script: one that decodes a hidden payload and runs it as root looks like a dropper
+# to antivirus machine learning, which flagged it as a trojan even though the files inside scanned clean.)
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUT="$DIR/dist/netbae-installer.sh"
+VERSION=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$DIR/app/netbae.py")
+NAME="netbae-$VERSION"
+OUT="$DIR/dist/$NAME.tar.gz"
 mkdir -p "$DIR/dist"
+rm -f "$DIR"/dist/netbae-*.tar.gz "$DIR/dist/netbae-installer.sh"
 
-TAR_OPTS=(--exclude='__pycache__' --exclude='.DS_Store' --exclude='static/vendor')
-[[ "$(uname)" == Darwin ]] && TAR_OPTS+=(--no-mac-metadata)
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+mkdir "$STAGE/$NAME"
+(cd "$DIR" && tar -cf - --exclude='__pycache__' --exclude='.DS_Store' --exclude='static/vendor' \
+  install.sh uninstall.sh tunnel.sh config.toml LICENSE app bin nix) | tar -xf - -C "$STAGE/$NAME"
 
-{
-  cat <<'EOF'
-#!/usr/bin/env bash
-# netBae self-extracting installer. Usage: sudo bash netbae-installer.sh
-set -euo pipefail
-if [[ $EUID -ne 0 ]]; then exec sudo bash "$0" "$@"; fi
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
-sed '1,/^__PAYLOAD_BELOW__$/d' "$0" | base64 -d | tar -xzf - -C "$TMP"
-bash "$TMP/install.sh" "$@"
-exit 0
-__PAYLOAD_BELOW__
-EOF
-  COPYFILE_DISABLE=1 tar -czf - "${TAR_OPTS[@]}" -C "$DIR" install.sh uninstall.sh tunnel.sh config.toml LICENSE app bin nix | base64
-} >"$OUT"
-chmod +x "$OUT"
+# files owned by root in the archive, not by whoever built it
+# and without macOS extended attributes (quarantine, provenance), which Linux tar warns about one by one
+if [[ "$(uname)" == Darwin ]]; then TAR_OPTS=(--no-mac-metadata --no-xattrs --no-acls --uid 0 --gid 0); else TAR_OPTS=(--owner=0 --group=0); fi
+COPYFILE_DISABLE=1 tar -czf "$OUT" "${TAR_OPTS[@]}" -C "$STAGE" "$NAME"
 echo "Built $OUT ($(wc -c <"$OUT" | tr -d ' ') bytes)"

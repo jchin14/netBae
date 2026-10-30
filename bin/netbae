@@ -97,6 +97,26 @@ case "${1:-help}" in
   check)   as_svc "$PY" "$APP/netbae.py" -c "$CONF" --check-config ;;
   version) echo "netBae $(version)" ;;
   tunnel)  as_root bash "$APP/tunnel.sh" "${@:2}" ;;
+  export)  # the whole history in one file, taken while netBae keeps running
+    out=${2:-netbae-$(hostname -s 2>/dev/null || echo export)-$(date +%Y-%m-%d).db}
+    as_root "$PY" "$APP/netbae.py" -c "$CONF" --export "$out"
+    as_root chown "$(id -u):$(id -g)" "$out"
+    echo "Copy it to the other machine and run there: netbae import $(basename "$out")"
+    ;;
+  import)
+    [[ -n ${2:-} && -f ${2:-} ]] || { echo "usage: netbae import <file made by netbae export>" >&2; exit 1; }
+    f=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
+    if [[ ${3:-} != -y ]]; then
+      read -r -p "Replace this machine's netBae history with $f? (the old one is kept as a backup) [y/N] " a </dev/tty || a=""
+      [[ $a == [yY]* ]] || { echo "nothing changed"; exit 1; }
+    fi
+    svc stop 2>/dev/null || true
+    if as_root "$PY" "$APP/netbae.py" -c "$CONF" --import "$f"; then
+      svc start && echo "netBae restarted with the imported history"
+    else
+      svc start; exit 1
+    fi
+    ;;
   uninstall) as_root bash "$APP/uninstall.sh" "${@:2}" ;;
   *)
     cat <<HELP
@@ -111,6 +131,8 @@ netbae - manage the netBae internet monitor
   netbae version
   netbae tunnel       share a read-only dashboard publicly (Cloudflare or Tailscale, no port forwarding)
   netbae tunnel status | off | remove <hostname>
+  netbae export [file]   save the whole history (ping, DNS, speedtests...) to one file
+  netbae import <file>   replace this machine's history with an export (the old one is kept)
   netbae uninstall [--purge]
 HELP
     ;;
