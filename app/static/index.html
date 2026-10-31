@@ -66,6 +66,19 @@
       </div>
     </section>
 
+    <section class="card panel" id="panel-routes" hidden>
+      <div class="panel-head">
+        <h2>Routes <span class="muted small" id="routes-note"></span></h2>
+        <div class="controls"><span class="seg route-tabs" role="tablist" aria-label="Routes view"><button type="button" data-tab="now">Now</button><button
+          type="button" data-tab="changes">Changes</button><button type="button" data-tab="compare">Compare ISPs</button></span></div>
+      </div>
+      <div id="routes-body" data-route-tab="now"></div>
+      <div id="routes-changes" data-route-tab="changes" hidden></div>
+      <div id="routes-compare" data-route-tab="compare" hidden></div>
+      <p class="muted small routes-later">On-net is best, then direct peering, an internet exchange (IX) and transit through another
+        carrier. Now uses each destination's latest route; a chart of how the split changes over time may be added later.</p>
+    </section>
+
     <section class="card panel" id="panel-regions">
       <div class="panel-head">
         <h2>Speedtests by server <span class="muted small" id="regions-note">closest server, connections and regions: latest and 7-day averages</span></h2>

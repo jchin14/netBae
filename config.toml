@@ -176,6 +176,7 @@ disk_path = "/"        # the drive shown as Boot drive ("/" = the one the system
 # bind = "192.168.1.51"         # a second IP on this machine (router policy-routes it to the secondary WAN),
 #                               # or an interface plugged into the secondary modem, e.g. "eth1" / "wlan0"
 # targets = ["1.1.1.1", "8.8.8.8", "google.com", "valve:auto"]   # or "all" to ping every main target over it too
+# trace = "all"                 # trace the route to every main destination over it too (for Compare ISPs), or "pinged"
 # speedtest = true
 # speedtest_interval_minutes = 1440   # once a day (mobile data isn't free). 0 = manual only
 # speedtest_offset_minutes = 45

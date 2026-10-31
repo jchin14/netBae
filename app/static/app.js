@@ -510,6 +510,7 @@ const mean = (xs) => { const v = xs.filter((x) => x != null); return v.length ? 
 let lastPing = [];
 let ROUTES = {};
 let CDN_ROUTES = {};  // routes to the CDN addresses the DNS servers hand out (from /api/cdn)
+let ISP_NOW = [];  // each connection's current ISP (from /api/summary)
 
 // How traffic reaches a target, from the latest traceroute: on-net / peering / transit via X.
 // on-net = inside your ISP; direct = your ISP connects straight to the destination's network;
@@ -544,6 +545,12 @@ function isTargetNet(net, id) {
 function routeHtml(id) {
   const r = ROUTES[id];
   if (!r) return '<span class="muted">route not traced yet</span>';
+  const { names, rel, html } = routeParts(r, id);
+  return `<button class="route-link" data-route="${esc(id)}" title="${esc(names.join(' → '))}${rel ? ` · ${rel}` : ''}${r.cities?.length ? ` · through ${esc(r.cities.join(' → '))}` : ''} · traced ${fmtAgo(r.ts)} · click for hops">${html}</button>`;
+}
+
+// a route's badge and words ("transit via Telstra Global to Akamai"), for a route object
+function routeParts(r, id) {
   const names = r.path.map((p) => shortNet(p.name));
   const mid = r.path.slice(1, -1).filter((p) => !p.ixp).map((p) => shortNet(p.name));
   const ixs = r.path.filter((p) => p.ixp).map((p) => p.name);
@@ -557,9 +564,7 @@ function routeHtml(id) {
       : kind === 'ix' ? `via ${ixs[0] || 'an exchange'}${mid.length ? `, then ${mid.join(', ')}${toDest ? ',' : ''}` : ''}${toDest}`
         : kind === 'direct' ? toDest.trim() : names.join(' → ');
   const rel = kind === 'on-net' ? null : firstRel(r.path);
-  const cls = kind;
-  return `<button class="route-link" data-route="${esc(id)}" title="${esc(names.join(' → '))}${rel ? ` · ${rel}` : ''}${r.cities?.length ? ` · through ${esc(r.cities.join(' → '))}` : ''} · traced ${fmtAgo(r.ts)} · click for hops">`
-    + `<span class="route-badge route-${cls}">${ROUTE_BADGE[r.kind] || r.kind}</span> ${esc(text)}${rel ? ` <span class="muted">· ${rel}</span>` : ''}</button>`;
+  return { names, rel, html: `<span class="route-badge route-${kind}">${ROUTE_BADGE[r.kind] || r.kind}</span> ${esc(text)}${rel ? ` <span class="muted">· ${rel}</span>` : ''}` };
 }
 
 // "ISP (AS1) → paid transit → Cogent (AS174) → peering → Netflix (AS2906)", exchanges in between
@@ -719,6 +724,7 @@ function statusHtml(s, sites, upCount, bar) {
 
 async function refreshSummary() {
   const s = await api('summary');
+  ISP_NOW = s.isp || [];
   lastPing = s.ping;
   if (s.isp_changes) CONFIG.isp_changes = s.isp_changes;  // a failover gets its chart line without a reload
   ROUTES = { ...(s.routes || {}), ...CDN_ROUTES };
@@ -1733,26 +1739,35 @@ function systemPanel() {
 // ------------------------------------------------------------------ boot
 // Update button (private dashboard only): shown when GitHub has a newer release. Pressing it asks the system's
 // update job to run `netbae update`; the page reloads itself once the new version is serving.
-// Clicking the version checks GitHub right away: with an update it offers to install it, otherwise it opens
-// this version's release notes.
+// Clicking the version checks GitHub for an update and shows the result on the pill. Clicking it again (within
+// 5 minutes) offers to install the update if there is one, otherwise it opens this version's release notes.
 function updateHowTo(u) {
   return u.method === 'docker' ? 'Update with: docker compose pull && docker compose up -d'
     : u.method === 'nix' ? 'Update with Nix: nix flake update netbae, then nixos-rebuild switch' : 'Update with: netbae update';
+}
+function showVersion() {  // the version pill's label and link; dev: a build newer than the latest release
+  const v = $('#version');
+  v.textContent = `${CONFIG.dev ? 'dev' : 'v'}${CONFIG.version}`;
+  v.href = !CONFIG.repo ? '#' : CONFIG.dev ? `${CONFIG.repo}/releases` : `${CONFIG.repo}/releases/tag/v${CONFIG.version}`;
 }
 function renderUpdate(u) {  // the version pill and the Update button, from an update summary
   const b = $('#update-btn'), v = $('#version');
   if (!u.available) {  // up to date: a tick on the version pill, and when it was last checked
     b.hidden = true;
     if (CONFIG.dev) {
-      v.title = `Dev build: newer than the latest release (${u.latest}, checked ${fmtAgo(u.checked)}). Click to check again.`;
+      showVersion();
+      v.title = `Dev build: newer than the latest release (${u.latest}, checked ${fmtAgo(u.checked)}). Click to check again, then again for the releases.`;
     } else if (u.latest) {
-      v.textContent = `v${CONFIG.version} ✓`;
-      v.title = `Up to date: ${u.latest} is the latest release (checked ${fmtAgo(u.checked)}). Click to check again and see what's new.`;
+      showVersion();
+      v.textContent += ' ✓';
+      v.title = `Up to date: ${u.latest} is the latest release (checked ${fmtAgo(u.checked)}). Click to check again, then again to see what's new.`;
+    } else {
+      showVersion();
     }
     return;
   }
-  v.textContent = `v${CONFIG.version}`;
-  v.title = `netBae ${u.latest} is out. Click to update.`;
+  showVersion();
+  v.title = `netBae ${u.latest} is out. Click to check again, then again to update.`;
   b.hidden = false;
   if (b.disabled) return;  // updating
   if (u.method !== 'button') {
@@ -1794,23 +1809,31 @@ function setupUpdateButton() {
   if (!u || CONFIG.public) return;  // visitors: the version just links to its release
   renderUpdate(u);
   $('#update-btn').addEventListener('click', startUpdate);
+  let checkedAt = 0;  // when a click last checked: the next click within 5 minutes acts on that result
   v.addEventListener('click', async (e) => {
     e.preventDefault();
-    if ($('#update-btn').disabled) return;  // already updating
-    const label = v.textContent;
-    v.textContent = 'checking…';
-    const r = await fetch('api/update/check', { method: 'POST' }).then((x) => x.json()).catch(() => null);
-    v.textContent = label;
-    if (r) { CONFIG.update = Object.assign(u, r); CONFIG.dev = r.dev; renderUpdate(u); }
-    if (r && r.available) {
+    if ($('#update-btn').disabled || v.dataset.busy) return;  // already updating or checking
+    if (Date.now() - checkedAt > 5 * 60000) {  // first click: just check, and show what it found
+      const label = v.textContent;
+      v.dataset.busy = 1; v.textContent = 'checking…';
+      const r = await fetch('api/update/check', { method: 'POST' }).then((x) => x.json()).catch(() => null);
+      delete v.dataset.busy; v.textContent = label;
+      if (!r || (r.error && !r.latest)) { alert(`Couldn't check for updates${r && r.error ? `: ${r.error}` : ''}`); return; }
+      CONFIG.update = Object.assign(u, r); CONFIG.dev = r.dev; renderUpdate(u);
+      checkedAt = Date.now();
+      const after = v.textContent;
+      v.textContent = r.available ? `v${u.latest} available` : r.dev ? 'dev build ✓' : 'up to date ✓';
+      setTimeout(() => { if (v.textContent !== 'checking…') v.textContent = after; }, 3000);
+      return;
+    }
+    if (u.available) {
       const how = u.method === 'button' ? 'Your config and history are kept, and the page reloads when it\'s done.'
         : `This install updates outside the dashboard. ${updateHowTo(u)}\n\nOpen the release notes?`;
       if (confirm(`netBae ${u.latest} is available (you have ${CONFIG.version}).\n\n`
         + (u.method === 'button' ? `Update now? ${how}` : how))) startUpdate();
       return;
     }
-    if (r && r.error && !r.latest) { alert(`Couldn't check for updates: ${r.error}`); return; }
-    // up to date (or the check failed): this version's release notes, as the link always did
+    // up to date: this version's release notes (the releases page for a dev build), as the link always did
     const w = window.open(v.href, '_blank');  // (with 'noopener' it would always return null)
     if (w) w.opener = null; else location.href = v.href;  // a popup blocker: open it here instead
   });
@@ -1825,11 +1848,256 @@ function updatePastBadge() {
 }
 document.addEventListener('rangechange', () => { if (typeof panels !== 'undefined') setTimeout(updatePastBadge); });
 
+// ------------------------------------------------------------------ route mix
+// How each connection reaches everything netBae traces, from each destination's latest route: on-net, direct
+// peering, IX, transit (best to worst). Built from the routes the page already has, so the public dashboard
+// gets the same masking. Only the latest routes for now; a history of the split may come later.
+const ROUTE_KINDS = [['on-net', 'On-net', 'inside your ISP\'s own network'], ['direct', 'Direct', 'your ISP connects straight to the destination\'s network'],
+  ['ix', 'IX', 'handed over at an internet exchange'], ['transit', 'Transit', 'through another carrier, which your ISP usually pays']];
+const routeKindOf = (r) => { const k = ROUTE_CLASS[r?.kind] || r?.kind; return ROUTE_KINDS.some(([x]) => x === k) ? k : null; };
+let routePick = null;  // {conn, kind}: the destinations listed under a connection's bar
+const routeOpen = new Set(store.get('routes:open', []));  // categories expanded in the table
+
+function routeDestinations() {
+  const out = [];
+  const seen = new Set();
+  for (const p of lastPing) {
+    const t = CONFIG.ping.targets.find((x) => x.id === p.id);
+    if (!t || t.host === 'gateway' || p.id.endsWith('gateway')) continue;  // the router is one hop away
+    out.push({ key: p.id, name: p.name + (p.family === 6 && !/IPv6/.test(p.name) ? ' (IPv6)' : ''), cat: p.group, conn: p.connection || null });
+    seen.add(p.id);
+  }
+  if (ROUTES['speedtest:Auto']) out.push({ key: 'speedtest:Auto', name: 'Closest speedtest server', cat: 'Speedtest server', conn: null });
+  for (const sv of CONFIG.dns?.enabled ? CONFIG.dns.servers : []) {
+    if (sv.lan || sv.host === 'gateway') continue;  // resolvers on your own network aren't traced
+    out.push({ key: `dns:${sv.id}`, name: sv.name + (sv.family === 6 ? ' (IPv6)' : ''), cat: 'DNS resolvers', conn: null });
+  }
+  if (CDN_DATA) {  // every CDN address the resolvers handed out, under its CDN's name
+    const label = {};
+    for (const c of cdnCols(CDN_DATA.hostnames || [])) for (const h of c.hosts) label[h] = c.label;
+    const ips = new Map();
+    for (const sv of CDN_DATA.servers || []) {
+      for (const [h, al] of Object.entries(sv.results || {})) for (const a of al) if (a.ip && !ips.has(a.ip)) ips.set(a.ip, label[h] || 'CDN');
+    }
+    for (const [ip, cat] of ips) out.push({ key: `cdn:${ip}`, name: `${cat.replace(/ CDN$/, '')} ${ip}`, cat: `CDN: ${cat.replace(/ CDN$/, '')}`, conn: null });
+  }
+  return out.map((d) => ({ ...d, route: ROUTES[d.key], kind: routeKindOf(ROUTES[d.key]) }));
+}
+
+// the carrier a transit route goes through: the first network after your ISP that isn't the destination
+function transitCarrier(r) {
+  const mid = (r.path || []).slice(1, -1).filter((p) => !p.ixp);
+  return mid.length ? shortNet(mid[0].name) : null;
+}
+
+function routeBar(ds, conn, interactive = true) {
+  if (!interactive) {
+    return routeBar(ds, conn).replace(/<button /g, '<span ').replace(/<\/button>/g, '</span>').replace(/ data-kind="[^"]*"/g, '')
+      .replace(/ Click to list them/g, '');
+  }
+  const n = Object.fromEntries(ROUTE_KINDS.map(([k]) => [k, ds.filter((d) => d.kind === k).length]));
+  const total = ROUTE_KINDS.reduce((a, [k]) => a + n[k], 0);
+  if (!total) return '<span class="muted small">no routes traced yet</span>';
+  const pct = (k) => { const v = (n[k] / total) * 100; return v > 0 && v < 1 ? '<1' : Math.round(v); };
+  const tip = (k, label, what) => `${label}: ${n[k]} of ${total} (${pct(k)}%), ${what}. Click to list them`;
+  return `<div class="route-bar" role="img" aria-label="${ROUTE_KINDS.map(([k, l]) => `${l} ${pct(k)}%`).join(', ')}">${ROUTE_KINDS.filter(([k]) => n[k]).map(([k, l, w]) =>
+    `<button class="seg-${k}" style="flex-grow:${n[k]}" data-conn="${esc(conn)}" data-kind="${k}" title="${esc(tip(k, l, w))}"></button>`).join('')}</div>
+    <div class="route-legend">${ROUTE_KINDS.map(([k, l, w]) => `<button data-conn="${esc(conn)}" data-kind="${k}" title="${esc(tip(k, l, w))}"
+      class="${routePick?.conn === conn && routePick?.kind === k ? 'on' : ''}"${n[k] ? '' : ' disabled'}><i class="seg-${k}"></i>${l} <b>${n[k]}</b> <span class="muted">${pct(k)}%</span></button>`).join('')}</div>`;
+}
+
+// ---- tabs: Now (the split above), Changes (every route change), Compare ISPs (the same destinations on each ISP)
+let routeTab = store.get('routes:tab', 'now');
+const routeApi = {};  // {changes: {key, ts, data}, compare: {...}}: refetched at most every 5 minutes
+async function routeData(name, params = {}) {
+  const key = JSON.stringify(params);
+  const c = routeApi[name];
+  if (c && c.key === key && Date.now() - c.ts < 300000) return c.data;
+  const data = await api(`routes/${name}`, params);
+  routeApi[name] = { key, ts: Date.now(), data };
+  return data;
+}
+// what a route id is: "Netflix", "Cloudflare (IPv6)", "1.1.1.1 via Secondary", with its category
+function routeNames() {
+  const m = {};
+  for (const d of routeDestinations()) m[d.key] = { name: d.name, cat: d.cat };
+  return (id) => {
+    const [conn, base] = id.includes('|') ? id.split('|', 2) : [null, id];
+    const d = m[id] || m[base] || { name: base.replace(/^(dns|cdn|region|speedtest):/, '').replace('Auto', 'Speedtest server'), cat: '' };
+    return conn && !m[id] ? { name: d.name, cat: d.cat, conn } : { ...d, conn: m[id] ? null : conn };
+  };
+}
+
+function setRouteTab(t) {
+  routeTab = t;
+  store.set('routes:tab', t);
+  const panel = $('#panel-routes');
+  panel.querySelectorAll('.route-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
+  panel.querySelectorAll('[data-route-tab]').forEach((el) => { el.hidden = el.dataset.routeTab !== t; });
+  const more = $('.panel-btn', panel);
+  if (more) more.hidden = t !== 'now';
+  if (t === 'changes') renderRouteChanges();
+  if (t === 'compare') renderRouteCompare();
+}
+
+const CHANGE_RANGES = [['24h', 86400], ['7d', 604800], ['30d', 2592000], ['All', 0]];
+const routeGroupsOpen = new Set();
+async function renderRouteChanges() {
+  const el = $('#routes-changes');
+  const range = store.get('routes:changes:range', '7d');
+  const show = store.get('routes:changes:show', 'all');
+  const span = CHANGE_RANGES.find(([k]) => k === range)?.[1] ?? 604800;
+  const d = await routeData('changes', { from: span ? Math.floor(Date.now() / 1000 - span) : 0 });
+  const who = routeNames();
+  const rank = { better: 0, worse: 1, path: 2 };
+  let list = d.changes.filter((c) => c.target !== 'gateway' && (show === 'all' || c.change === show));
+  const count = (xs, k) => xs.filter((c) => c.change === k).length;
+  const controls = `<div class="route-tools"><span class="seg">${CHANGE_RANGES.map(([k]) => `<button type="button" data-crange="${k}" class="${k === range ? 'on' : ''}">${k}</button>`).join('')}</span>
+    <select data-cshow aria-label="Which changes">${[['all', 'All changes'], ['better', 'Better'], ['worse', 'Worse'], ['path', 'Same kind, other networks']]
+      .map(([v, l]) => `<option value="${v}"${v === show ? ' selected' : ''}>${l}</option>`).join('')}</select>
+    <span class="muted small">${d.total} change${d.total === 1 ? '' : 's'}${span ? ` in the last ${range}` : ''}: <span class="good">${count(d.changes, 'better')} better</span>,
+      <span class="warn">${count(d.changes, 'worse')} worse</span>, ${count(d.changes, 'path')} through other networks</span></div>`;
+  // a change of ISP changes most routes at once: one line per switch, which opens into its routes
+  const groups = [];
+  const single = [];
+  for (const c of list) {
+    if (!c.isp_change) { single.push(c); continue; }
+    const conn = who(c.target).conn || CONFIG.isp?.main_name || 'Main';
+    const to = c.after.path[0]?.name || '?';
+    const g = groups.find((x) => x.conn === conn && x.to === to && Math.abs(x.ts - c.ts) < 6 * 3600);
+    if (g) g.items.push(c); else groups.push({ conn, to, from: c.before.path[0]?.name || '?', ts: c.ts, items: [c] });
+  }
+  const row = (c) => {
+    const n = who(c.target);
+    const tag = c.change === 'better' ? '<span class="chg good">better</span>' : c.change === 'worse' ? '<span class="chg warn">worse</span>' : '<span class="chg">other networks</span>';
+    return `<tr><td title="${esc(fmtTime(c.ts))}">${fmtAgo(c.ts)}</td>
+      <td><button class="route-link" data-route="${esc(c.target)}">${esc(n.name)}</button>${n.conn ? ` <span class="muted small">via ${esc(n.conn)}</span>` : ''}
+        <div class="muted small">${esc(n.cat || '')}</div></td>
+      <td>${routeParts(c.before, c.target).html}</td><td class="muted">→</td><td>${routeParts(c.after, c.target).html}</td><td>${tag}</td></tr>`;
+  };
+  const items = [...groups.map((g) => ({ ts: g.ts, g })), ...single.map((c) => ({ ts: c.ts, c }))].sort((a, b) => b.ts - a.ts || rank[a.c?.change] - rank[b.c?.change]);
+  const body = items.map(({ g, c }) => {
+    if (c) return row(c);
+    const key = `${g.conn}|${g.to}|${Math.round(g.ts)}`;
+    const open = routeGroupsOpen.has(key);
+    return `<tr class="cat-row" data-cgroup="${esc(key)}"><td title="${esc(fmtTime(g.ts))}">${fmtAgo(g.ts)}</td>
+      <td colspan="5"><span class="caret">${open ? '▾' : '▸'}</span> <b>${esc(g.conn)} moved from ${esc(g.from)} to ${esc(g.to)}</b>:
+        ${g.items.length} routes changed <span class="muted">(${count(g.items, 'better')} better, ${count(g.items, 'worse')} worse)</span></td></tr>`
+      + (open ? g.items.map(row).join('') : '');
+  }).join('');
+  el.innerHTML = controls + (items.length ? `<div class="table-wrap"><table class="stats full route-changes"><thead><tr><th>When</th><th>Destination</th>
+    <th>Before</th><th></th><th>After</th><th></th></tr></thead><tbody>${body}</tbody></table></div>`
+    : `<p class="muted">No route changes ${span ? `in the last ${range}` : 'yet'}. Routes are traced every ${CONFIG.traceroute?.interval_hours || 12} hours.</p>`);
+}
+
+async function renderRouteCompare() {
+  const el = $('#routes-compare');
+  const d = await routeData('compare');
+  const only = store.get('routes:compare:diff', true);
+  const who = routeNames();
+  const isps = d.isps.filter((e) => Object.values(d.targets).some((t) => t[e.key]));
+  if (isps.length < 2) {
+    el.innerHTML = '<p class="muted">Nothing to compare yet: this shows up once you\'ve been on more than one ISP, or once a secondary connection has traced its routes.</p>';
+    return;
+  }
+  const label = (e) => `${esc(e.isp)} <span class="muted small">${e.secondary ? esc(e.connection) : e.current ? 'now' : `until ${new Date(e.until * 1000).toLocaleDateString()}`}</span>`;
+  const rows = Object.entries(d.targets).filter(([id, t]) => id !== 'gateway' && isps.filter((e) => t[e.key]).length > 1);
+  const differs = (t) => new Set(isps.filter((e) => t[e.key]).map((e) => t[e.key].kind)).size > 1;
+  const lowest = Object.fromEntries(isps.map((e) => [e.key, 0]));
+  for (const [, t] of rows) {
+    const p = isps.filter((e) => t[e.key]?.ping != null);
+    if (p.length > 1) lowest[p.reduce((a, b) => (t[b.key].ping < t[a.key].ping ? b : a)).key]++;
+  }
+  const bars = isps.map((e) => {
+    const ds = Object.values(d.targets).filter((t) => t[e.key]).map((t) => ({ kind: routeKindOf(t[e.key]) }));
+    return `<div class="route-mix"><div class="route-mix-head"><b>${label(e)}</b> <span class="muted small">· ${ds.length} destinations
+      · lowest ping on ${lowest[e.key]} of those measured on more than one</span></div>${routeBar(ds, e.key, false)}</div>`;
+  }).join('');
+  const shown = rows.filter(([, t]) => !only || differs(t)).sort((a, b) => who(a[0]).name.localeCompare(who(b[0]).name));
+  const cellOf = (t, e, best) => {
+    const r = t[e.key];
+    if (!r) return '<td class="muted">-</td>';
+    return `<td>${r.ping != null ? `<div class="cmp-ping ${r.ping === best ? 'good' : ''}">${fmtMs(r.ping)} ms${r.ping === best ? ' · lowest' : ''}</div>` : ''}${routeParts(r, '').html}</td>`;
+  };
+  const table = shown.map(([id, t]) => {
+    const pings = isps.map((e) => t[e.key]?.ping).filter((x) => x != null);
+    const best = pings.length > 1 ? Math.min(...pings) : null;
+    const n = who(id);
+    return `<tr><td><button class="route-link" data-route="${esc(id)}">${esc(n.name)}</button><div class="muted small">${esc(n.cat || '')}</div></td>${isps.map((e) => cellOf(t, e, best)).join('')}</tr>`;
+  }).join('');
+  el.innerHTML = `${bars}<div class="route-tools"><label class="small"><input type="checkbox" data-cdiff${only ? ' checked' : ''}> Only destinations reached differently</label>
+    <span class="muted small">${shown.length} of ${rows.length} destinations measured on more than one ISP</span></div>
+    <div class="table-wrap route-compare-wrap"><table class="stats full route-compare"><thead><tr><th>Destination</th>${isps.map((e) => `<th>${label(e)}</th>`).join('')}</tr></thead>
+    <tbody>${table || `<tr><td colspan="${isps.length + 1}" class="muted">Every destination is reached the same way on each ISP.</td></tr>`}</tbody></table></div>`;
+}
+
+// a connection's destinations by category: how each group of them is reached; a row opens into its destinations
+function routeCatTable(ds, conn) {
+  const cats = [...new Set(ds.map((d) => d.cat))];
+  const cell = (n, k) => `<td class="${n ? `rk-${k}` : 'muted'}">${n || '·'}</td>`;
+  const rows = cats.map((c) => {
+    const cd = ds.filter((d) => d.cat === c);
+    const tr = cd.filter((d) => d.kind);
+    const n = Object.fromEntries(ROUTE_KINDS.map(([k]) => [k, tr.filter((d) => d.kind === k).length]));
+    const open = routeOpen.has(`${conn}|${c}`);
+    const mini = tr.length ? `<div class="route-bar mini">${ROUTE_KINDS.filter(([k]) => n[k]).map(([k]) => `<span class="seg-${k}" style="flex-grow:${n[k]}"></span>`).join('')}</div>` : '';
+    return `<tr class="cat-row" data-cat="${esc(`${conn}|${c}`)}"><td><span class="caret">${open ? '▾' : '▸'}</span> ${esc(c)} <span class="muted">${cd.length}</span></td>
+      <td>${mini}</td>${ROUTE_KINDS.map(([k]) => cell(n[k], k)).join('')}<td class="muted">${cd.length - tr.length || ''}</td></tr>`
+      + (open ? `<tr class="route-detail"><td colspan="7"><ul>${cd.sort((a, b) => a.name.localeCompare(b.name)).map((d) =>
+        `<li><span class="route-dest">${esc(d.name)}</span> ${d.route ? routeHtml(d.key) : '<span class="muted">not traced yet</span>'}</li>`).join('')}</ul></td></tr>` : '');
+  }).join('');
+  return `<div class="table-wrap"><table class="stats"><thead><tr><th>Category</th><th></th>${ROUTE_KINDS.map(([, l, w]) => `<th title="${esc(w)}">${l}</th>`).join('')}
+    <th title="No route traced yet">Not traced</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function renderRouteMix() {
+  const panel = $('#panel-routes');
+  if (!panel) return;
+  const all = routeDestinations();
+  const traced = all.filter((d) => d.kind);
+  panel.hidden = !traced.length;
+  if (panel.hidden) return;
+  const conns = [null, ...new Set(all.map((d) => d.conn).filter(Boolean))];
+  const ispOf = (conn) => {
+    const c = conn ? ISP_NOW.find((x) => x.connection === conn) : ISP_NOW[0];
+    return c?.last_ok?.isp || null;
+  };
+  // a DNS resolver that's also a ping target (1.1.1.1) shares its route: it counts once in a connection's total
+  const pinged = new Set(all.filter((d) => d.route && !d.key.startsWith('dns:')).map((d) => JSON.stringify(d.route)));
+  const unique = (ds) => ds.filter((d) => !(d.key.startsWith('dns:') && d.route && pinged.has(JSON.stringify(d.route))));
+  const blocks = conns.map((conn) => {
+    const ds = unique(all.filter((d) => d.conn === conn));
+    const tr = ds.filter((d) => d.kind);
+    const carriers = {};
+    for (const d of tr) if (d.kind === 'transit') { const c = transitCarrier(d.route); if (c) carriers[c] = (carriers[c] || 0) + 1; }
+    const top = Object.entries(carriers).sort((a, b) => b[1] - a[1]).slice(0, 6);
+    const name = conn || CONFIG.isp?.main_name || 'Main';
+    const pick = routePick && (routePick.conn || null) === conn
+      ? tr.filter((d) => d.kind === routePick.kind).sort((a, b) => a.name.localeCompare(b.name)) : null;
+    return `<div class="route-mix">
+      <div class="route-mix-head"><b>${esc(name)}</b>${ispOf(conn) ? ` <span class="muted">· ${esc(ispOf(conn))}</span>` : ''}
+        <span class="muted small">· ${tr.length} destinations${ds.length > tr.length ? `, ${ds.length - tr.length} not traced yet` : ''}</span></div>
+      ${routeBar(tr, conn || '')}
+      ${top.length ? `<div class="muted small route-carriers">Transit through: ${top.map(([c, k]) => `${esc(c)} <b>${k}</b>`).join(' · ')}</div>` : ''}
+      ${pick ? `<div class="route-pick"><div class="small"><b>${ROUTE_KINDS.find(([k]) => k === routePick.kind)[1]}</b> (${pick.length})
+        <button class="link" data-close-pick>close</button></div>
+        <ul>${pick.map((d) => `<li><span class="route-dest">${esc(d.name)}</span> <span class="muted small">${esc(d.cat)}</span> ${routeHtml(d.key)}</li>`).join('')}</ul></div>` : ''}
+      ${routeCatTable(all.filter((d) => d.conn === conn), conn || '')}
+    </div>`;
+  });
+  $('#routes-body').innerHTML = blocks.join('');
+  const isp = ispOf(null);
+  $('#routes-note').textContent = `how ${isp || 'your connection'} reaches each destination, from its latest route`;
+}
+
 async function refreshAll(force = false) {
   if (document.hidden && !force) return;
   updatePastBadge();
   const jobs = [refreshSummary(), refreshSystem(), refreshSharing(), refreshCdn(), ...panels.filter((p) => force || p.isLive()).map((p) => p.refresh())];
   const res = await Promise.allSettled(jobs);
+  renderRouteMix();
+  if (routeTab === 'changes') renderRouteChanges().catch(() => {});
+  if (routeTab === 'compare') renderRouteCompare().catch(() => {});
   const failed = res.find((r) => r.status === 'rejected');
   if (failed) {
     console.error(failed.reason);
@@ -1912,10 +2180,12 @@ async function main() {
   panels.push(speedPanel());
   panels.push(systemPanel());
   for (const [id, label, preview] of [['panel-ping', 'table'], ['panel-dns', 'table'], ['panel-speed', 'table'],
-    ['panel-regions', 'servers', true], ['panel-cdn', 'resolvers', true], ['panel-global', 'tests', true]]) {
+    ['panel-regions', 'servers', true], ['panel-cdn', 'resolvers', true], ['panel-global', 'tests', true],
+    ['panel-routes', 'categories', true]]) {
     const root = document.getElementById(id);
     if (root) tableToggle(root, label, preview);
   }
+  setRouteTab(routeTab);
 
   const startTest = async (scope) => {
     const btn = $('#run-speedtest');
@@ -1945,6 +2215,37 @@ async function main() {
     if (e.target.closest('[data-close]')) $('#route-dialog').close();
   }, true);
   $('#route-dialog').addEventListener('click', (e) => { if (e.target.id === 'route-dialog') e.target.close(); });
+  $('#panel-routes').addEventListener('change', (e) => {
+    if (e.target.matches('[data-cshow]')) { store.set('routes:changes:show', e.target.value); renderRouteChanges(); }
+    if (e.target.matches('[data-cdiff]')) { store.set('routes:compare:diff', e.target.checked); renderRouteCompare(); }
+  });
+  $('#panel-routes').addEventListener('click', (e) => {
+    const tab = e.target.closest('.route-tabs button');
+    if (tab) return setRouteTab(tab.dataset.tab);
+    const cr = e.target.closest('[data-crange]');
+    if (cr) { store.set('routes:changes:range', cr.dataset.crange); return renderRouteChanges(); }
+    const cg = e.target.closest('[data-cgroup]');
+    if (cg) {
+      const key = cg.dataset.cgroup;
+      if (routeGroupsOpen.has(key)) routeGroupsOpen.delete(key); else routeGroupsOpen.add(key);
+      return renderRouteChanges();
+    }
+    if (e.target.closest('#routes-changes, #routes-compare')) return;
+    const k = e.target.closest('[data-kind]');
+    if (k) {  // a bar segment or legend entry lists those destinations under the bar
+      const pick = { conn: k.dataset.conn, kind: k.dataset.kind };
+      routePick = routePick && routePick.conn === pick.conn && routePick.kind === pick.kind ? null : pick;
+    } else if (e.target.closest('[data-close-pick]')) {
+      routePick = null;
+    } else {
+      const row = e.target.closest('tr.cat-row');
+      if (!row) return;
+      const c = row.dataset.cat;
+      if (routeOpen.has(c)) routeOpen.delete(c); else routeOpen.add(c);
+      store.set('routes:open', [...routeOpen]);
+    }
+    renderRouteMix();
+  });
   $('#region-table').addEventListener('click', (e) => {
     const b = e.target.closest('.run-conn');
     if (b) return startTest(`conn:${encodeURIComponent(b.dataset.conn)}`);
@@ -1992,16 +2293,14 @@ async function main() {
 
   const sp = CONFIG.speedtest;
   if (CONFIG.repo) $('#repo-link').href = CONFIG.repo;
-  const vlabel = `${CONFIG.dev ? 'dev' : 'v'}${CONFIG.version}`;  // dev: a build newer than the latest release
-  $('#version').textContent = vlabel;
-  $('#version').href = !CONFIG.repo ? '#' : CONFIG.dev ? `${CONFIG.repo}/releases` : `${CONFIG.repo}/releases/tag/v${CONFIG.version}`;
+  showVersion();
   setupUpdateButton();
   $('#docker-note').hidden = !CONFIG.docker_bridge || !!CONFIG.public;
   $('#public-badge').hidden = !CONFIG.public;
   const acc = $('#access-link');  // one hostname for both dashboards, with Cloudflare Access sign-in
   if (CONFIG.public && CONFIG.sign_in) Object.assign(acc, { hidden: false, href: 'login', textContent: 'Sign in', title: 'Sign in with Cloudflare Access to see the private dashboard' });
   else if (CONFIG.signed_in) Object.assign(acc, { hidden: false, href: 'logout', textContent: 'Sign out', title: `Signed in as ${CONFIG.signed_in} with Cloudflare Access` });
-  $('#footer').innerHTML = `<a href="${esc(CONFIG.repo || '#')}" target="_blank" rel="noopener">netBae ${esc(vlabel)}</a> by `
+  $('#footer').innerHTML = `<a href="${esc(CONFIG.repo || '#')}" target="_blank" rel="noopener">netBae ${CONFIG.dev ? 'dev' : 'v'}${esc(CONFIG.version)}</a> by `
     + '<a href="https://github.com/jchin14" target="_blank" rel="noopener">jchin14</a> · '
     + '<a href="https://buymeacoffee.com/jchin14" target="_blank" rel="noopener">buy me a coffee</a> · '
     + `${scheduleText()} · `

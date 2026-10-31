@@ -385,3 +385,57 @@ footer a { color: var(--muted); text-decoration: underline; text-decoration-colo
 
 /* the speedtest table's average row stands out from the tests below it */
 tr.avg-row td { background: var(--accent-soft); color: var(--accent); border-bottom: 2px solid var(--accent); }
+
+/* route mix: on-net, direct, IX, transit, best to worst, in the route badges' colours */
+.seg-on-net { background: var(--good); } .seg-direct { background: var(--accent); }
+.seg-ix { background: #a855f7; } .seg-transit { background: var(--warn); }
+.route-mix { margin: 14px 0 6px; }
+.route-mix + .route-mix { padding-top: 14px; border-top: 1px solid var(--border); }
+.route-mix-head { margin-bottom: 8px; }
+.route-bar { display: flex; gap: 2px; height: 16px; border-radius: 5px; overflow: hidden; background: var(--chip-off); }
+.route-bar > * { flex: 1 1 0; min-width: 4px; border: 0; padding: 0; cursor: pointer; }
+.route-bar > button:hover { filter: brightness(1.15); }
+.route-bar.mini { height: 8px; border-radius: 3px; gap: 1px; }
+.route-bar.mini > * { cursor: default; min-width: 3px; }
+.route-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; }
+.route-legend button { font: inherit; font-size: 12.5px; color: var(--text); background: none; border: 0; border-radius: 6px;
+  padding: 2px 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.route-legend button:hover:not(:disabled), .route-legend button.on { background: var(--chip-off); }
+.route-legend button:disabled { cursor: default; opacity: .5; }
+.route-legend b { font-family: var(--mono); font-weight: 500; }
+.route-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.route-carriers { margin-top: 6px; }
+.route-carriers b { font-family: var(--mono); font-weight: 500; color: var(--text); }
+.route-pick, .route-detail ul { font-size: 12.5px; }
+.route-pick { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-2); }
+.route-pick ul, .route-detail ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 3px; }
+.route-pick ul { max-height: 320px; overflow-y: auto; }
+.route-pick li, .route-detail li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.route-dest { display: inline-block; min-width: 160px; }
+#panel-routes td.rk-on-net { color: var(--good); } #panel-routes td.rk-direct { color: var(--accent); }
+#panel-routes td.rk-ix { color: #a855f7; } #panel-routes td.rk-transit { color: var(--warn); }
+#routes-body table.stats { table-layout: fixed; }
+#routes-body table.stats th:nth-child(1) { width: 26%; } #routes-body table.stats th:nth-child(2) { width: 26%; }
+#routes-body table.stats td:first-child { overflow: hidden; text-overflow: ellipsis; }
+#panel-routes tr.route-detail td { text-align: left; white-space: normal; background: var(--card-2); }
+.routes-later { margin: 10px 0 0; }
+
+/* Routes card tabs: Changes and Compare ISPs */
+#panel-routes .stats.full tbody tr { display: table-row; }  /* not cut short like the Now tab's categories */
+#panel-routes .route-tabs button { font-family: inherit; }
+.route-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 12px 0 4px; }
+.route-tools .good, .chg.good { color: var(--good); } .route-tools .warn, .chg.warn { color: var(--warn); }
+.chg { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+table.stats.route-changes th, table.stats.route-changes td, table.stats.route-compare th, table.stats.route-compare td {
+  text-align: left; vertical-align: top; }
+table.stats.route-changes td { white-space: nowrap; }
+table.stats.route-compare td { white-space: normal; min-width: 200px; }
+table.stats.route-compare td:first-child { min-width: 140px; }
+.route-changes .route-link, .route-compare .route-link { color: var(--text); font-size: 13px; }
+.route-legend > span { font-size: 12.5px; padding: 2px 6px; display: inline-flex; align-items: center; gap: 6px; }
+.route-legend > span[disabled] { opacity: .5; }
+.route-changes td .route-badge, .route-compare td .route-badge { margin-right: 2px; }
+.route-compare-wrap { max-height: 560px; overflow: auto; }
+.cmp-ping { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.cmp-ping.good { color: var(--good); font-weight: 600; }
+.route-tools label { display: inline-flex; align-items: center; gap: 6px; }

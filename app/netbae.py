@@ -6,6 +6,7 @@ into SQLite and serves a dashboard + JSON API. Python standard library only.
 """
 import argparse
 import base64
+import bisect
 import copy
 import glob
 import ctypes
@@ -49,7 +50,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.21.0"
+VERSION = "1.22.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -485,7 +486,10 @@ def normalize_connection(c, all_targets=None):
     for t in wanted:
         t = normalize_target(t)
         targets.append(dict(t, id=f"{name}|{t['id']}", group=name, bind=bind, connection=name))
-    return {"name": name, "bind": bind, "targets": targets,
+    trace = str(c.get("trace", "all")).lower()
+    if trace not in ("all", "pinged"):
+        raise SystemExit(f'connection {name}: trace must be "all" (every main destination) or "pinged" (only its targets)')
+    return {"name": name, "bind": bind, "targets": targets, "trace": trace,
             "speedtest": bool(c.get("speedtest", True)),
             "speedtest_interval_minutes": float(c.get("speedtest_interval_minutes", 1440)),
             "speedtest_offset_minutes": float(c.get("speedtest_offset_minutes", 45))}
@@ -3017,6 +3021,15 @@ class Monitor:
         for sv in self.cfg["dns"]["servers"] if self.cfg["dns"]["enabled"] else []:
             if dns_trace_host(sv) and (sv["family"] == 4 or v6) and (sv["host"], None) not in traced:
                 out.append(("dns:" + sv["id"], sv["host"], None))
+        # a secondary connection with trace = "all" also traces every main IPv4 destination through itself, as
+        # "<connection>|<id>", so its routes can be compared with the main connection's
+        ids = {x[0] for x in out}
+        for c in self.cfg["connections"]:
+            if c.get("trace", "all") != "all":
+                continue
+            for tid, host, bind in list(out):
+                if bind is None and ":" not in host and not tid.endswith("#v6") and f"{c['name']}|{tid}" not in ids:
+                    out.append((f"{c['name']}|{tid}", host, c["bind"]))
         return out
 
     def lookups_done(self):
@@ -3873,6 +3886,101 @@ def latest_routes(m):
     return out
 
 
+ROUTE_RANK = {"on-net": 0, "direct": 1, "ix": 2, "transit": 3}
+
+
+def route_brief(kind, path):
+    """A stored route for the route APIs: its label (current names) and networks."""
+    p = json.loads(path or "[]") if isinstance(path, str) else (path or [])
+    k = fix_route_kind(kind, p)
+    return {"kind": {"peering": "direct", "peering (IXP)": "ix"}.get(k, k), "path": with_rels(p)}
+
+
+def api_route_changes(m, q):
+    """Every time a destination's route changed (the networks along it, or its label), newest first. CDN
+    servers come and go all the time, so for them only a different label or destination network counts."""
+    frm, to = float(q.get("from") or 0), float(q.get("to") or time.time() + 60)
+    rows = m.db.query("SELECT target, COALESCE(first_ts, ts), ts, kind, path FROM traceroute WHERE error IS NULL"
+                      " AND path IS NOT NULL ORDER BY target, COALESCE(first_ts, ts)")
+    out = []
+    prev = None
+    for tid, first, ts, kind, path in rows:
+        cur = route_brief(kind, path)
+        if prev and prev[0] == tid and frm <= first <= to:
+            a, b = prev[1], cur
+            ka, kb = [(x["kind"], tuple((n.get("asn"), bool(n.get("ixp"))) for n in x["path"])) for x in (a, b)]
+            dest_a = a["path"][-1].get("asn") if a["path"] else None
+            dest_b = b["path"][-1].get("asn") if b["path"] else None
+            big = a["kind"] != b["kind"] or dest_a != dest_b
+            if ka != kb and (big or not tid.startswith("cdn:")):
+                isp_a = a["path"][0].get("asn") if a["path"] else None
+                isp_b = b["path"][0].get("asn") if b["path"] else None
+                ra, rb = ROUTE_RANK.get(a["kind"]), ROUTE_RANK.get(b["kind"])
+                out.append({"target": tid, "ts": first, "before": a, "after": b,
+                            "change": "better" if ra is not None and rb is not None and rb < ra
+                            else "worse" if ra is not None and rb is not None and rb > ra else "path",
+                            "isp_change": bool(isp_a and isp_b and isp_b not in org_asns(isp_a))})
+        prev = (tid, cur)
+    out.sort(key=lambda x: -x["ts"])
+    return {"from": frm, "changes": out[:2000], "total": len(out)}
+
+
+def api_route_compare(m, q):
+    """Each destination's latest route on every ISP it was traced on: the main connection's current and past
+    ISPs (by when the route was traced) and each secondary connection, with the average ping on each."""
+    main = m.cfg["isp"]["main_name"]
+    checks = {}
+    for ts, conn, isp, asn in m.db.query("SELECT ts, connection, isp, asn FROM isp WHERE isp IS NOT NULL ORDER BY ts"):
+        checks.setdefault(conn, []).append((ts, isp, asn))
+    times = {conn: [x[0] for x in lst] for conn, lst in checks.items()}
+    def isp_at(conn, ts):  # the ISP a connection was on when a route was traced
+        lst = checks.get(conn) or []
+        i = bisect.bisect_right(times.get(conn, []), ts) - 1
+        return lst[i][1] if i >= 0 else (lst[0][1] if lst else None)
+    isps = {}
+    for conn, lst in checks.items():
+        for ts, isp, asn in lst:
+            k = f"{conn}|{isp}"
+            e = isps.setdefault(k, {"key": k, "connection": conn, "isp": isp, "asn": asn, "since": ts, "until": ts,
+                                    "secondary": conn != main})
+            e["until"] = ts
+    for conn, lst in checks.items():
+        if lst:
+            isps[f"{conn}|{lst[-1][1]}"]["current"] = True
+    targets = {}
+    rows = m.db.query("SELECT target, ts, kind, path FROM traceroute WHERE error IS NULL AND path IS NOT NULL"
+                      " AND target NOT LIKE 'cdn:%' ORDER BY ts")
+    conns = {c["name"] for c in m.cfg["connections"]}
+    for tid, ts, kind, path in rows:
+        conn, base = (tid.split("|", 1) if "|" in tid and tid.split("|", 1)[0] in conns else (main, tid))
+        isp = isp_at(conn, ts)
+        if not isp:
+            continue
+        targets.setdefault(base, {})[f"{conn}|{isp}"] = dict(route_brief(kind, path), ts=ts)  # the latest wins
+    # average ping on each ISP: the main connection's ISPs over the times it was on them, a secondary over 30 days
+    for k, e in isps.items():
+        if e["secondary"]:
+            cond, args, prefix = "ts > ?", (time.time() - 30 * 86400,), f"{e['connection']}|"
+        else:
+            win = isp_windows(m, e["isp"], 0, time.time())
+            if not win:
+                continue
+            cond = "(" + " OR ".join(["ts BETWEEN ? AND ?"] * len(win)) + ")"
+            args, prefix = tuple(x for w in win for x in w), ""
+        for tgt, avg in m.db.query(f"SELECT target, SUM(avg * ok) / SUM(ok) FROM ping_1h WHERE ok > 0 AND {cond}"
+                                   " GROUP BY target", args):
+            name = m.db.name_of(tgt)
+            if prefix and not name.startswith(prefix):
+                continue
+            if not prefix and "|" in name and name.split("|", 1)[0] in conns:
+                continue
+            base = name[len(prefix):]
+            if base in targets and k in targets[base]:
+                targets[base][k]["ping"] = round(avg, 2)
+    order = sorted(isps.values(), key=lambda e: (e["secondary"], not e.get("current"), -e["until"]))
+    return {"isps": order, "targets": targets}
+
+
 def jitter(rtts):
     """Average change between consecutive answered pings (how Ookla and RFC 3550 describe jitter, unsmoothed)."""
     v = [x for x in rtts if x is not None]
@@ -4604,6 +4712,7 @@ GET_ROUTES = {
     "/api/speedtest": api_speedtest, "/api/system": api_system,
     "/api/system/history": api_system_history, "/api/summary": api_summary, "/api/isp": api_isp,
     "/api/traceroute": api_traceroute, "/api/cdn": api_cdn,
+    "/api/routes/changes": api_route_changes, "/api/routes/compare": api_route_compare,
 }
 POST_ROUTES = {"/api/speedtest/run": api_run_speedtest, "/api/cdn/run": api_run_cdn, "/api/update/run": api_run_update,
                "/api/update/check": api_check_update}

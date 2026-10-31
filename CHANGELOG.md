@@ -19,6 +19,16 @@ The main steps so far, with the full details per version below.
 | 1.19 | NixOS support (install command and a Nix flake), Cloudflare Access sign-in for your own dashboard away from home, speedtests that pause the other tests |
 | 1.20 | A redesigned dashboard: a status line at the top, cleaner cards and much less scrolling |
 | 1.21 | `netbae export` and `netbae import` to move your history, update timing settings |
+| 1.22 | A Routes card: how your connection reaches everything (on-net, peering, IX, transit), route changes and a comparison between ISPs |
+
+## 1.22.0 - 2026-10-31
+
+A new Routes card: how your ISP reaches everything netBae tests, which routes changed, and how your ISPs compare.
+
+- **Routes summary:** a new Routes card shows how your connection reaches everything netBae traces (ping targets, DNS resolvers, CDN servers and the speedtest server), split into on-net, direct peering, internet exchange (IX) and transit, best to worst. It names the carriers your transit goes through, lists the destinations behind each part when you click it, breaks it down by category, and does the same for a secondary connection. It uses each destination's latest route; a history of the split may come later. Visitors to the public dashboard see it too.
+- **Route changes and ISP comparison:** the Routes card has two more tabs. **Changes** lists every route that changed (better, worse, or through other networks) over the last day, week, month or all time, with the routes a change of ISP moved grouped under one line. **Compare ISPs** shows each destination's route and average ping on your current ISP, the ISPs you had before and your secondary connection, side by side. A secondary connection now traces the route to every main destination too (`[[connections]] trace`, `"pinged"` to trace only its own targets).
+- Clicking the version number now only checks for an update and shows the result. Click it again to install the update, or to open the release notes when you're up to date.
+- Fix: the Linode Singapore ping target now uses Linode's Singapore object storage, since Linode's speedtest servers stopped answering.
 
 ## 1.21.0 - 2026-10-30
 

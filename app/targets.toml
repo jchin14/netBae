@@ -96,8 +96,9 @@ targets = [
   #   Oracle  objectstorage.<region>.oraclecloud.com   e.g. us-ashburn-1, uk-london-1, ap-singapore-1
   #   Vultr   <code>-ping.vultr.com                    e.g. sgp, lax-ca-us, fra-de, lon-gb
   #   DigitalOcean speedtest-<dc>.digitalocean.com     e.g. nyc1, sfo3, lon1, fra1, ams3
-  #   Linode  speedtest.<city>.linode.com              e.g. newark, fremont, london, frankfurt
+  #   Linode  <region>.linodeobjects.com               e.g. us-east-1, us-southeast-1, eu-central-1, ap-south-1
   #   Hetzner <dc>-speed.hetzner.com                   e.g. nbg1, hel1, ash, hil
+  # Linode's speedtest.<city>.linode.com servers stopped answering in October 2026, so its entry is object storage.
   # AWS and Oracle don't answer ping, so they're timed with a TCP connect. Azure has no public per-region
   # host to test, so its entry is the Azure portal on Microsoft's edge network.
   { name = "AWS Sydney",     host = "dynamodb.ap-southeast-2.amazonaws.com", method = "tcp", port = 443, group = "Hosting" },
@@ -106,7 +107,7 @@ targets = [
   { name = "OVHcloud Sydney", host = "syd.proof.ovh.net", group = "Hosting" },
   { name = "Vultr Sydney",   host = "syd-au-ping.vultr.com", group = "Hosting" },
   { name = "DigitalOcean Singapore", host = "sgp1.digitaloceanspaces.com", group = "Hosting" },
-  { name = "Linode Singapore", host = "speedtest.singapore.linode.com", group = "Hosting" },
+  { name = "Linode Singapore", host = "ap-south-1.linodeobjects.com", group = "Hosting" },
   { name = "Hetzner Falkenstein", host = "fsn1-speed.hetzner.com", group = "Hosting" },
   # Usenet providers. Omicron (formerly Highwinds) also runs UsenetServer, Easynews and Newsgroup Ninja;
   # NewsDemon resells UsenetExpress; Tweaknews and Pure Usenet share Eweka's network.
