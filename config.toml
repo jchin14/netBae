@@ -9,7 +9,7 @@
 # runs at :06 and :36.
 
 [web]
-host = "0.0.0.0"       # 0.0.0.0 = reachable from other machines on your network
+host = "::"            # "::" = reachable from other machines on your network, over IPv4 and IPv6
 port = 80             # dashboard at http://<this-machine>/ ; if it's taken, the next free port is used
 update_check = true   # check GitHub for new releases and show an Update button on the dashboard
 update_check_hours = 6  # how often to check, in hours (1 to 168)
@@ -31,7 +31,7 @@ chart_band = "none"   # spread band on the latency charts by default: "none", "p
 # name are hidden.
 [public]
 enabled = false
-host = "0.0.0.0"                  # "127.0.0.1" if the tunnel runs on this machine (hides it from your LAN), "::" for IPv6 too
+host = "::"                       # "::" = IPv4 and IPv6; "127.0.0.1" if the tunnel runs on this machine (hides it from your LAN)
 port = 8080
 requests_per_minute = 120         # per visitor; an open dashboard uses about 20 a minute
 total_requests_per_minute = 1200  # all visitors together

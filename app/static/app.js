@@ -386,6 +386,14 @@ function nearLines(chart, e) {
 }
 
 // A dashed vertical line wherever the main connection moved to another ISP, labelled on the chart
+// An ISP's name with its logo in front (the server fetches and caches the icon; unknown ISPs just lose the img).
+// nameToo = false: only the logo, with the name on hover.
+function ispTag(isp, nameToo = true) {
+  if (!isp) return '';
+  const img = `<img class="isp-logo" src="api/isp/logo?isp=${encodeURIComponent(isp)}" alt="" loading="lazy" onerror="this.remove()"${nameToo ? '' : ` title="${esc(isp)}"`}>`;
+  return nameToo ? `<span class="isp-tag">${img}${esc(isp)}</span>` : img;
+}
+
 const ispChangeLines = {
   id: 'ispChanges',
   afterDatasetsDraw(chart) {
@@ -519,15 +527,16 @@ const ROUTE_BADGE = { 'on-net': 'on-net', direct: 'direct', ix: 'IX', transit: '
   peering: 'direct', 'peering (IXP)': 'IX' };  // (older names)
 const ROUTE_CLASS = { peering: 'direct', 'peering (IXP)': 'ix' };
 // Business relationship of each network to the one before it (CAIDA): who pays whom at each hand-over.
-const REL_TEXT = { peer: 'peering', provider: 'paid transit', customer: 'to customer' };
+const REL_TEXT = { peer: 'peering', provider: 'paid transit', customer: 'to customer', sibling: 'same company' };
 function relTitle(rel, a, b) {
-  return rel === 'peer' ? `${a} and ${b} peer: they swap traffic between their own networks and customers`
+  return rel === 'sibling' ? `${a} and ${b} are run by the same company`
+    : rel === 'peer' ? `${a} and ${b} peer: they swap traffic between their own networks and customers`
     : rel === 'provider' ? `${a} pays ${b} for transit (a route to the rest of the internet)`
       : rel === 'customer' ? `${b} is a customer of ${a} (it pays ${a} for transit)` : '';
 }
 // the first hand-over out of your ISP, e.g. "peering" or "paid transit"
 function firstRel(path) {
-  const next = path.slice(1).find((p) => !p.ixp && p.asn);
+  const next = path.slice(1).find((p) => !p.ixp && p.asn && p.rel !== 'sibling');
   return next?.rel ? REL_TEXT[next.rel] : null;
 }
 // Shorter names for the route text on tiles and in tables (the route details keep the full names)
@@ -552,14 +561,16 @@ function routeHtml(id) {
 // a route's badge and words ("transit via Telstra Global to Akamai"), for a route object
 function routeParts(r, id) {
   const names = r.path.map((p) => shortNet(p.name));
-  const mid = r.path.slice(1, -1).filter((p) => !p.ixp).map((p) => shortNet(p.name));
-  const ixs = r.path.filter((p) => p.ixp).map((p) => p.name);
+  // the networks in between, once each: a company's networks (GSL's AS7578 and AS137409) read as one
   const dest = names[names.length - 1];
+  const mid = r.path.slice(1, -1).filter((p) => !p.ixp && p.rel !== 'sibling').map((p) => shortNet(p.name))
+    .filter((n, i, a) => n !== a[i - 1] && n !== dest);
+  const ixs = r.path.filter((p) => p.ixp).map((p) => p.name);
   const kind = ROUTE_CLASS[r.kind] || r.kind;
   // the last city on the route is where the destination answered from: "direct to Cloudflare Melbourne"
   const city = r.cities?.length > 1 || (r.cities?.length && kind !== 'on-net') ? r.cities[r.cities.length - 1].replace(/, [A-Z]{2}$/, '') : '';
   const toDest = isTargetNet(dest, id) && !city ? '' : ` to ${dest}${city ? ` ${city}` : ''}`;
-  const text = kind === 'transit' ? `via ${mid.join(', ')}${ixs.length ? ` (${ixs[0]})` : ''}${toDest}`
+  const text = kind === 'transit' ? `${mid.length ? `via ${mid.join(', ')}` : ''}${ixs.length ? ` (${ixs[0]})` : ''}${toDest}`.trim()
     : kind === 'on-net' ? `inside ${names[0] || 'your ISP'}${city ? `, to ${city}` : ''}`
       : kind === 'ix' ? `via ${ixs[0] || 'an exchange'}${mid.length ? `, then ${mid.join(', ')}${toDest ? ',' : ''}` : ''}${toDest}`
         : kind === 'direct' ? toDest.trim() : names.join(' → ');
@@ -753,7 +764,7 @@ async function refreshSummary() {
       + col('Upload', 'upload_mbps', 'Mbps', fmtMbps) + col('Ping', 'ping_ms', 'ms', fmtMs);
     const a7 = avg['7d'] || {};
     $('#speed-details').innerHTML = [
-      ['ISP', esc(ok.isp || '-')],
+      ['ISP', ok.isp ? ispTag(ok.isp) : '-'],
       ['Jitter', `${fmtMs(ok.jitter_ms)} ms`, `7d avg ${fmtMs(a7.jitter_ms)}`],
       ['Packet loss', ok.packet_loss == null ? '-' : fmtPct(ok.packet_loss), `7d avg ${a7.packet_loss == null ? '-' : fmtPct(a7.packet_loss)}`],
       ['Data used', fmtBytes(ok.data_bytes), `24h ${fmtBytes(avg['24h']?.data_bytes)} · 7d ${fmtBytes(a7.data_bytes)}`],
@@ -831,7 +842,7 @@ function renderRegions(st) {
   if (regions.length || conns.length) {
     const latestCells = (x) => (!x || x.ts == null ? '<td colspan="6" class="muted" style="text-align:left">not tested yet</td>'
       : x.error ? `<td colspan="6" class="error-text" style="text-align:left" title="${esc(x.error)}">failed: ${esc(x.error.slice(0, 60))}</td>`
-      : `<td style="text-align:left">${esc(x.isp || '')}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td>
+      : `<td style="text-align:left">${ispTag(x.isp)}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td>
          <td>${fmtMs(x.ping_ms)}</td><td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td>`);
     const avgCells = (a) => `<td>${fmtMbps(a?.download_mbps)}</td><td>${fmtMbps(a?.upload_mbps)}</td><td>${fmtMs(a?.ping_ms)}</td><td>${fmtBytes(a?.data_bytes)}</td>`;
     const row = (name, x, a, cls = '', action = '', route = '') => `<tr class="${cls}"><td>${name}</td>${latestCells(x)}${avgCells(a)}
@@ -880,7 +891,7 @@ function renderGlobal(g) {
       ${sortRows(g.recent, globalSort, resultVal).map((x) => x.error
         ? `<tr><td>${fmtTime(x.ts)}</td><td style="text-align:left">${flag(x.flag)}${esc(x.label)}</td><td colspan="8" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
         : `<tr><td>${fmtTime(x.ts)}</td><td style="text-align:left">${flag(x.flag)}${esc(x.label)}</td>
-           <td style="text-align:left">${esc(x.server_name || '')}${x.server_location ? ', ' + esc(x.server_location) : ''}</td>
+           <td style="text-align:left">${ispTag(x.isp, false)}${esc(x.server_name || '')}${x.server_location ? ', ' + esc(x.server_location) : ''}</td>
            <td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td><td>${fmtMs(x.jitter_ms)}</td>
            <td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td>
            <td>${x.result_url ? `<a href="${esc(x.result_url)}" target="_blank" rel="noopener">result ↗</a>` : ''}</td></tr>`).join('')}
@@ -1648,7 +1659,7 @@ function speedPanel() {
           ? `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}</td><td colspan="9" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
           : `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}${busyTag(x)}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td>
              <td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td>
-             <td style="text-align:left">${esc(x.isp || '')}</td>
+             <td style="text-align:left">${ispTag(x.isp)}</td>
              <td style="text-align:left">${esc(x.server_name)}${x.server_location ? ', ' + esc(x.server_location) : ''}</td>
              <td>${x.result_url ? `<a href="${esc(x.result_url)}" target="_blank" rel="noopener">result ↗</a>` : ''}</td></tr>`).join('')}
       </tbody>`;
@@ -2033,17 +2044,20 @@ async function renderRouteCompare() {
 
 // a connection's destinations by category: how each group of them is reached; a row opens into its destinations
 function routeCatTable(ds, conn) {
-  const cats = [...new Set(ds.map((d) => d.cat))];
+  // biggest first (by destinations traced), so the folded table's first rows are the ones that matter most
+  const size = (c, traced) => ds.filter((d) => d.cat === c && (!traced || d.kind)).length;
+  const cats = [...new Set(ds.map((d) => d.cat))].sort((a, b) => size(b, true) - size(a, true) || size(b) - size(a));
   const cell = (n, k) => `<td class="${n ? `rk-${k}` : 'muted'}">${n || '·'}</td>`;
-  const rows = cats.map((c) => {
+  const rows = cats.map((c, i) => {
     const cd = ds.filter((d) => d.cat === c);
     const tr = cd.filter((d) => d.kind);
     const n = Object.fromEntries(ROUTE_KINDS.map(([k]) => [k, tr.filter((d) => d.kind === k).length]));
     const open = routeOpen.has(`${conn}|${c}`);
     const mini = tr.length ? `<div class="route-bar mini">${ROUTE_KINDS.filter(([k]) => n[k]).map(([k]) => `<span class="seg-${k}" style="flex-grow:${n[k]}"></span>`).join('')}</div>` : '';
-    return `<tr class="cat-row" data-cat="${esc(`${conn}|${c}`)}"><td><span class="caret">${open ? '▾' : '▸'}</span> ${esc(c)} <span class="muted">${cd.length}</span></td>
+    const extra = i >= 3 ? ' extra' : '';  // folded away until "Show all categories"
+    return `<tr class="cat-row${extra}" data-cat="${esc(`${conn}|${c}`)}"><td><span class="caret">${open ? '▾' : '▸'}</span> ${esc(c)} <span class="muted">${cd.length}</span></td>
       <td>${mini}</td>${ROUTE_KINDS.map(([k]) => cell(n[k], k)).join('')}<td class="muted">${cd.length - tr.length || ''}</td></tr>`
-      + (open ? `<tr class="route-detail"><td colspan="7"><ul>${cd.sort((a, b) => a.name.localeCompare(b.name)).map((d) =>
+      + (open ? `<tr class="route-detail${extra}"><td colspan="7"><ul>${cd.sort((a, b) => a.name.localeCompare(b.name)).map((d) =>
         `<li><span class="route-dest">${esc(d.name)}</span> ${d.route ? routeHtml(d.key) : '<span class="muted">not traced yet</span>'}</li>`).join('')}</ul></td></tr>` : '');
   }).join('');
   return `<div class="table-wrap"><table class="stats"><thead><tr><th>Category</th><th></th>${ROUTE_KINDS.map(([, l, w]) => `<th title="${esc(w)}">${l}</th>`).join('')}

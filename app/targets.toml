@@ -72,8 +72,11 @@ targets = [
   { name = "Google Meet",    host = "meet.google.com",  group = "Calls & chat" },
   { name = "Microsoft",      host = "microsoft.com",    group = "Cloud & tech" },
   { name = "Apple",          host = "apple.com",        group = "Cloud & tech" },
+  { name = "Apple updates",  host = "updates.cdn-apple.com", group = "Cloud & tech" },   # Apple's own CDN: macOS/iOS updates
+  { name = "iCloud",         host = "cvws.icloud-content.com", group = "Cloud & tech" },   # iCloud backups and Photos
   { name = "AWS",            host = "aws.amazon.com",   group = "Cloud & tech" },
   { name = "GitHub",         host = "github.com",       group = "Cloud & tech" },
+  { name = "GitHub downloads", host = "raw.githubusercontent.com", group = "Cloud & tech" },   # GitHub's CDN: raw files, releases
   { name = "Atlassian",      host = "www.atlassian.com", group = "Cloud & tech" },
   { name = "Akamai",         host = "akamai.com",       group = "CDN" },
   { name = "Fastly",         host = "fastly.com",       group = "CDN" },
@@ -163,4 +166,5 @@ cdn = [
   { name = "Amazon",     host = "d1.awsstatic.com" },     # CloudFront
   { name = "Fastly",     host = "www.fastly.com" },
   { name = "Meta",       host = "static.xx.fbcdn.net" },
+  { name = "Apple",      host = "updates.cdn-apple.com" },   # Apple's own CDN (software updates)
 ]

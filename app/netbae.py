@@ -50,7 +50,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.22.0"
+VERSION = "1.23.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -115,10 +115,10 @@ def resolver_twins(servers):
 V6_TWIN = resolver_twins(BUILTIN["dns_servers"])
 
 DEFAULT_CONFIG = {
-    "web": {"host": "0.0.0.0", "port": 80, "chart_band": "none", "update_check": True, "auto_update": "weekly",
+    "web": {"host": "::", "port": 80, "chart_band": "none", "update_check": True, "auto_update": "weekly",
             "update_check_hours": 6, "auto_update_time": "03:30", "start_at_boot": True},
     # optional read-only copy of the dashboard for sharing (e.g. through a Cloudflare Tunnel)
-    "public": {"enabled": False, "host": "0.0.0.0", "port": 8080,
+    "public": {"enabled": False, "host": "::", "port": 8080,
                "requests_per_minute": 120, "total_requests_per_minute": 1200, "hide": [],
                "show_hostname": False, "show_city": True,
                # Cloudflare Access sign-in on the public address: signed-in visitors get the private dashboard
@@ -1741,8 +1741,11 @@ def is_ixp(name):
 
 # Business relationships between networks, inferred by CAIDA from public BGP data and published monthly:
 # "provider|customer|-1" (the customer pays for transit) or "peer|peer|0". Kept in its own small SQLite
-# file next to the database (as-rel-YYYYMM.db, ~10 MB), so a refresh never locks the main database.
+# file next to the database (as-rel-YYYYMM.db, ~15 MB), so a refresh never locks the main database.
+# With it, CAIDA's list of which company runs each network: one company's networks (GSL runs AS7578 and
+# AS137409) count as one, so a relationship known for one of them holds for the others.
 AS_REL_URL = "https://publicdata.caida.org/datasets/as-relationships/serial-1/{}01.as-rel.txt.bz2"
+AS_ORG_URL = "https://publicdata.caida.org/datasets/as-organizations/{}01.as-org2info.txt.gz"
 _REL = {"checked": 0, "dir": None, "path": None, "gen": 0, "local": threading.local(), "cache": {}}
 
 
@@ -1785,6 +1788,7 @@ def load_as_relationships():
                     rows = (line.split("|")[:3] for line in f if line[:1].isdigit())
                     c.executemany("INSERT OR REPLACE INTO rel VALUES (?,?,?)",
                                   ((int(a), int(b), int(rel)) for a, b, rel in rows))
+                load_as_orgs(c, serial)
                 c.commit()
             finally:
                 c.close()
@@ -1799,6 +1803,17 @@ def load_as_relationships():
             log.warning("couldn't fetch CAIDA AS relationships (%s)", e)
             return
     use_as_rel_dir(_REL["dir"])
+    if _REL["path"] and not as_org_loaded():  # downloaded before 1.22.3, without the company list: add it
+        try:
+            c = sqlite3.connect(_REL["path"], timeout=30)
+            try:
+                load_as_orgs(c, as_rel_serial().replace("-", ""))
+                c.commit()
+            finally:
+                c.close()
+            _REL.update(gen=_REL["gen"] + 1, cache={})
+        except Exception as e:
+            log.warning("couldn't fetch CAIDA's list of who runs each network (%s)", e)
     for old in glob.glob(os.path.join(_REL["dir"], "as-rel-*.db*")):
         if old != _REL["path"]:
             try:
@@ -1807,24 +1822,83 @@ def load_as_relationships():
                 pass  # still open somewhere (Windows): removed on a later refresh
 
 
-def as_rel(a, b):
-    """How network b relates to network a: 'peer', 'provider' (a buys transit from b),
-    'customer' (b buys transit from a), or None if unknown."""
-    if not a or not b or a == b or not _REL["path"]:
-        return None
-    if (a, b) in _REL["cache"]:
-        return _REL["cache"][(a, b)]
+def load_as_orgs(c, serial):
+    """Add CAIDA's network -> company list (the newest published by `serial`) to the relationship file, with the
+    indexes for looking up a company's networks."""
+    import gzip
+    c.execute("CREATE INDEX IF NOT EXISTS rel_b ON rel (b)")  # a company's networks are looked up both ways round
+    c.execute("DROP TABLE IF EXISTS org")
+    c.execute("CREATE TABLE org (asn INTEGER PRIMARY KEY, org TEXT)")
+    c.execute("CREATE INDEX org_org ON org (org)")
+    y, mo = int(serial[:4]), int(serial[4:])
+    for back in range(6):  # published every month or few: the newest one by this month
+        month = "%04d%02d" % (y + (mo - 1 - back) // 12, (mo - 1 - back) % 12 + 1)
+        req = urllib.request.Request(AS_ORG_URL.format(month), headers={"User-Agent": f"netBae/{VERSION}"})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r, gzip.open(r, "rt", encoding="utf-8", errors="replace") as f:
+                rows = (line.split("|") for line in f if line[:1].isdigit())  # aut|changed|aut_name|org_id|...
+                c.executemany("INSERT OR REPLACE INTO org VALUES (?,?)",  # (company lines can start with a digit too)
+                              ((int(x[0]), x[3]) for x in rows if len(x) > 3 and x[0].isdigit()))
+            return
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+
+
+def _rel_db():
+    """This thread's connection to the relationship file, or None."""
     loc = _REL["local"]
     if getattr(loc, "gen", None) != _REL["gen"]:
         if getattr(loc, "c", None):
             loc.c.close()
-        loc.c = sqlite3.connect(_REL["path"]) if os.path.exists(_REL["path"]) else None
+        loc.c = sqlite3.connect(_REL["path"]) if _REL["path"] and os.path.exists(_REL["path"]) else None
         loc.gen = _REL["gen"]
-    rel = None
-    if loc.c:
-        row = loc.c.execute("SELECT a, rel FROM rel WHERE (a = ? AND b = ?) OR (a = ? AND b = ?)", (a, b, b, a)).fetchone()
-        if row:
-            rel = "peer" if row[1] == 0 else ("customer" if row[0] == a else "provider")
+    return loc.c
+
+
+def as_org_loaded():
+    """True once the relationship file has the company list (a failed download leaves it empty, to retry)."""
+    try:
+        return bool(_rel_db() and _rel_db().execute("SELECT 1 FROM org LIMIT 1").fetchone())
+    except sqlite3.Error:
+        return False
+
+
+def as_siblings(asn):
+    """The networks run by the same company as this one (itself included; at most 200)."""
+    key = ("org", asn)
+    if key not in _REL["cache"]:
+        c, out = _rel_db(), [asn]
+        if c and as_org_loaded():
+            out = [r[0] for r in c.execute("SELECT asn FROM org WHERE org = (SELECT org FROM org WHERE asn = ?) "
+                                           "LIMIT 200", (asn,))] or [asn]
+        _REL["cache"][key] = out
+    return _REL["cache"][key]
+
+
+def as_rel(a, b):
+    """How network b relates to network a: 'peer', 'provider' (a buys transit from b),
+    'customer' (b buys transit from a), 'sibling' (one company runs both), or None if unknown.
+    Known for any network of a's company and any of b's, it holds for these two."""
+    if not a or not b or a == b or not _REL["path"]:
+        return None
+    if (a, b) in _REL["cache"]:
+        return _REL["cache"][(a, b)]
+    c, rel = _rel_db(), None
+    if c:
+        sa, sb = as_siblings(a), as_siblings(b)
+        if b in sa:
+            rel = "sibling"
+        else:
+            row = c.execute("SELECT a, rel FROM rel WHERE (a = ? AND b = ?) OR (a = ? AND b = ?)", (a, b, b, a)).fetchone()
+            if not row and (len(sa) > 1 or len(sb) > 1):
+                qa, qb = ",".join("?" * len(sa)), ",".join("?" * len(sb))
+                row = c.execute(f"SELECT a IN ({qa}), rel FROM rel WHERE (a IN ({qa}) AND b IN ({qb})) "
+                                f"OR (a IN ({qb}) AND b IN ({qa})) LIMIT 1", (*sa, *sa, *sb, *sb, *sa)).fetchone()
+                if row:
+                    row = (a if row[0] else b, row[1])
+            if row:
+                rel = "peer" if row[1] == 0 else ("customer" if row[0] == a else "provider")
     _REL["cache"][(a, b)] = rel
     return rel
 
@@ -2843,6 +2917,8 @@ class Monitor:
         if c["isp"]["enabled"]:
             run_aligned("isp", c["isp"]["interval_minutes"] * 60, c["isp"]["offset_minutes"] * 60, self.collect_isp)
             self.pool.submit(self.collect_isp)  # know the ISP straight away
+        if c["traceroute"]["enabled"]:  # also refreshed after each round of traces
+            threading.Thread(target=load_as_relationships, name="as-rel", daemon=True).start()
         if c["traceroute"]["enabled"]:
             run_aligned("traceroute", c["traceroute"]["interval_hours"] * 3600,
                         c["traceroute"]["offset_minutes"] * 60, self.collect_traceroutes)
@@ -4949,7 +5025,7 @@ def make_handler(monitor, public=False):
 def is_netbae(host, port):
     """True if a netBae dashboard already answers on this port."""
     try:
-        conn = http.client.HTTPConnection("127.0.0.1" if host in ("", "0.0.0.0", "::") else host, port, timeout=3)
+        conn = http.client.HTTPConnection("127.0.0.1" if host in ANY_ADDRESS else host, port, timeout=3)
         conn.request("GET", "/api/config")
         return "version" in json.loads(conn.getresponse().read())
     except Exception:
@@ -4968,8 +5044,38 @@ class DualStackServer(ThreadingHTTPServer):
         super().server_bind()
 
 
+ANY_ADDRESS = ("", "::", "0.0.0.0")  # every address, IPv4 and IPv6 (0.0.0.0 was the default before 1.22.1)
+
+
+def dual_stack_ok():
+    """True if one IPv6 socket can take IPv4 too (not with IPv6 turned off in the kernel, or on some BSDs)."""
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            return s.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) == 0
+    except (OSError, AttributeError):
+        return False
+
+
 def http_server(host, port, handler):
+    if host in ANY_ADDRESS:
+        host = "::" if dual_stack_ok() else "0.0.0.0"  # IPv4 only where IPv6 isn't available
+        if host == "::":  # macOS lets an IPv6 socket share a port another program holds on IPv4
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            except OSError:
+                pass
+            else:
+                raise OSError(f"port {port} is in use on IPv4")
     return (DualStackServer if ":" in str(host) else ThreadingHTTPServer)((host, port), handler)
+
+
+def listen_url(httpd):
+    """The address a server listens on, for the log."""
+    host, port = httpd.server_address[:2]
+    if host == "::":
+        return f"http://[::]:{port} (IPv4 and IPv6)"
+    return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
 
 
 def peer_ip(addr):
@@ -5129,7 +5235,7 @@ def main():
     host, port = cfg["web"]["host"], int(cfg["web"]["port"])
     httpd = bind_web(host, port, make_handler(monitor))
     monitor.start()  # only once the port is ours, so a second copy never collects alongside the first
-    log.info("netBae %s dashboard listening on http://%s:%d", VERSION, host, httpd.server_address[1])
+    log.info("netBae %s dashboard listening on %s", VERSION, listen_url(httpd))
     pub = cfg["public"]
     if pub["enabled"]:
         pport = int(pub["port"])
@@ -5139,8 +5245,8 @@ def main():
             pserver = http_server(pub["host"], pport, make_handler(monitor, public=True))
             pserver.daemon_threads = True
             threading.Thread(target=pserver.serve_forever, name="public-web", daemon=True).start()
-            log.info("read-only public dashboard listening on http://%s:%d (%d requests/min per visitor)",
-                     pub["host"], pport, int(pub["requests_per_minute"]))
+            log.info("read-only public dashboard listening on %s (%d requests/min per visitor)",
+                     listen_url(pserver), int(pub["requests_per_minute"]))
         except OSError as e:
             log.error("couldn't start the public dashboard on port %d (%s); the main dashboard still runs", pport, e)
     try:

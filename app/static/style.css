@@ -54,6 +54,8 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }
+/* iPhone Safari otherwise enlarges text in some blocks and not others ("text autosizing"), e.g. one route line bigger than its neighbour's */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -135,7 +137,8 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 40px; display: grid
 
 /* folded tables */
 .panel.table-folded .table-wrap, .panel.table-folded .pager { display: none; }
-.panel.table-preview .stats tbody tr:nth-child(n+4) { display: none; }
+.panel.table-preview .stats tbody tr:nth-child(n+4):not(.cat-row, .route-detail) { display: none; }
+.panel.table-preview .stats tbody tr.extra { display: none; }  /* Routes: an opened category's list isn't a row of its own */
 #panel-regions .stats tbody tr.total { display: table-row; }
 .controls select { max-width: 170px; }
 .card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
@@ -439,3 +442,7 @@ table.stats.route-compare td:first-child { min-width: 140px; }
 .cmp-ping { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 2px; }
 .cmp-ping.good { color: var(--good); font-weight: 600; }
 .route-tools label { display: inline-flex; align-items: center; gap: 6px; }
+
+/* an ISP's logo in front of its name (speedtest tables) */
+.isp-tag { white-space: nowrap; }
+.isp-tag .isp-logo, td > .isp-logo { width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 5px; }

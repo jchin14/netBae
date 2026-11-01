@@ -20,6 +20,18 @@ The main steps so far, with the full details per version below.
 | 1.20 | A redesigned dashboard: a status line at the top, cleaner cards and much less scrolling |
 | 1.21 | `netbae export` and `netbae import` to move your history, update timing settings |
 | 1.22 | A Routes card: how your connection reaches everything (on-net, peering, IX, transit), route changes and a comparison between ISPs |
+| 1.23 | The dashboard over IPv6 as well as IPv4, Apple updates, iCloud and GitHub targets, ISP logos on speedtests |
+
+## 1.23.0 - 2026-11-01
+
+The dashboard over IPv6, new Apple and GitHub targets, ISP logos on speedtests, and clearer routes.
+
+- The dashboard now answers over IPv6 as well as IPv4, so `http://[your IPv6 address]/` works too. This includes existing installs set to `host = "0.0.0.0"`, which now means every address, IPv4 and IPv6. To listen on IPv4 only, set `[web] host` to this machine's IPv4 address. Machines with IPv6 turned off keep working over IPv4.
+- New ping targets: **Apple updates** (Apple's own CDN, where macOS and iOS updates come from), **iCloud** (where backups and Photos go) and **GitHub downloads** (GitHub's CDN for raw files and releases). They can be slow even when apple.com and github.com are fine. The DNS and CDN test also checks which Apple CDN server each DNS server sends you to.
+- Speedtest results show the ISP's logo next to its name (latest result, history, speedtests by server) and next to the server in global speedtests, so you can see at a glance which ISP each test ran on.
+- Routes: networks run by the same company count as one. A route that bounces between GSL's two networks now reads "via GSL" once instead of "GSL, GSL, GSL", and the **paid transit** or **peering** label shows when the relationship is known for any of a company's networks, so many more routes get one. netBae downloads CAIDA's list of who runs each network along with the relationships it already used.
+- Fix: on an iPhone, some route lines and other text on the host tiles showed larger than the same text on the tile next to them (Safari's automatic text enlarging). Text now keeps the same size everywhere.
+- Fix: in the Routes card, a category you open now shows its destinations even while the table is folded, and categories are listed biggest first, so the folded table shows the ones with the most destinations.
 
 ## 1.22.0 - 2026-10-31
 
