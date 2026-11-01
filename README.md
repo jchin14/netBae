@@ -27,6 +27,8 @@ Raspberry Pi, any Linux, or a Mac:
 curl -fsSL https://raw.githubusercontent.com/jchin14/netBae/main/install.sh | sudo bash
 ```
 
+The same command also installs it on a UniFi OS console (Cloud Gateway, Dream Router, Dream Machine) over SSH, with the dashboard on port 81: see [UniFi OS](#unifi-os).
+
 Windows 10/11, in PowerShell as Administrator:
 
 ```powershell
@@ -109,6 +111,7 @@ The [TL;DR](#tldr) has the install commands. Run the same command again any time
 | **Windows** | 10 and 11 (and Server 2019+), x64 or arm64, with its own PowerShell installer (`install.ps1`) |
 | **Docker** | Linux hosts (Pi, NAS, Proxmox, servers) on amd64, arm64 and arm/v7, with host networking |
 | **NixOS** | a flake with a package and a `services.netbae` module, on x86_64 and arm64 (see [NixOS](#nixos) below) |
+| **UniFi OS** | UniFi consoles with UniFi OS 4 or later, such as the Cloud Gateway Ultra/Max, Dream Router 7 and Dream Machine (see [UniFi OS](#unifi-os) below) |
 
 <details>
 <summary><b>What the installer does on Linux</b></summary>
@@ -233,15 +236,41 @@ Then `sudo nixos-rebuild switch`, and open `http://<this-machine>/`.
 </details>
 
 <details>
+<summary><b>UniFi OS</b></summary>
+
+<a id="unifi-os"></a>netBae can run on the UniFi console itself (Cloud Gateway Ultra/Max, Dream Router 7, Dream Machine and other consoles with UniFi OS 4 or later), so it watches your connection without another machine. Turn on SSH for the console in its UniFi OS settings, log in as `root` and run the usual install command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jchin14/netBae/main/install.sh | bash
+```
+
+The dashboard is at `http://<console-ip>:81/` (for example `http://192.168.1.1:81/`): UniFi's own web server has ports 80 and 443, so the installer takes the next free port and saves it in the config.
+
+A firmware update replaces everything on the console except `/data`, and its `apt` belongs to UniFi, so the installer works differently here:
+
+- **Everything in `/data/netbae`:** the app (`app/`), your settings (`config.toml`), the history (`data/`), the `tomli` package that Python 3.9 needs to read the config (`lib/`), and the Ookla CLI, a `traceroute` link to the console's busybox and the `netbae` command (`bin/`). No system packages are installed and nothing in UniFi's own setup is changed.
+- **The service** runs as an unprivileged `netbae` user with the console's own `python3`, at a lower CPU priority than UniFi's services. It uses about 50 MB of memory.
+- **After a firmware update** netBae stops, because the update removes its service, the `netbae` user and the `netbae` command. Your settings and history are kept in `/data/netbae`. Log in over SSH and run:
+  ```bash
+  bash /data/netbae/install.sh
+  ```
+  This puts the service, user and command back and starts the same version again, without needing the internet. The install command does the same and also updates netBae to the latest version.
+- **Updates:** `netbae update`, the dashboard's Update button and automatic updates all work, and use the same `/data/netbae` install.
+- **On the router:** the "Router" ping target is left out, since the console would be pinging itself. "ISP first hop" (the first router past the console) covers the link to your ISP. The "Router" DNS server is the console's own DNS (`127.0.0.1`), which your devices use.
+- **Not yet available:** `netbae tunnel`. Speedtests run on the console itself, so they use its CPU for about 30 seconds each time.
+- **Uninstall:** `netbae uninstall` keeps `config.toml` and `data/`; `netbae uninstall --purge` deletes `/data/netbae` and the `netbae` user.
+</details>
+
+<details>
 <summary><b>Where things live</b></summary>
 
-| | Linux | macOS | Windows |
-|---|---|---|---|
-| App | `/opt/netbae` | `/usr/local/lib/netbae` | `C:\Program Files\netBae` |
-| Config | `/etc/netbae/config.toml` | `/usr/local/etc/netbae/config.toml` | `C:\ProgramData\netBae\config.toml` |
-| Database | `/var/lib/netbae/netbae.db` | `/usr/local/var/netbae/netbae.db` | `C:\ProgramData\netBae\netbae.db` |
-| Log | `journalctl -u netbae` | `/usr/local/var/log/netbae.log` | `C:\ProgramData\netBae\netbae.log` |
-| Service | systemd `netbae.service` | launchd `com.github.netbae` | scheduled task `netBae` |
+| | Linux | macOS | Windows | UniFi OS |
+|---|---|---|---|---|
+| App | `/opt/netbae` | `/usr/local/lib/netbae` | `C:\Program Files\netBae` | `/data/netbae/app` |
+| Config | `/etc/netbae/config.toml` | `/usr/local/etc/netbae/config.toml` | `C:\ProgramData\netBae\config.toml` | `/data/netbae/config.toml` |
+| Database | `/var/lib/netbae/netbae.db` | `/usr/local/var/netbae/netbae.db` | `C:\ProgramData\netBae\netbae.db` | `/data/netbae/data/netbae.db` |
+| Log | `journalctl -u netbae` | `/usr/local/var/log/netbae.log` | `C:\ProgramData\netBae\netbae.log` | `journalctl -u netbae` |
+| Service | systemd `netbae.service` | launchd `com.github.netbae` | scheduled task `netBae` | systemd `netbae.service` |
 </details>
 
 ## Everyday use
@@ -282,7 +311,7 @@ To delete everything, including the config, history and the service user:
 netbae uninstall --purge
 ```
 
-On Windows the flag is `-Purge` (`netbae uninstall -Purge`). If the `netbae` command is missing, run the uninstaller directly: `sudo bash /opt/netbae/uninstall.sh` on Linux, `sudo bash /usr/local/lib/netbae/uninstall.sh` on a Mac. The Ookla speedtest CLI is left installed (`brew uninstall speedtest` on a Mac).
+On Windows the flag is `-Purge` (`netbae uninstall -Purge`). If the `netbae` command is missing, run the uninstaller directly: `sudo bash /opt/netbae/uninstall.sh` on Linux, `sudo bash /usr/local/lib/netbae/uninstall.sh` on a Mac, `bash /data/netbae/app/uninstall.sh` on UniFi OS. The Ookla speedtest CLI is left installed (`brew uninstall speedtest` on a Mac).
 
 Docker: remove the container, then delete the `netbae-data` folder if you don't want the config and history:
 
@@ -379,7 +408,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[[connections]] name` / `bind` | | a secondary connection: its name and the IP or interface to send from, see [below](#monitoring-a-secondary-connection) |
 | `[[connections]] targets` | `1.1.1.1`, `8.8.8.8`, `google.com` | what to ping over it, or `"all"` for every main target |
 | `[[connections]] trace` | `"all"` | trace the route to every main destination over it every 12 hours, for the Routes card's **Compare ISPs** (a few hundred KB of traceroutes a day), or `"pinged"` for only its targets |
-| `[[connections]] speedtest` | `true` | |
+| `[[connections]] speedtest` | `false` | also run speedtests over it (each uses up to 1 GB). Off, it only gets pings and traces |
 | `[[connections]] speedtest_interval_minutes` / `speedtest_offset_minutes` | `1440` / `45` | daily (`0` = only when you press Run) |
 
 </details>
@@ -466,10 +495,11 @@ New-NetIPAddress -InterfaceAlias "Ethernet" -IPAddress 192.168.1.51 -PrefixLengt
 name = "Secondary"
 bind = "192.168.1.51"          # or an interface: "eth1" on Linux, "en7" on macOS
 targets = ["1.1.1.1", "8.8.8.8", "google.com", "valve:auto"]   # or "all": every main ping target
+speedtest = true               # off by default: pings and traces only, which use very little data
 speedtest_interval_minutes = 1440   # daily, to save data on mobile plans (0 = only when you press Run)
 ```
 
-The connection gets its own group of ping tiles and its own row in the speedtest table, with its ISP and data used, so you can compare it with your main line.
+The connection gets its own group of ping tiles and its routes in the Routes card's **Compare ISPs**. With `speedtest = true` it also gets its own row in the speedtest table, with its ISP and data used, so you can compare it with your main line.
 
 ## Sharing a public dashboard
 
@@ -701,6 +731,7 @@ Every release has to pass these on fresh machines before it's published:
 
 - **Code checks:** shellcheck on the shell scripts, Python syntax, the default config, a smoke test of the app and the release archive build.
 - **Linux installer:** the real `install.sh` in systemd containers on Debian 12, Debian 13, Ubuntu 24.04 and Fedora: install, check the service, API, Ookla CLI and data collection, update in place, uninstall keeping the config, reinstall, then uninstall with `--purge` and check nothing is left.
+- **UniFi OS installer:** the same in a Debian 11 container set up like a UniFi console (Python 3.9 without `tomli`, busybox, a web server on port 80, and an `apt` that fails the test if it's used): everything must land in `/data/netbae` on port 81, and after a simulated firmware update (service, user and command deleted) `/data/netbae/install.sh` must bring it back with the history.
 - **macOS installer:** the full install, update and uninstall on a Mac.
 - **Windows installer:** `install.ps1` on Windows, including a real speedtest through the service, the `irm | iex` path and `-Purge`.
 - **Docker:** the image is started in host and bridge networking and checked, then built for amd64, arm64 and arm/v7.

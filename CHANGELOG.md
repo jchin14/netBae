@@ -21,6 +21,17 @@ The main steps so far, with the full details per version below.
 | 1.21 | `netbae export` and `netbae import` to move your history, update timing settings |
 | 1.22 | A Routes card: how your connection reaches everything (on-net, peering, IX, transit), route changes and a comparison between ISPs |
 | 1.23 | The dashboard over IPv6 as well as IPv4, Apple updates, iCloud and GitHub targets, ISP logos on speedtests |
+| 1.24 | Install on a UniFi OS console itself (Cloud Gateway, Dream Router, Dream Machine) |
+
+## 1.24.0 - 2026-11-01
+
+netBae on UniFi OS consoles, and a secondary connection that only uses pings and traces unless you ask for speedtests.
+
+- **UniFi OS:** the install command now installs netBae on a UniFi console itself (Cloud Gateway Ultra/Max, Dream Router 7, Dream Machine and other consoles with UniFi OS 4 or later), over SSH as root. Everything goes in `/data/netbae`, the one place firmware updates keep, and no system packages are installed: it brings its own copy of Python's `tomli` and the Ookla CLI, and uses the console's busybox for traceroutes. The dashboard is on port 81, next to UniFi's own web server. `netbae update`, the Update button and automatic updates work as on other systems. After a firmware update, `bash /data/netbae/install.sh` puts the service back with your settings and history. See [UniFi OS](README.md#unifi-os).
+- On a UniFi console, the "Router" ping target is left out (the console would be pinging itself, and it logged "could not detect the default gateway" over and over), the "Router" DNS server is the console's own DNS, and "ISP first hop" is the first router past the console.
+- `netbae config` opens `vi` when `nano` isn't installed.
+- **Secondary connections** (e.g. a 5G backup) now get only pings and traces by default, which use very little data. Speedtests over one are off until you set `speedtest = true` in its `[[connections]]` entry; while off, it has no row or Run button in the speedtest table.
+- The installer's "Dashboard:" line shows the address the machine's default route uses, not a second IP added for a secondary connection.
 
 ## 1.23.0 - 2026-11-01
 

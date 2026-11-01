@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # netBae installer - works on any systemd-based Linux (Raspberry Pi OS, Debian,
 # Ubuntu, Fedora/RHEL/Rocky/Alma, Arch, openSUSE) on x86_64, arm64, armhf/armv6, i386,
+# on UniFi OS consoles (UCG, UDR, UDM: everything in /data/netbae, no system packages),
 # and on macOS 12+ (Apple silicon or Intel) as a launchd daemon.
 # Re-running upgrades in place and keeps your config + data.
 #
@@ -25,6 +26,22 @@ else
   DATA_DIR=/var/lib/netbae
   SVC_USER=netbae
 fi
+CLI=/usr/local/bin/netbae
+# UniFi OS (UniFi Cloud Gateway, Dream Router, Dream Machine): a firmware update replaces everything except
+# /data, and apt there belongs to UniFi. So netBae, its config, data, Python's tomli, the Ookla CLI and the
+# netbae command all live in /data/netbae, and nothing is installed with apt. Re-running this script (or
+# bash /data/netbae/install.sh) after a firmware update puts back the service user, units and netbae command.
+UNIFI=""; UNIFI_DIR=/data/netbae; RESTORE=""
+if [[ $OS == Linux ]] && [[ -x /usr/bin/ubnt-device-info || ( -d /data && -d /usr/share/ubios-udapi-server ) ]]; then
+  UNIFI=1
+  APP_DIR=$UNIFI_DIR/app
+  CONF_DIR=$UNIFI_DIR
+  DATA_DIR=$UNIFI_DIR/data
+  BIN_DIR=$UNIFI_DIR/bin   # speedtest, traceroute (busybox) and netbae; first on the service's PATH
+  CLI=$BIN_DIR/netbae
+fi
+TOMLI_URL=https://files.pythonhosted.org/packages/97/75/10a9ebee3fd790d20926a90a2547f0bf78f371b2f13aa822c759680ca7b9/tomli-2.0.1-py3-none-any.whl
+TOMLI_SHA256=939de3e7a6161af0c887ef91b7d41a53e7c5a1ca976325f429cb46ea9bc30ecc   # for Python < 3.11 on UniFi OS
 SPEEDTEST_VERSION=1.2.0
 OOKLA_REPO=https://packagecloud.io/ookla/speedtest-cli
 CHARTJS_URL=https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js
@@ -36,6 +53,10 @@ ADAPTER_SHA256=ea7ab30d26c38dcf1f2d26bb43e73a94537b58f1906f55e1a546dd09321b5615
 c_info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 c_warn() { printf '\033[1;33m!!\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
+sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+fetch_pinned() {  # fetch_pinned url sha256 dest
+  curl -fsSL "$1" -o "$3.new" && [[ $(sha256 "$3.new") == "$2" ]] && mv "$3.new" "$3"
+}
 
 SCRIPT="${BASH_SOURCE[0]:-}"
 if [[ $EUID -ne 0 ]]; then
@@ -65,6 +86,9 @@ if [[ -z "$SRC_DIR" || ! -f "$SRC_DIR/app/netbae.py" ]]; then
     || die "could not download https://github.com/$NETBAE_REPO"
   [[ -f "$SRC_DIR/app/netbae.py" ]] || die "downloaded archive does not contain app/netbae.py"
 fi
+# UniFi OS, run as /data/netbae/install.sh: the installed copy is the source. Nothing to copy; just put back
+# what a firmware update removed (works offline, keeps the installed version).
+[[ -n $UNIFI && $SRC_DIR -ef $UNIFI_DIR ]] && RESTORE=1
 
 # ---------------------------------------------------------------- NixOS
 # NixOS is configured declaratively, so netBae installs as a module in /etc/nixos instead: the source goes to
@@ -218,8 +242,18 @@ mac_python() {
 }
 
 # ---------------------------------------------------------------- packages
-if [[ $OS == Linux ]]; then c_info "Installing system packages"; fi
-if [[ $OS == Darwin ]]; then
+if [[ $OS == Linux && -z $UNIFI ]]; then c_info "Installing system packages"; fi
+if [[ -n $UNIFI ]]; then
+  # UniFi OS has python3, ping, curl, ss and busybox already; apt is left alone (see the top)
+  if [[ -n $RESTORE ]]; then c_info "UniFi OS: restoring netBae from $UNIFI_DIR"
+  else c_info "UniFi OS: installing to $UNIFI_DIR (kept across firmware updates), no system packages"; fi
+  PY=/usr/bin/python3
+  [[ -x $PY ]] && "$PY" -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null \
+    || die "UniFi OS without Python 3.8+ at $PY: netBae can't run on this console"
+  mkdir -p "$BIN_DIR" "$UNIFI_DIR/lib"
+  export PYTHONPATH=$UNIFI_DIR/lib   # the bundled tomli, for this script's own config checks too
+  PM=none
+elif [[ $OS == Darwin ]]; then
   [[ $BREW_USER != root ]] || die "Homebrew at $BREW is owned by root; brew cannot run as root"
   if ! PY=$(mac_python); then
     [[ -n $BREW ]] || die "netBae needs Python 3.11+. Install Homebrew (https://brew.sh) and re-run, or install Python from https://www.python.org/downloads/macos/"
@@ -247,6 +281,18 @@ else
 fi
 
 [[ -n ${PY:-} ]] || PY=$(command -v python3) || die "python3 not found"
+if [[ -n $UNIFI ]] && ! "$PY" -c 'import tomllib' 2>/dev/null && ! "$PY" -c 'import tomli' 2>/dev/null; then
+  # no pip on UniFi OS: tomli is pure Python, so unpack its wheel (pinned, checked) into /data/netbae/lib
+  c_info "Python $("$PY" -c 'import platform; print(platform.python_version())') has no tomllib: adding tomli to $UNIFI_DIR/lib"
+  fetch_pinned "$TOMLI_URL" "$TOMLI_SHA256" "$UNIFI_DIR/lib/tomli.whl" \
+    || { rm -f "$UNIFI_DIR/lib/tomli.whl.new"; die "couldn't download tomli (or it didn't match its checksum): $TOMLI_URL"; }
+  rm -rf "$UNIFI_DIR/lib/tomli"
+  "$PY" -I -c 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); z.extractall(sys.argv[2], [n for n in z.namelist() if n.startswith("tomli/")])' \
+    "$UNIFI_DIR/lib/tomli.whl" "$UNIFI_DIR/lib"
+  rm -f "$UNIFI_DIR/lib/tomli.whl"
+  chmod -R a+rX "$UNIFI_DIR/lib"
+  "$PY" -c 'import tomli' || die "tomli didn't import from $UNIFI_DIR/lib"
+fi
 if ! "$PY" -c 'import tomllib' 2>/dev/null && ! "$PY" -c 'import tomli' 2>/dev/null; then
   c_info "Python < 3.11 detected, installing tomli"
   case $PM in
@@ -262,8 +308,9 @@ fi
 # ---------------------------------------------------------------- official Ookla speedtest CLI
 is_ookla() { "$1" --version 2>/dev/null | grep -q "Ookla"; }
 find_ookla() {
-  local b
-  for b in /usr/bin/speedtest /usr/local/bin/speedtest /opt/homebrew/bin/speedtest; do
+  local b cands=(/usr/bin/speedtest /usr/local/bin/speedtest /opt/homebrew/bin/speedtest)
+  [[ -n $UNIFI ]] && cands=("$BIN_DIR/speedtest")  # anywhere else goes with the next firmware update
+  for b in "${cands[@]}"; do
     if [[ -x $b ]] && is_ookla "$b"; then echo "$b"; return 0; fi
   done
   return 1
@@ -348,7 +395,7 @@ install_speedtest_tarball() {
   c_info "Installing Ookla speedtest CLI from the official release tarball ($arch)"
   curl -fsSL "$url" -o "$tmp/st.tgz" || { rm -rf "$tmp"; c_warn "download failed: $url"; return 1; }
   tar -xzf "$tmp/st.tgz" -C "$tmp"
-  install -m 0755 "$tmp/speedtest" /usr/local/bin/speedtest
+  install -m 0755 "$tmp/speedtest" "${BIN_DIR:-/usr/local/bin}/speedtest"
   rm -rf "$tmp"
 }
 
@@ -395,7 +442,16 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
     mac_create_user
   else
     NOLOGIN=$(command -v nologin || echo /bin/false)
-    useradd --system --home-dir "$DATA_DIR" --create-home --shell "$NOLOGIN" "$SVC_USER"
+    HOME_OPT=--create-home; [[ -z $UNIFI ]] || HOME_OPT=--no-create-home  # no dotfiles among the history
+    useradd --system --home-dir "$DATA_DIR" "$HOME_OPT" --shell "$NOLOGIN" "$SVC_USER"
+  fi
+fi
+if [[ -n $UNIFI ]]; then
+  # netBae runs `traceroute`; UniFi OS has only busybox's, which works (IPv4 and IPv6) with CAP_NET_RAW
+  if [[ -x /bin/busybox ]] && /bin/busybox --list 2>/dev/null | grep -qx traceroute; then
+    ln -sfn /bin/busybox "$BIN_DIR/traceroute"
+  else
+    c_warn "no busybox traceroute on this console - the Routes card will stay empty"
   fi
 fi
 as_svc_user() {
@@ -404,7 +460,12 @@ as_svc_user() {
   else su -s /bin/sh "$SVC_USER" -c '"$0" "$@"' "$@"; fi
 }
 mkdir -p "$APP_DIR" "$CONF_DIR" "$DATA_DIR" /usr/local/bin
-chown "$SVC_USER:$SVC_USER" "$DATA_DIR"
+if [[ -n $UNIFI ]]; then
+  # a firmware update recreates the user with a new uid, so hand the history to it again
+  chown -R "$SVC_USER:$SVC_USER" "$DATA_DIR"
+else
+  chown "$SVC_USER:$SVC_USER" "$DATA_DIR"
+fi
 chmod 750 "$DATA_DIR"
 
 OLD_VERSION=""
@@ -412,44 +473,53 @@ if [[ -f "$APP_DIR/netbae.py" ]]; then
   OLD_VERSION=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$APP_DIR/netbae.py")
 fi
 NEW_VERSION=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$SRC_DIR/app/netbae.py")
-if [[ -n "$OLD_VERSION" ]]; then
+if [[ -n $RESTORE ]]; then
+  c_info "Keeping netBae $OLD_VERSION, its config and data"
+elif [[ -n "$OLD_VERSION" ]]; then
   c_info "Updating netBae $OLD_VERSION -> $NEW_VERSION (config and data are kept)"
 else
   c_info "Installing netBae $NEW_VERSION to $APP_DIR"
 fi
-VENDOR_BACKUP=""
-if [[ -d "$APP_DIR/static/vendor" ]]; then VENDOR_BACKUP=$(mktemp -d); cp -a "$APP_DIR/static/vendor/." "$VENDOR_BACKUP/"; fi
-rm -rf "$APP_DIR/static"
-cp -a "$SRC_DIR/app/." "$APP_DIR/"
-install -m 0755 "$SRC_DIR/uninstall.sh" "$APP_DIR/uninstall.sh"
-install -m 0755 "$SRC_DIR/tunnel.sh" "$APP_DIR/tunnel.sh"
-# write a new file and rename it over the old one: `netbae update` is still running the old one, and bash
-# reads a script as it goes, so changing it in place makes the old run carry on into the new text
-sed "s#__NETBAE_REPO__#$NETBAE_REPO#" "$SRC_DIR/bin/netbae" >/usr/local/bin/netbae.new
-chmod 0755 /usr/local/bin/netbae.new
-mv -f /usr/local/bin/netbae.new /usr/local/bin/netbae
-mkdir -p "$APP_DIR/static/vendor"
-if [[ -n "$VENDOR_BACKUP" ]]; then cp -a "$VENDOR_BACKUP/." "$APP_DIR/static/vendor/"; rm -rf "$VENDOR_BACKUP"; fi
+if [[ -z $RESTORE ]]; then
+  VENDOR_BACKUP=""
+  if [[ -d "$APP_DIR/static/vendor" ]]; then VENDOR_BACKUP=$(mktemp -d); cp -a "$APP_DIR/static/vendor/." "$VENDOR_BACKUP/"; fi
+  rm -rf "$APP_DIR/static"
+  cp -a "$SRC_DIR/app/." "$APP_DIR/"
+  install -m 0755 "$SRC_DIR/uninstall.sh" "$APP_DIR/uninstall.sh"
+  install -m 0755 "$SRC_DIR/tunnel.sh" "$APP_DIR/tunnel.sh"
+  # write a new file and rename it over the old one: `netbae update` is still running the old one, and bash
+  # reads a script as it goes, so changing it in place makes the old run carry on into the new text
+  sed "s#__NETBAE_REPO__#$NETBAE_REPO#" "$SRC_DIR/bin/netbae" >"$CLI.new"
+  chmod 0755 "$CLI.new"
+  mv -f "$CLI.new" "$CLI"
+  if [[ -n $UNIFI ]]; then  # kept for putting netBae back after a firmware update, even offline
+    install -m 0755 "$SRC_DIR/install.sh" "$UNIFI_DIR/install.sh.new"
+    mv -f "$UNIFI_DIR/install.sh.new" "$UNIFI_DIR/install.sh"
+  fi
+  mkdir -p "$APP_DIR/static/vendor"
+  if [[ -n "$VENDOR_BACKUP" ]]; then cp -a "$VENDOR_BACKUP/." "$APP_DIR/static/vendor/"; rm -rf "$VENDOR_BACKUP"; fi
 
-# Chart.js is served from the box itself so the dashboard still works when the internet is down.
-c_info "Downloading Chart.js for offline use"
-sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
-fetch_pinned() {  # fetch_pinned url sha256 dest
-  curl -fsSL "$1" -o "$3.new" && [[ $(sha256 "$3.new") == "$2" ]] && mv "$3.new" "$3"
-}
-fetch_pinned "$CHARTJS_URL" "$CHARTJS_SHA256" "$APP_DIR/static/vendor/chart.umd.min.js" \
-  || c_warn "Chart.js download failed or didn't match its checksum - browsers will fall back to the CDN"
-fetch_pinned "$ADAPTER_URL" "$ADAPTER_SHA256" "$APP_DIR/static/vendor/chartjs-adapter-date-fns.bundle.min.js" \
-  || c_warn "date adapter download failed or didn't match its checksum - browsers will fall back to the CDN"
-rm -f "$APP_DIR"/static/vendor/*.new
-chmod -R a+rX "$APP_DIR"
+  # Chart.js is served from the box itself so the dashboard still works when the internet is down.
+  c_info "Downloading Chart.js for offline use"
+  fetch_pinned "$CHARTJS_URL" "$CHARTJS_SHA256" "$APP_DIR/static/vendor/chart.umd.min.js" \
+    || c_warn "Chart.js download failed or didn't match its checksum - browsers will fall back to the CDN"
+  fetch_pinned "$ADAPTER_URL" "$ADAPTER_SHA256" "$APP_DIR/static/vendor/chartjs-adapter-date-fns.bundle.min.js" \
+    || c_warn "date adapter download failed or didn't match its checksum - browsers will fall back to the CDN"
+  rm -f "$APP_DIR"/static/vendor/*.new
+  chmod -R a+rX "$APP_DIR"
+fi
+# UniFi OS: /usr/local/bin is wiped by firmware updates, so the netbae command there is only a link
+[[ -z $UNIFI ]] || ln -sfn "$CLI" /usr/local/bin/netbae
 
 # The shipped config uses the Linux database path; point it at this platform's data dir.
 default_config() { sed "s#/var/lib/netbae/#$DATA_DIR/#" "$SRC_DIR/config.toml"; }
 if [[ -f "$CONF_DIR/config.toml" ]]; then
-  c_info "Keeping existing $CONF_DIR/config.toml (new defaults saved as config.toml.default)"
-  default_config >"$CONF_DIR/config.toml.default"
+  if [[ -z $RESTORE ]]; then
+    c_info "Keeping existing $CONF_DIR/config.toml (new defaults saved as config.toml.default)"
+    default_config >"$CONF_DIR/config.toml.default"
+  fi
 else
+  [[ -z $RESTORE ]] || die "$CONF_DIR/config.toml is missing: run the install command instead to set netBae up again"
   default_config >"$CONF_DIR/config.toml"
 fi
 chmod 644 "$CONF_DIR/config.toml"
@@ -628,6 +698,17 @@ pick_port
 
 # ---------------------------------------------------------------- systemd
 c_info "Installing systemd service"
+UNIT_EXTRA=""
+if [[ -n $UNIFI ]]; then
+  # tomli and the tools in /data/netbae; the Ookla CLI saves its licence acceptance under $HOME, which
+  # ProtectHome would hide; and a lower priority than the routing and UniFi's own services
+  UNIT_EXTRA="
+WorkingDirectory=$DATA_DIR
+Environment=PYTHONPATH=$UNIFI_DIR/lib
+Environment=PATH=$BIN_DIR:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=$DATA_DIR
+Nice=10"
+fi
 cat >/etc/systemd/system/netbae.service <<EOF
 [Unit]
 Description=netBae internet connection monitor
@@ -648,7 +729,7 @@ ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=$DATA_DIR
-Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUNBUFFERED=1$UNIT_EXTRA
 
 [Install]
 WantedBy=multi-user.target
@@ -661,7 +742,7 @@ Description=netBae update, requested from the dashboard
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c '[ -e $DATA_DIR/update-request ] || exit 0; rm -f $DATA_DIR/update-request; /usr/local/bin/netbae update >$DATA_DIR/update.log 2>&1'
+ExecStart=/bin/sh -c '[ -e $DATA_DIR/update-request ] || exit 0; rm -f $DATA_DIR/update-request; $CLI update >$DATA_DIR/update.log 2>&1'
 EOF
 cat >/etc/systemd/system/netbae-update.path <<EOF
 [Unit]
@@ -688,17 +769,26 @@ fi
 
 sleep 2
 if systemctl is-active --quiet netbae; then
-  IP=$(hostname -I 2>/dev/null | awk '{print $1}') || IP=""  # Fedora has no hostname command by default
-  [[ -n "$IP" ]] || IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+  # UniFi OS: the default network's address (the console's first address may be its WAN)
+  IP=""
+  [[ -z $UNIFI ]] || IP=$(ip -4 -o addr show br0 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}') || IP=""
+  # the address the default route uses (the first one listed may be a second IP for a secondary connection)
+  [[ -n "$IP" ]] || IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}') || IP=""
+  [[ -n "$IP" ]] || IP=$(hostname -I 2>/dev/null | awk '{print $1}') || IP=""  # Fedora has no hostname command by default
   SUFFIX=""; [[ $PORT == 80 ]] || SUFFIX=":$PORT"
   echo
-  if [[ -n "$OLD_VERSION" ]]; then c_info "netBae updated to $NEW_VERSION and running!"; else c_info "netBae is running!"; fi
+  if [[ -n $RESTORE ]]; then c_info "netBae $OLD_VERSION is back and running!"
+  elif [[ -n "$OLD_VERSION" ]]; then c_info "netBae updated to $NEW_VERSION and running!"; else c_info "netBae is running!"; fi
   echo "    Dashboard:  http://${IP:-<this-machine-ip>}$SUFFIX"
-  echo "                http://$(uname -n).local$SUFFIX  (if mDNS/avahi is available)"
+  [[ -n $UNIFI ]] || echo "                http://$(uname -n).local$SUFFIX  (if mDNS/avahi is available)"
   echo "    Config:     netbae config     ($CONF_DIR/config.toml)"
   echo "    Logs:       netbae logs"
   echo "    Update:     netbae update     (or re-run the install command)"
-  echo "    Share:      netbae tunnel     (a read-only dashboard anyone can open, no port forwarding)"
+  if [[ -n $UNIFI ]]; then
+    echo "    Firmware:   after a UniFi OS update, run: bash $UNIFI_DIR/install.sh"
+  else
+    echo "    Share:      netbae tunnel     (a read-only dashboard anyone can open, no port forwarding)"
+  fi
   [[ -n "$ST" ]] || c_warn "Ookla speedtest CLI is missing - see https://www.speedtest.net/apps/cli"
 else
   journalctl -u netbae -n 30 --no-pager || true

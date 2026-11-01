@@ -50,10 +50,14 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.23.0"
+VERSION = "1.24.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
+# Running on a UniFi OS console (UCG, UDR, UDM): netBae is on the router itself, so "gateway" is this machine
+IS_UNIFI = sys.platform.startswith("linux") and (
+    os.path.exists("/usr/bin/ubnt-device-info")
+    or (os.path.isdir("/data") and os.path.isdir("/usr/share/ubios-udapi-server")))
 # Windows keeps config, database and log together in %ProgramData%\netBae.
 WIN_DATA_DIR = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "netBae")
 DEFAULT_CONFIG_PATH = os.path.join(WIN_DATA_DIR, "config.toml") if IS_WINDOWS else "/etc/netbae/config.toml"
@@ -281,6 +285,8 @@ def router_dns():
     Routers hand out their own IPv6 address as a DNS server (by DHCPv6 or router adverts), so a DNS server on the
     same device as the default gateway (same MAC address) is the router. Failing that, its link-local address if
     it answers DNS there."""
+    if IS_UNIFI:  # this machine is the router: its DNS is the local dnsmasq, and its default routes go to the ISP
+        return None, {"127.0.0.1", "::1"}
     gw4, gw6 = default_gateway(), default_gateway6()
     v6 = [ip for ip in system_dns_servers() if ":" in ip]
     for ip in v6:
@@ -367,7 +373,9 @@ def normalize_target(t, default_port=443):
     host = str(t["host"]).strip()
     is_gateway = host.lower() == "gateway"
     if is_gateway:
-        host = default_gateway() or "gateway"
+        # on a UniFi console the router is this machine, and its DNS (dnsmasq) answers on 127.0.0.1. Its routes
+        # are in policy-routing tables (e.g. 201.eth4), so the main table has no default gateway anyway.
+        host = ("127.0.0.1" if IS_UNIFI else default_gateway()) or "gateway"
         if host == "gateway":
             log.warning("could not detect the default gateway; set the router's IP in the config")
     provider, _, pref = host.partition(":")
@@ -451,7 +459,8 @@ def resolve_game_server(provider, pref="auto", bind=None):
         # (looked up during a ping round, which already keeps speedtests waiting: an ungated trace)
         hops = [(n, ip) for n, ip, _ in traceroute.raw("1.1.1.1", 5, bind) if ip]
         gw = default_gateway() if not bind else None
-        first = next(((n, ip) for n, ip in hops if n > 1 and ip != gw), None)
+        # hop 1 is your router, except when netBae runs on the router (UniFi OS): then it's already the ISP
+        first = next(((n, ip) for n, ip in hops if (n > 1 or IS_UNIFI) and ip != gw), None)
         if not first:
             return None
         name = reverse_dns(first[1])
@@ -490,7 +499,7 @@ def normalize_connection(c, all_targets=None):
     if trace not in ("all", "pinged"):
         raise SystemExit(f'connection {name}: trace must be "all" (every main destination) or "pinged" (only its targets)')
     return {"name": name, "bind": bind, "targets": targets, "trace": trace,
-            "speedtest": bool(c.get("speedtest", True)),
+            "speedtest": bool(c.get("speedtest", False)),
             "speedtest_interval_minutes": float(c.get("speedtest_interval_minutes", 1440)),
             "speedtest_offset_minutes": float(c.get("speedtest_offset_minutes", 45))}
 
@@ -715,6 +724,8 @@ def merge_targets(ping):
         n = normalize_target(t)
         hit = {n["name"].lower(), n["group"].lower()} & off
         used |= hit
+        if n["id"] == "gateway" and IS_UNIFI:  # pinging itself says nothing; ISP first hop covers the upstream
+            continue
         if not hit:
             pairs.append((t, n))
     for t in ping.get("extra_targets") or []:
@@ -4335,7 +4346,7 @@ def api_summary(m, q):
                         for r in m.cfg["speedtest"]["regions"]],
             "regions_avg": {label: st_avg(m, "kind = 'region'", (), now - span)
                             for label, span in (("24h", 86400), ("7d", 7 * 86400))},
-            "connections": [dict(conns.get(c["name"], {}), name=c["name"]) for c in m.cfg["connections"]],
+            "connections": [dict(conns.get(c["name"], {}), name=c["name"]) for c in m.cfg["connections"] if c["speedtest"]],
             "global": global_summary(m, now),
             "status": m.st_status,
         },
@@ -4497,6 +4508,8 @@ def api_run_speedtest(m, q):
         return {"started": False, "reason": "no regions configured"}
     if scope.startswith("conn:") and scope[5:] not in [c["name"] for c in m.cfg["connections"]]:
         return {"started": False, "reason": "unknown connection"}
+    if scope.startswith("conn:") and not any(c["speedtest"] for c in m.cfg["connections"] if c["name"] == scope[5:]):
+        return {"started": False, "reason": "speedtests are turned off for this connection (speedtest = true turns them on)"}
     if scope not in ("main", "regions", "global") and not scope.startswith("conn:"):
         return {"started": False, "reason": "unknown scope"}
     threading.Thread(target=m.run_speedtest, kwargs={"blocking": False, "scope": scope}, daemon=True).start()

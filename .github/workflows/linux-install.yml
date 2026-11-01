@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        distro: ["debian:bookworm", "debian:trixie", "ubuntu:24.04", "fedora:latest"]
+        distro: ["debian:bookworm", "debian:trixie", "ubuntu:24.04", "fedora:latest", "unifi"]  # unifi: Debian 11 set up like a UniFi OS console
     steps:
       - uses: actions/checkout@v4
       - name: Install, update and uninstall on ${{ matrix.distro }}

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# netbae - manage the netBae service. Installed to /usr/local/bin/netbae.
+# netbae - manage the netBae service. Installed to /usr/local/bin/netbae (on UniFi OS: /data/netbae/bin/netbae,
+# linked from /usr/local/bin).
 set -euo pipefail
 
 REPO="__NETBAE_REPO__"   # filled in by install.sh
@@ -11,6 +12,12 @@ if [[ $(uname -s) == Darwin ]]; then
   LOG=/usr/local/var/log/netbae.log
   # the Python 3.11+ chosen by the installer (the system python3 may be older)
   PY=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$PLIST" 2>/dev/null || echo python3)
+elif [[ -x /usr/bin/ubnt-device-info || ( -d /data && -d /usr/share/ubios-udapi-server ) ]]; then
+  UNIFI=1  # UniFi OS: everything in /data/netbae, which firmware updates keep
+  APP=/data/netbae/app
+  CONF=/data/netbae/config.toml
+  PY=/usr/bin/python3
+  export PYTHONPATH=/data/netbae/lib  # tomli, for Python < 3.11
 else
   APP=/opt/netbae
   CONF=/etc/netbae/config.toml
@@ -87,7 +94,7 @@ case "${1:-help}" in
   stop)    svc stop ;;
   start)   svc start ;;
   config)
-    as_root "${EDITOR:-nano}" "$CONF"
+    as_root "${EDITOR:-$(command -v nano || echo vi)}" "$CONF"  # UniFi OS has no nano
     if as_svc "$PY" "$APP/netbae.py" -c "$CONF" --check-config >/dev/null; then
       svc restart && echo "config OK - netBae restarted"
     else
@@ -96,7 +103,11 @@ case "${1:-help}" in
     ;;
   check)   as_svc "$PY" "$APP/netbae.py" -c "$CONF" --check-config ;;
   version) echo "netBae $(version)" ;;
-  tunnel)  as_root bash "$APP/tunnel.sh" "${@:2}" ;;
+  tunnel)
+    # it would install cloudflared with apt and put files outside /data, which firmware updates remove
+    [[ -z ${UNIFI:-} ]] || { echo "netbae tunnel isn't available on UniFi OS yet" >&2; exit 1; }
+    as_root bash "$APP/tunnel.sh" "${@:2}"
+    ;;
   export)  # the whole history in one file, taken while netBae keeps running
     out=${2:-netbae-$(hostname -s 2>/dev/null || echo export)-$(date +%Y-%m-%d).db}
     as_root "$PY" "$APP/netbae.py" -c "$CONF" --export "$out"
