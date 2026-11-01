@@ -714,6 +714,34 @@ function renderSummaryBar(s) {
   const bar = $('#summary-bar');
   bar.innerHTML = statusHtml(s, sites, up(sites), bar) + items.join('') + '<button id="tiles-toggle" class="btn ghost" type="button" title="Open or close every ping group below"></button>';
   bar.hidden = !sites.length;
+  renderConnBars(s);
+}
+
+// A smaller bar under the main one for each secondary connection (e.g. a 5G backup): its status, ISP and pings.
+function renderConnBars(s) {
+  const stat = (label, value, title, cls = '') => `<div class="stat" title="${esc(title)}"><div class="label">${label}</div><div class="v ${cls}">${value}</div></div>`;
+  $('#conn-bars').innerHTML = (CONFIG.connections || []).map((c) => {
+    const sites = lastPing.filter((p) => p.connection === c.name && p.family !== 6 && p.last_ts != null);
+    const isp = (s.isp || []).find((x) => x.connection === c.name);
+    if (!sites.length && !isp) return '';
+    const up = sites.filter((p) => p.last != null).length;
+    const loss = mean(sites.map((p) => p.loss5m)) || 0;
+    const offline = isp && isp.latest && isp.latest.error && !/HTTP \d{3}/.test(isp.latest.error);
+    const [cls, state] = offline || (sites.length && !up) ? ['bad', 'No internet']
+      : up < sites.length || loss >= 5 ? ['bad', up < sites.length ? `${sites.length - up} down` : 'Heavy loss']
+        : loss >= 1 ? ['warn', 'Some loss'] : ['good', 'Healthy'];
+    const name = isp && isp.last_ok ? isp.last_ok.isp : '';
+    const items = [
+      `<div class="stat status-stat" title="${esc(c.name)}, from the last 5 minutes of pings and its ISP check"><div class="label">${esc(c.name)}</div><div class="state"><span class="dot"></span>${esc(state)}</div></div>`,
+      name ? `<div class="stat isp-stat" title="${esc(c.name)}: ${esc(name)}">${isp.logo ? `<img src="api/isp/logo?isp=${encodeURIComponent(name)}" alt="" onerror="this.remove()">` : ''}<div><div class="label">ISP</div><div class="v">${esc(name)}</div></div></div>` : '',
+      sites.length ? stat('Hosts up', `${up}<small>/ ${sites.length}</small>`, `${c.name}'s ping targets whose latest ping answered`, up === sites.length ? 'good' : 'bad') : '',
+      isp && isp.uptime24h != null ? stat('Uptime', `${fmtPct(isp.uptime24h, isp.uptime24h < 100 ? 2 : 0)}<small>24h</small>`, `Share of ${c.name}'s ISP checks in the last 24 hours that reached the internet`, isp.uptime24h >= 99.9 ? 'good' : isp.uptime24h >= 99 ? 'warn' : 'bad') : '',
+      sites.length ? stat('Avg latency', `${fmtMs(mean(sites.map((p) => p.avg5m)))}<small>ms</small>`, `Average of ${c.name}'s 5-minute ping averages`) : '',
+      sites.length ? stat('Jitter', `${fmtMs(mean(sites.map((p) => p.jitter5m)))}<small>ms</small>`, 'Average change between consecutive pings, last 5 minutes') : '',
+      sites.length ? stat('Packet loss', fmtLoss(loss, 2), 'Average packet loss in the last 5 minutes') : '',
+    ].filter(Boolean);
+    return `<section class="summary-bar conn-bar card ${cls}">${items.join('')}</section>`;
+  }).join('');
 }
 
 // The bar's first item: how the connection is doing in a few words, the worst of the main connection's internet
@@ -890,8 +918,8 @@ function renderGlobal(g) {
         <td>${a.packet_loss == null ? '-' : fmtPct(a.packet_loss)}</td><td>${fmtBytes(a.data_bytes)}</td><td></td></tr>
       ${sortRows(g.recent, globalSort, resultVal).map((x) => x.error
         ? `<tr><td>${fmtTime(x.ts)}</td><td style="text-align:left">${flag(x.flag)}${esc(x.label)}</td><td colspan="8" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
-        : `<tr><td>${fmtTime(x.ts)}</td><td style="text-align:left">${flag(x.flag)}${esc(x.label)}</td>
-           <td style="text-align:left">${ispTag(x.isp, false)}${esc(x.server_name || '')}${x.server_location ? ', ' + esc(x.server_location) : ''}</td>
+        : `<tr><td class="time-cell">${ispTag(x.isp, false)}${fmtTime(x.ts)}</td><td style="text-align:left">${flag(x.flag)}${esc(x.label)}</td>
+           <td style="text-align:left">${esc(x.server_name || '')}${x.server_location ? ', ' + esc(x.server_location) : ''}</td>
            <td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td><td>${fmtMs(x.jitter_ms)}</td>
            <td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td>
            <td>${x.result_url ? `<a href="${esc(x.result_url)}" target="_blank" rel="noopener">result ↗</a>` : ''}</td></tr>`).join('')}
@@ -1657,7 +1685,7 @@ function speedPanel() {
           <td><b>${fmtMs(avg('ping_ms'))}</b></td><td><b>${fmtMs(avg('jitter_ms'))}</b></td><td></td><td><b>${fmtBytes(ok.reduce((a, x) => a + (x.data_bytes || 0), 0))}</b></td><td></td><td></td><td></td></tr>
         ${recent.map((x) => x.error
           ? `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}</td><td colspan="9" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
-          : `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}${busyTag(x)}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td>
+          : `<tr><td class="time-cell">${ispTag(x.isp, false)}${fmtTime(x.ts)}</td><td>${testName(x.label)}${busyTag(x)}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td>
              <td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td>
              <td style="text-align:left">${ispTag(x.isp)}</td>
              <td style="text-align:left">${esc(x.server_name)}${x.server_location ? ', ' + esc(x.server_location) : ''}</td>

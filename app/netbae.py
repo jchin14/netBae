@@ -50,7 +50,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.24.0"
+VERSION = "1.24.4"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -3385,7 +3385,16 @@ class Monitor:
                 return (time.time(), name, r["ip"], r["isp"], r["asn"], r["location"], None)
             except Exception as e:
                 return (time.time(), name, None, None, None, None, str(e)[:200])
-        self.db.insert_many("INSERT INTO isp VALUES (?,?,?,?,?,?,?)", list(self.pool.map(one, self.isp_connections())))
+        before = {c["connection"]: (c["last_ok"] or {}).get("asn") for c in isp_current(self)}
+        rows = list(self.pool.map(one, self.isp_connections()))
+        self.db.insert_many("INSERT INTO isp VALUES (?,?,?,?,?,?,?)", rows)
+        # a connection that moved to another ISP (a failover, or a secondary just routed out its own WAN) gets its
+        # routes traced again now, instead of showing the old ISP's routes until the next 12-hourly round
+        moved = {r[1] for r in rows if r[4] and before.get(r[1]) and r[4] != before[r[1]]}
+        if moved and self.cfg["traceroute"]["enabled"]:
+            main = self.cfg["isp"]["main_name"]
+            keep = lambda tid: (tid.split("|")[0] if "|" in tid else main) in moved
+            self.pool.submit(lambda: self.collect_traceroutes(skip={x[0] for x in self.trace_targets() if not keep(x[0])}))
         self.record_own_prefixes()
 
     def record_own_prefixes(self):
@@ -4346,7 +4355,7 @@ def api_summary(m, q):
                         for r in m.cfg["speedtest"]["regions"]],
             "regions_avg": {label: st_avg(m, "kind = 'region'", (), now - span)
                             for label, span in (("24h", 86400), ("7d", 7 * 86400))},
-            "connections": [dict(conns.get(c["name"], {}), name=c["name"]) for c in m.cfg["connections"] if c["speedtest"]],
+            "connections": [dict(conns.get(c["name"], {}), name=c["name"]) for c in m.cfg["connections"]],
             "global": global_summary(m, now),
             "status": m.st_status,
         },
@@ -4508,8 +4517,6 @@ def api_run_speedtest(m, q):
         return {"started": False, "reason": "no regions configured"}
     if scope.startswith("conn:") and scope[5:] not in [c["name"] for c in m.cfg["connections"]]:
         return {"started": False, "reason": "unknown connection"}
-    if scope.startswith("conn:") and not any(c["speedtest"] for c in m.cfg["connections"] if c["name"] == scope[5:]):
-        return {"started": False, "reason": "speedtests are turned off for this connection (speedtest = true turns them on)"}
     if scope not in ("main", "regions", "global") and not scope.startswith("conn:"):
         return {"started": False, "reason": "unknown scope"}
     threading.Thread(target=m.run_speedtest, kwargs={"blocking": False, "scope": scope}, daemon=True).start()

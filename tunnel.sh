@@ -11,6 +11,9 @@
 #   netbae tunnel tailscale               Tailscale Funnel: https://<machine>.<tailnet>.ts.net
 #   netbae tunnel status
 #   netbae tunnel off                     stop sharing and turn the public dashboard off
+#
+# On UniFi OS everything stays in /data/netbae, which firmware updates keep: cloudflared in bin/, the tunnel's
+# token, login and config in cloudflared/ (with a copy of the netbae-tunnel unit that install.sh puts back).
 set -euo pipefail
 if [[ $EUID -ne 0 ]]; then exec sudo bash "$0" "$@"; fi
 
@@ -33,6 +36,13 @@ else
   UNIT=/etc/systemd/system/netbae-tunnel.service
   PY=python3
 fi
+UNIFI=""
+if [[ $OS == Linux ]] && [[ -x /usr/bin/ubnt-device-info || ( -d /data && -d /usr/share/ubios-udapi-server ) ]]; then
+  UNIFI=1
+  CONF_DIR=/data/netbae
+  PY=/usr/bin/python3
+  export PYTHONPATH=/data/netbae/lib  # tomli, for Python < 3.11
+fi
 # NixOS (installer-managed): the netbae command passes the Nix package's path. Services come from the NixOS
 # configuration, so the tunnel is set in /etc/nixos/netbae-tunnel.nix and turned on with nixos-rebuild.
 NIX_OUT=${NETBAE_NIX_OUT:-}
@@ -53,7 +63,8 @@ as_svc() {
 }
 ask() {  # ask "question" default -> answer (reads the terminal, also when piped)
   local a
-  read -r -p "$1 " a </dev/tty || a=""
+  # no terminal (e.g. run over ssh without one): take the default quietly
+  if (: </dev/tty) 2>/dev/null; then read -r -p "$1 " a </dev/tty || a=""; else a=""; fi
   echo "${a:-$2}"
 }
 
@@ -106,14 +117,21 @@ public_off() {
   restart_netbae
   c_info "Public dashboard: off"
 }
-app_dir() { if [[ $OS == Darwin ]]; then echo /usr/local/lib/netbae; else echo /opt/netbae; fi; }
+app_dir() {
+  if [[ $OS == Darwin ]]; then echo /usr/local/lib/netbae; elif [[ -n $UNIFI ]]; then echo /data/netbae/app; else echo /opt/netbae; fi
+}
 check_config() {
   if [[ -n $NIX_OUT ]]; then "$NIX_OUT/bin/netbae-server" -c "$CONF" --check-config
   else as_svc "$PY" "$(app_dir)/netbae.py" -c "$CONF" --check-config; fi
 }
 
 # ---------------------------------------------------------------- cloudflared
-find_cf() { command -v cloudflared 2>/dev/null || ls /opt/homebrew/bin/cloudflared /usr/local/bin/cloudflared 2>/dev/null | head -1; }
+# UniFi OS: only netBae's own copy, since anything outside /data goes with the next firmware update
+CF_BIN=/usr/local/bin/cloudflared; [[ -z $UNIFI ]] || CF_BIN=/data/netbae/bin/cloudflared
+find_cf() {
+  if [[ -n $UNIFI ]]; then [[ -x $CF_BIN ]] && echo "$CF_BIN"; return; fi
+  command -v cloudflared 2>/dev/null || ls /opt/homebrew/bin/cloudflared /usr/local/bin/cloudflared 2>/dev/null | head -1
+}
 install_cloudflared() {
   CF=$(find_cf || true)
   if [[ -n $NIX_OUT && -z $CF ]]; then  # nixpkgs' cloudflared, for signing in and the quick tunnel
@@ -132,6 +150,8 @@ install_cloudflared() {
     brew=$(ls /opt/homebrew/bin/brew /usr/local/bin/brew 2>/dev/null | head -1 || true)
     [[ -n $brew && -n ${SUDO_USER:-} ]] || die "install Homebrew (https://brew.sh), then: brew install cloudflared"
     sudo -u "$SUDO_USER" "$brew" install cloudflared
+  elif [[ -n $UNIFI ]]; then  # apt on UniFi OS belongs to UniFi
+    install_cloudflared_binary
   elif command -v apt-get >/dev/null; then
     install -d -m 0755 /usr/share/keyrings
     curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
@@ -153,7 +173,9 @@ update_cloudflared() {  # bring an installed cloudflared up to date from whereve
   old=$("$CF" --version 2>/dev/null | head -1)
   c_info "Checking for a cloudflared update"
   brew=$(ls /opt/homebrew/bin/brew /usr/local/bin/brew 2>/dev/null | head -1 || true)
-  if [[ $OS == Darwin && -n $brew && -n ${SUDO_USER:-} ]] && sudo -u "$SUDO_USER" "$brew" list cloudflared >/dev/null 2>&1; then
+  if [[ -n $UNIFI ]]; then
+    install_cloudflared_binary || c_warn "couldn't download the latest cloudflared; keeping $old"
+  elif [[ $OS == Darwin && -n $brew && -n ${SUDO_USER:-} ]] && sudo -u "$SUDO_USER" "$brew" list cloudflared >/dev/null 2>&1; then
     sudo -u "$SUDO_USER" "$brew" upgrade cloudflared >/dev/null 2>&1 || true
   elif [[ $OS != Darwin ]] && command -v dpkg >/dev/null && dpkg -s cloudflared >/dev/null 2>&1; then
     { apt-get update -qq && apt-get install -y -qq --only-upgrade cloudflared; } >/dev/null 2>&1 || true
@@ -173,8 +195,10 @@ install_cloudflared_binary() {  # Cloudflare's own release build, for distros wi
     x86_64|amd64) m=amd64 ;; aarch64|arm64) m=arm64 ;; armv7l|armv6l|armhf|armel) m=arm ;; i?86) m=386 ;;
     *) die "no cloudflared build for $m" ;;
   esac
-  curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$m" -o /usr/local/bin/cloudflared
-  chmod 0755 /usr/local/bin/cloudflared
+  # a new file renamed over the old one: the running tunnel keeps the binary it started with
+  curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$m" -o "$CF_BIN.new" \
+    && chmod 0755 "$CF_BIN.new" && "$CF_BIN.new" --version >/dev/null 2>&1 && mv -f "$CF_BIN.new" "$CF_BIN" \
+    || { rm -f "$CF_BIN.new"; return 1; }
 }
 
 # netbae-tunnel: our own service running cloudflared as the unprivileged netBae user
@@ -224,6 +248,8 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
+    # UniFi OS: a firmware update removes the unit; install.sh (or /data/netbae/install.sh) puts this copy back
+    [[ -z $UNIFI ]] || install -m 0644 "$UNIT" "$CF_DIR/netbae-tunnel.service"
     systemctl daemon-reload
     systemctl enable netbae-tunnel >/dev/null 2>&1
     systemctl restart netbae-tunnel
@@ -238,6 +264,7 @@ cf_service_remove() {
     launchctl bootout "system/$TLABEL" 2>/dev/null || true
     rm -f "$TPLIST"
   else
+    rm -f "$CF_DIR/netbae-tunnel.service"  # UniFi OS: so install.sh doesn't put it back
     [[ -f $UNIT ]] || return 1
     systemctl disable --now netbae-tunnel >/dev/null 2>&1 || true
     rm -f "$UNIT"; systemctl daemon-reload
@@ -447,6 +474,7 @@ cmd_tailscale() {
     TS=/run/current-system/sw/bin/tailscale
   fi
   if [[ -z $TS ]]; then
+    [[ -z $UNIFI ]] || die "Tailscale isn't installed on this console, and netBae doesn't install it on UniFi OS: use netbae tunnel cloudflare"
     [[ $OS == Darwin ]] && die "install Tailscale from https://tailscale.com/download/mac, sign in, then re-run: netbae tunnel tailscale"
     c_info "Installing Tailscale (official install script)"
     curl -fsSL https://tailscale.com/install.sh | sh

@@ -23,6 +23,16 @@ The main steps so far, with the full details per version below.
 | 1.23 | The dashboard over IPv6 as well as IPv4, Apple updates, iCloud and GitHub targets, ISP logos on speedtests |
 | 1.24 | Install on a UniFi OS console itself (Cloud Gateway, Dream Router, Dream Machine) |
 
+## 1.24.4 - 2026-11-01
+
+A summary bar and a Run button for secondary connections, and `netbae tunnel` on UniFi OS consoles.
+
+- **Secondary connections** get their own summary bar under the main one at the top of the dashboard: whether it's working, its ISP, hosts up, uptime, latency, jitter and packet loss, so you can see at a glance that a 5G backup is ready.
+- A secondary connection always has a **Run** button in the speedtest table, so you can test it by hand even when its scheduled speedtests are off.
+- When a connection's ISP changes, its routes are traced again straight away, instead of showing the old ISP's routes for up to 12 hours.
+- `netbae tunnel` now works on UniFi OS consoles: cloudflared and the tunnel's settings stay in /data/netbae, and the tunnel comes back after a firmware update when you run /data/netbae/install.sh.
+- Speedtest history and global speedtests show the ISP's logo at the far left, next to the time.
+
 ## 1.24.0 - 2026-11-01
 
 netBae on UniFi OS consoles, and a secondary connection that only uses pings and traces unless you ask for speedtests.

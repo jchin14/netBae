@@ -758,6 +758,13 @@ systemctl daemon-reload
 if [[ $BOOT == true ]]; then systemctl enable netbae >/dev/null 2>&1; else systemctl disable netbae >/dev/null 2>&1 || true; fi
 systemctl enable --now netbae-update.path >/dev/null 2>&1 || c_warn "couldn't enable the dashboard's Update button (netbae-update.path)"
 systemctl restart netbae
+# UniFi OS: put back the tunnel that netbae tunnel set up, which a firmware update removes with the rest of /etc
+if [[ -n $UNIFI && -f $UNIFI_DIR/cloudflared/netbae-tunnel.service && ! -f /etc/systemd/system/netbae-tunnel.service ]]; then
+  c_info "Restoring the netBae tunnel"
+  install -m 0644 "$UNIFI_DIR/cloudflared/netbae-tunnel.service" /etc/systemd/system/netbae-tunnel.service
+  systemctl daemon-reload
+  systemctl enable --now netbae-tunnel >/dev/null 2>&1 || c_warn "couldn't start the tunnel (netbae-tunnel)"
+fi
 
 # Open the firewall if one is active
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then

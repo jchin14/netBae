@@ -13,7 +13,7 @@ if [[ $(uname -s) == Darwin ]]; then
   # the Python 3.11+ chosen by the installer (the system python3 may be older)
   PY=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$PLIST" 2>/dev/null || echo python3)
 elif [[ -x /usr/bin/ubnt-device-info || ( -d /data && -d /usr/share/ubios-udapi-server ) ]]; then
-  UNIFI=1  # UniFi OS: everything in /data/netbae, which firmware updates keep
+  # UniFi OS: everything in /data/netbae, which firmware updates keep
   APP=/data/netbae/app
   CONF=/data/netbae/config.toml
   PY=/usr/bin/python3
@@ -104,8 +104,6 @@ case "${1:-help}" in
   check)   as_svc "$PY" "$APP/netbae.py" -c "$CONF" --check-config ;;
   version) echo "netBae $(version)" ;;
   tunnel)
-    # it would install cloudflared with apt and put files outside /data, which firmware updates remove
-    [[ -z ${UNIFI:-} ]] || { echo "netbae tunnel isn't available on UniFi OS yet" >&2; exit 1; }
     as_root bash "$APP/tunnel.sh" "${@:2}"
     ;;
   export)  # the whole history in one file, taken while netBae keeps running

@@ -499,7 +499,7 @@ speedtest = true               # off by default: pings and traces only, which us
 speedtest_interval_minutes = 1440   # daily, to save data on mobile plans (0 = only when you press Run)
 ```
 
-The connection gets its own group of ping tiles and its routes in the Routes card's **Compare ISPs**. With `speedtest = true` it also gets its own row in the speedtest table, with its ISP and data used, so you can compare it with your main line.
+The connection gets its own group of ping tiles and its routes in the Routes card's **Compare ISPs**. It also has a row in the speedtest table with a **Run** button, so you can test its speed when you choose. With `speedtest = true` it's also tested on a schedule. When its ISP changes (for example once your router starts sending it out the other WAN), its routes are traced again straight away.
 
 ## Sharing a public dashboard
 

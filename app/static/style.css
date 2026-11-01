@@ -155,6 +155,14 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 40px; display: grid
 .summary-bar .isp-stat img { width: 32px; height: 32px; border-radius: 6px; }
 .summary-bar .v.warn { color: var(--warn); }
 .summary-bar .v.bad { color: var(--bad); }
+/* secondary connections: a smaller bar each, under the main one */
+#conn-bars { display: grid; gap: 12px; }
+#conn-bars:empty { display: none; }
+.conn-bar { padding: 10px 18px; }
+.conn-bar .v { font-size: 16px; }
+.conn-bar .status-stat .state { font-size: 13px; }
+.conn-bar .isp-stat { gap: 8px; }
+.conn-bar .isp-stat img { width: 24px; height: 24px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
 .tile { padding: 14px 16px; }
 .tile .name { display: flex; align-items: center; gap: 7px; font-weight: 600; overflow: hidden; }
@@ -445,4 +453,5 @@ table.stats.route-compare td:first-child { min-width: 140px; }
 
 /* an ISP's logo in front of its name (speedtest tables) */
 .isp-tag { white-space: nowrap; }
+td.time-cell { text-align: left; white-space: nowrap; }
 .isp-tag .isp-logo, td > .isp-logo { width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 5px; }
