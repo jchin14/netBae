@@ -339,6 +339,8 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[web] auto_update_time` | `"03:30"` | when `"weekly"` and `"daily"` updates install, local time (24-hour) |
 | `[web] start_at_boot` | `true` | start netBae when the machine boots. `false`: it runs only after `netbae start` and stays stopped after a reboot. Applied by `netbae config`, `start` and `restart`. On NixOS it's `services.netbae.startAtBoot`; in Docker use the container's restart policy instead |
 | `[web] chart_band` | `"none"` | the latency charts' spread band by default: `"none"`, `"p5-p95"` or `"min-max"`. Each browser remembers its own choice, and the band is drawn when 12 or fewer lines are showing |
+| `[web] tile_order` | `[]` | the order of the ping group tiles, by group name, e.g. `["Network", "Gaming", "DNS"]`: those come first and the rest follow in their usual order. Put `"*"` where the rest should go, e.g. `["Network", "*", "Regions"]` puts Regions last |
+| `[web] card_order` | `[]` | the order of the dashboard's cards. The usual order is `["speedtest", "ping", "speed_servers", "routes", "dns", "cdn", "speed_history", "global", "outages", "system_history"]` (`speedtest` is the Speedtest and System cards). List the ones you want first and the rest follow; `"*"` stands for the rest, e.g. `["speedtest", "routes", "*"]` puts Routes back above Ping latency |
 | `[web] port` | `80` | if it's taken when netBae starts, the next free port is used and the log says which |
 | `[storage] database` | `/var/lib/netbae/netbae.db` | the history database |
 | `[storage] raw_retention_days` | `7` | every sample |
@@ -372,7 +374,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 |---|---|---|
 | `[speedtest] enabled` | `true` | automatic speedtests: the schedule (main, regions and secondary connections) and the first test after a new install. `false` stops them all |
 | `[speedtest] manual` | `true` | the dashboard's Run buttons, even when `enabled = false`. Set both to `false` to turn speedtests off completely |
-| `[speedtest] interval_minutes` / `offset_minutes` | `60` / `0` | e.g. `offset_minutes = 6` runs at :06 every hour |
+| `[speedtest] interval_minutes` / `offset_minutes` | `60` / `15` | every hour at :15 |
 | `[speedtest] servers` | `[]` | empty = Ookla picks the closest; or server IDs from `speedtest -L`, each tested in turn |
 | `[speedtest] regions` | `[]` | cities to speedtest, e.g. `["Sydney", "Singapore", "London"]` |
 | `[speedtest] global_every` | `5` | after every 5 main speedtests, one more to a random server somewhere in the world, see [Global speedtests](#global-speedtests) (`0` = off) |
@@ -383,6 +385,8 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[isp] enabled` | `true` | each connection's public IP and ISP, from ipinfo.io |
 | `[isp] interval_minutes` / `offset_minutes` | `10` / `0` | |
 | `[isp] main_name` | `"Main"` | what to call your main connection |
+| `[outages] enabled` | `true` | a tiny DNS query to 1.1.1.1 (8.8.8.8 if that misses) through each connection every few seconds, for the **Disconnections** card: every drop of 2 seconds or more, by day for the last week |
+| `[outages] interval_seconds` / `secondary_interval_seconds` | `1` / `5` | how often for the main connection (about 13 MB a day) and each secondary one (about 2.5 MB a day) |
 | `[traceroute] enabled` | `true` | |
 | `[traceroute] interval_hours` / `offset_minutes` | `12` / `15` | |
 | `[traceroute] max_hops` / `parallel` | `25` / `6` | traces at once |
@@ -409,7 +413,8 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[[connections]] targets` | `1.1.1.1`, `8.8.8.8`, `google.com` | what to ping over it, or `"all"` for every main target |
 | `[[connections]] trace` | `"all"` | trace the route to every main destination over it every 12 hours, for the Routes card's **Compare ISPs** (a few hundred KB of traceroutes a day), or `"pinged"` for only its targets |
 | `[[connections]] speedtest` | `false` | also run speedtests over it (each uses up to 1 GB). Off, it only gets pings and traces |
-| `[[connections]] speedtest_interval_minutes` / `speedtest_offset_minutes` | `1440` / `45` | daily (`0` = only when you press Run) |
+| `[[connections]] speedtest_interval_minutes` / `speedtest_offset_minutes` | `60` / `45` | every hour at :45, half an hour after the main connection's (`1440` = daily, `0` = only when you press Run) |
+| `[[connections]] speedtest_server` | | an Ookla server id to always test against, e.g. your mobile ISP's own server, which often doesn't count towards your data |
 
 </details>
 

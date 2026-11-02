@@ -47,7 +47,7 @@
     <div id="conn-bars"></div>
     <section id="ping-tiles" class="tiles"></section>
 
-    <section class="grid2">
+    <section class="grid2" id="cards-speed">
       <div class="card" id="speed-card">
         <div class="card-head">
           <h2>Speedtest <span class="muted small">closest server · latest and averages</span></h2>
@@ -57,6 +57,11 @@
             <button id="run-speedtest" class="btn">Run now</button>
           </span>
         </div>
+        <div id="speed-nav" class="speed-nav" hidden>
+          <button id="speed-older" class="btn ghost" type="button" title="Older result" aria-label="Older result">&lt;</button>
+          <span id="speed-pos" class="small"></span>
+          <button id="speed-newer" class="btn ghost" type="button" title="Newer result" aria-label="Newer result">&gt;</button>
+        </div>
         <div id="speed-summary" class="speed-summary"><span class="muted">No results yet</span></div>
         <div id="speed-details" class="speed-details"></div>
         <div id="speed-meta" class="muted small"></div>
@@ -65,27 +70,6 @@
         <div class="card-head"><h2>System</h2><span id="sys-model" class="muted small"></span></div>
         <div id="sys-body" class="sys-body"></div>
       </div>
-    </section>
-
-    <section class="card panel" id="panel-routes" hidden>
-      <div class="panel-head">
-        <h2>Routes <span class="muted small" id="routes-note"></span></h2>
-        <div class="controls"><span class="seg route-tabs" role="tablist" aria-label="Routes view"><button type="button" data-tab="now">Now</button><button
-          type="button" data-tab="changes">Changes</button><button type="button" data-tab="compare">Compare ISPs</button></span></div>
-      </div>
-      <div id="routes-body" data-route-tab="now"></div>
-      <div id="routes-changes" data-route-tab="changes" hidden></div>
-      <div id="routes-compare" data-route-tab="compare" hidden></div>
-      <p class="muted small routes-later">On-net is best, then direct peering, an internet exchange (IX) and transit through another
-        carrier. Now uses each destination's latest route; a chart of how the split changes over time may be added later.</p>
-    </section>
-
-    <section class="card panel" id="panel-regions">
-      <div class="panel-head">
-        <h2>Speedtests by server <span class="muted small" id="regions-note">closest server, connections and regions: latest and 7-day averages</span></h2>
-        <div class="controls"></div>
-      </div>
-      <div class="table-wrap"><table id="region-table" class="stats" hidden></table></div>
     </section>
 
     <section class="card panel" id="panel-ping">
@@ -112,6 +96,27 @@
       <div class="chips"></div>
       <div class="chart-wrap"><canvas></canvas></div>
       <div class="table-wrap"><table class="stats"></table></div>
+    </section>
+
+    <section class="card panel" id="panel-regions">
+      <div class="panel-head">
+        <h2>Speedtests by server <span class="muted small" id="regions-note">closest server, connections and regions: latest and 7-day averages</span></h2>
+        <div class="controls"></div>
+      </div>
+      <div class="table-wrap"><table id="region-table" class="stats" hidden></table></div>
+    </section>
+
+    <section class="card panel" id="panel-routes" hidden>
+      <div class="panel-head">
+        <h2>Routes <span class="muted small" id="routes-note"></span></h2>
+        <div class="controls"><span class="seg route-tabs" role="tablist" aria-label="Routes view"><button type="button" data-tab="now">Now</button><button
+          type="button" data-tab="changes">Changes</button><button type="button" data-tab="compare">Compare ISPs</button></span></div>
+      </div>
+      <div id="routes-body" data-route-tab="now"></div>
+      <div id="routes-changes" data-route-tab="changes" hidden></div>
+      <div id="routes-compare" data-route-tab="compare" hidden></div>
+      <p class="muted small routes-later">On-net is best, then direct peering, an internet exchange (IX) and transit through another
+        carrier. Now uses each destination's latest route; a chart of how the split changes over time may be added later.</p>
     </section>
 
     <section class="card panel" id="panel-dns">
@@ -172,6 +177,22 @@
         <div class="controls"></div>
       </div>
       <div class="table-wrap"><table class="stats" id="global-table"></table></div>
+    </section>
+
+    <section class="card panel" id="panel-outages" hidden>
+      <div class="panel-head">
+        <h2>Disconnections</h2>
+        <div class="controls">
+          <select class="outage-range" aria-label="Days shown">
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+        </div>
+      </div>
+      <div class="outage-meta small"><span id="outage-total" class="muted"></span><span id="outage-legend" class="muted"></span></div>
+      <div id="outage-days"></div>
     </section>
 
     <section class="card panel" id="panel-system">

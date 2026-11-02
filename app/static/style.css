@@ -151,8 +151,8 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 40px; display: grid
 .summary-bar .v small { font-size: 11.5px; font-weight: 400; color: var(--muted); margin: 0 3px; }
 .summary-bar .v.good { color: var(--good); }
 .summary-bar .stat-sep { align-self: stretch; width: 1px; background: var(--border); }
-.summary-bar .isp-stat { display: flex; align-items: center; }
-.summary-bar .isp-stat img { width: 32px; height: 32px; border-radius: 6px; }
+.summary-bar .isp-stat { display: flex; align-items: center; gap: 10px; }
+.summary-bar .isp-stat img { width: 28px; height: 28px; border-radius: 6px; }
 .summary-bar .v.warn { color: var(--warn); }
 .summary-bar .v.bad { color: var(--bad); }
 /* secondary connections: a smaller bar each, under the main one */
@@ -204,7 +204,7 @@ table.stats tr.total td { border-top: 1px solid var(--border); }
 .speed-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 10px; }
 .speed-summary .big { font-size: 32px; font-weight: 500; letter-spacing: -.02em; line-height: 1.15; margin-top: 2px; }
 .speed-summary .big small { font-size: 12px; color: var(--muted); font-weight: 400; letter-spacing: 0; margin-left: 5px; }
-.speed-details { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 4px 0 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.speed-details { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 4px 0 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .speed-details .label { font-size: 10.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .12em; }
 .speed-details .val { font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .speed-details .sub { font-size: 12px; color: var(--muted); }
@@ -266,17 +266,37 @@ h2 .live-badge { margin-left: 8px; font-weight: 400; vertical-align: middle; }
 .route-hist { margin: 4px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
 #isp-now b { color: var(--text); font-weight: 600; }
 .isp-logo { width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
-.isp-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -2px 0 8px; }
-.isp-legend:empty { display: none; }
-.isp-legend .isp-title { font: inherit; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
-  color: var(--text); background: none; border: 0; padding: 2px; margin-right: 4px; cursor: pointer; }
-.isp-legend .isp-title.off { color: var(--muted); background: none; }
-.isp-legend button {
-  font: inherit; font-size: 12px; color: var(--text); background: var(--card); cursor: pointer;
-  border: 1px dashed var(--border); border-radius: 999px; padding: 2px 10px 2px 8px; display: inline-flex; gap: 6px; align-items: center;
-}
-.isp-legend button.off { color: var(--muted); background: var(--chip-off); }
-.isp-legend button.off span { opacity: .35; }
+/* Disconnections: a row per day, a thin bar per connection over 00-24h */
+.outage-meta { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 16px; margin: 2px 0 8px; }
+#outage-legend { display: flex; flex-wrap: wrap; gap: 14px; }
+.okey { display: inline-flex; align-items: center; gap: 6px; }
+.okey-bars { display: inline-flex; flex-direction: column; gap: 2px; }
+.okey-bars i { display: block; width: 18px; height: 3px; border-radius: 2px; background: var(--chip-off); }
+.okey-bars i.on { background: var(--good); }
+/* the connection buttons above Ping latency and Speedtest history */
+.conn-toggle { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.conn-toggle button { font: inherit; font-size: 12.5px; color: var(--text); background: var(--card-2); cursor: pointer;
+  border: 1px solid var(--accent); border-radius: 999px; padding: 3px 11px 3px 8px; display: inline-flex; gap: 6px; align-items: center; }
+.conn-toggle button .isp-logo { margin: 0; }
+.conn-toggle button.off { color: var(--muted); background: var(--chip-off); border-color: var(--border); }
+.conn-toggle button.off img { opacity: .4; filter: grayscale(1); }
+.orow { display: grid; grid-template-columns: 92px 1fr 110px; align-items: center; gap: 10px; padding: 5px 0; border-top: 1px solid var(--border); }
+.orow.oaxis { border-top: 0; padding: 0 0 2px; }
+.oday { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.obars { display: flex; flex-direction: column; gap: 3px; position: relative; }
+.oaxis .obars { height: 14px; }
+.oaxis .obars span { position: absolute; transform: translateX(-50%); font-size: 10.5px; color: var(--muted); }
+.oaxis .obars span:first-child { transform: none; }
+.oaxis .obars span:last-child { transform: translateX(-100%); }
+.obar { position: relative; height: 6px; background: var(--chip-off); border-radius: 3px; overflow: hidden; }
+.obar span { position: absolute; top: 0; bottom: 0; }
+.obar .on { background: color-mix(in srgb, var(--good) 45%, transparent); }
+.obar .drop { background: var(--bad); min-width: 2px; }
+.osum { font-size: 12.5px; text-align: right; white-space: nowrap; }
+.osum b { color: var(--bad); }
+.osum .ok { color: var(--good); font-weight: 700; }
+.warn-text { color: var(--warn); }
+@media (max-width: 600px) { .orow { grid-template-columns: 64px 1fr 72px; gap: 6px; } }
 .tile .where { font-size: 11.5px; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .note:empty { display: none; }
 .note { margin-bottom: 8px; }
@@ -455,3 +475,20 @@ table.stats.route-compare td:first-child { min-width: 140px; }
 .isp-tag { white-space: nowrap; }
 td.time-cell { text-align: left; white-space: nowrap; }
 .isp-tag .isp-logo, td > .isp-logo { width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 5px; }
+
+/* Speedtest card: < > through older results, and live progress while a test runs */
+.speed-nav { display: flex; align-items: center; gap: 8px; margin: -4px 0 10px; }
+.speed-nav[hidden] { display: none; }
+.speed-nav .btn { padding: 1px 10px; font-weight: 600; }
+#speed-pos { flex: 1; text-align: center; }
+#speed-card.history #speed-pos { cursor: pointer; }
+#speed-card.history .speed-summary .big { color: var(--muted); }
+.speed-summary .live-now .big { color: var(--accent); }
+.speed-summary .live-wait { opacity: .55; }
+.speed-live .progress { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; margin: 6px 0 3px; }
+.speed-live .progress span { display: block; height: 100%; background: var(--accent); transition: width .8s linear; }
+.pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: 6px;
+  vertical-align: 1px; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none; } .speed-live .progress span { transition: none; } }
+.summary-bar .testing { font-size: 15px; color: var(--accent); }

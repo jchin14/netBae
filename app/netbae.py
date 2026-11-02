@@ -50,7 +50,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.24.4"
+VERSION = "1.24.9"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -120,7 +120,8 @@ V6_TWIN = resolver_twins(BUILTIN["dns_servers"])
 
 DEFAULT_CONFIG = {
     "web": {"host": "::", "port": 80, "chart_band": "none", "update_check": True, "auto_update": "weekly",
-            "update_check_hours": 6, "auto_update_time": "03:30", "start_at_boot": True},
+            "update_check_hours": 6, "auto_update_time": "03:30", "start_at_boot": True,
+            "tile_order": [], "card_order": []},
     # optional read-only copy of the dashboard for sharing (e.g. through a Cloudflare Tunnel)
     "public": {"enabled": False, "host": "::", "port": 8080,
                "requests_per_minute": 120, "total_requests_per_minute": 1200, "hide": [],
@@ -165,7 +166,7 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "manual": True,
         "interval_minutes": 60,
-        "offset_minutes": 0,
+        "offset_minutes": 15,
         "servers": [],
         "regions": [],
         "regions_interval_minutes": 1440,
@@ -182,6 +183,8 @@ DEFAULT_CONFIG = {
     "system": {"interval_seconds": 30, "offset_seconds": 0, "disk_path": "/"},
     # public IP + ISP of the main connection and every secondary connection (shows failovers)
     "isp": {"enabled": True, "interval_minutes": 10, "offset_minutes": 0, "main_name": "Main"},
+    # disconnections: a tiny DNS query every few seconds through each connection, so drops of seconds show up
+    "outages": {"enabled": True, "interval_seconds": 1, "secondary_interval_seconds": 5},
     # route to every target every 12 h: which networks (ASNs) carry it - on-net, peering or transit
     "traceroute": {"enabled": True, "interval_hours": 12, "offset_minutes": 15, "max_hops": 25, "parallel": 6,
                    "ipv6": True},  # also trace IPv6 routes to the sites pinged over IPv6
@@ -495,13 +498,18 @@ def normalize_connection(c, all_targets=None):
     for t in wanted:
         t = normalize_target(t)
         targets.append(dict(t, id=f"{name}|{t['id']}", group=name, bind=bind, connection=name))
+    server = c.get("speedtest_server")
+    if server is not None and (isinstance(server, bool) or not str(server).isdigit()):
+        raise SystemExit(f"connection {name}: speedtest_server must be an Ookla server id, e.g. 12491")
+    server = int(server) if server is not None else None
     trace = str(c.get("trace", "all")).lower()
     if trace not in ("all", "pinged"):
         raise SystemExit(f'connection {name}: trace must be "all" (every main destination) or "pinged" (only its targets)')
     return {"name": name, "bind": bind, "targets": targets, "trace": trace,
             "speedtest": bool(c.get("speedtest", False)),
-            "speedtest_interval_minutes": float(c.get("speedtest_interval_minutes", 1440)),
-            "speedtest_offset_minutes": float(c.get("speedtest_offset_minutes", 45))}
+            "speedtest_interval_minutes": float(c.get("speedtest_interval_minutes", 60)),
+            "speedtest_offset_minutes": float(c.get("speedtest_offset_minutes", 45)),
+            "speedtest_server": server}
 
 
 # Built-in speedtest regions: name -> (Ookla search term, server city name or None for any, country).
@@ -850,6 +858,19 @@ def load_config(path):
         raise SystemExit('[web] auto_update_time must be a time of day like "03:30" (24-hour, local time)')
     if not isinstance(cfg["web"]["start_at_boot"], bool):
         raise SystemExit("[web] start_at_boot must be true or false")
+    order = cfg["web"]["tile_order"]
+    if not isinstance(order, list) or not all(isinstance(x, str) for x in order):
+        raise SystemExit('[web] tile_order must be a list of ping group names, e.g. ["Network", "Gaming", "DNS"]')
+    cards = ("speedtest", "ping", "speed_servers", "routes", "dns", "cdn", "speed_history", "global", "system_history",
+             "outages", "*")
+    order = cfg["web"]["card_order"]
+    bad = [x for x in order if str(x).lower().replace(" ", "_").replace("-", "_") not in cards] \
+        if isinstance(order, list) else [order]
+    if bad:
+        raise SystemExit(f"[web] card_order: unknown card {bad[0]!r}. Cards: {', '.join(cards)}")
+    for key in ("interval_seconds", "secondary_interval_seconds"):
+        if not 1 <= float(cfg["outages"][key]) <= 60:
+            raise SystemExit(f"[outages] {key} must be between 1 and 60")
     if not 0 < float(cfg["speedtest"]["busy_percent"]) <= 100:
         raise SystemExit("[speedtest] busy_percent must be between 1 and 100")
     if float(cfg["speedtest"]["busy_wait_minutes"]) < 0:
@@ -928,6 +949,10 @@ CREATE INDEX IF NOT EXISTS cdn_ts ON cdn(ts);
 CREATE TABLE IF NOT EXISTS traceroute (ts REAL NOT NULL, target TEXT NOT NULL, dest TEXT, kind TEXT,
     path TEXT, hops TEXT, error TEXT, dest_host TEXT, first_ts REAL);
 CREATE INDEX IF NOT EXISTS traceroute_target_ts ON traceroute(target, ts);
+-- the outage checker: each drop of a connection (ts to ts_end), and when the checker was running
+CREATE TABLE IF NOT EXISTS outage (connection TEXT NOT NULL, ts REAL NOT NULL, ts_end REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS outage_conn_ts ON outage(connection, ts);
+CREATE TABLE IF NOT EXISTS outage_span (connection TEXT NOT NULL, ts REAL NOT NULL, ts_end REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS own_prefix (prefix TEXT PRIMARY KEY, first_seen REAL, last_seen REAL);
 CREATE TABLE IF NOT EXISTS hop_geo (ip TEXT PRIMARY KEY, ts REAL, city TEXT, lat REAL, lon REAL);
 CREATE INDEX IF NOT EXISTS system_ts ON system(ts);
@@ -1400,6 +1425,30 @@ def udp_ping(host, port, timeout, bind=None):
         return (time.perf_counter() - t0) * 1000
     except OSError:
         return None
+    finally:
+        s.close()
+
+
+OUTAGE_RESOLVERS = ("1.1.1.1", "8.8.8.8")  # anycast resolvers close to almost everyone
+
+
+def dns_probe(server, bind=None, timeout=1.5):
+    """True if a DNS server answers a tiny query sent from bind (about 150 bytes both ways): the outage check."""
+    q = struct.pack(">HHHHHH", random.randint(0, 0xFFFF), 0x0100, 1, 0, 0, 0) \
+        + b"\x01a\x0croot-servers\x03net\x00" + struct.pack(">HH", 1, 1)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        bind_socket(s, bind)
+        s.connect((server, 53))
+        s.send(q)
+        deadline = time.monotonic() + timeout
+        while True:
+            s.settimeout(max(0.01, deadline - time.monotonic()))
+            d = s.recv(512)
+            if len(d) >= 12 and d[:2] == q[:2]:
+                return True
+    except OSError:
+        return False
     finally:
         s.close()
 
@@ -2914,6 +2963,7 @@ class Monitor:
         self.public_visitors, self.public_direct_ts = {}, None
         self.share, self.share_ts, self.share_busy = {"tunnels": []}, 0, False
         self.share_lock = threading.Lock()
+        self.outage_now = {}  # connection -> when its current drop started (None while it's up)
 
     def start(self):
         c = self.cfg
@@ -2963,6 +3013,11 @@ class Monitor:
         run_aligned("rollup", 60, 10, self.rollup_all)
         run_aligned("cleanup", 3600, 1800, self.cleanup)
         self.pool.submit(self.collect_system)
+        if c["outages"]["enabled"]:
+            for name, bind in self.isp_connections():
+                every = float(c["outages"]["secondary_interval_seconds" if bind else "interval_seconds"])
+                threading.Thread(target=self.watch_outages, args=(name, bind, every), name=f"outages-{name}",
+                                 daemon=True).start()
 
     def update_check(self):
         """The regular check for a new release ([web] update_check_hours); with auto_update = "immediately"
@@ -3373,6 +3428,34 @@ class Monitor:
             self.ipv6 = (time.time(), ok)
         return self.ipv6[1]
 
+    def watch_outages(self, name, bind, every):
+        """Ask a DNS resolver for a tiny answer every few seconds through one connection, and record each drop (no
+        answer from either resolver) from its first missed answer to its first answer again. Skipped while a
+        speedtest runs, since a saturated line drops packets without being down."""
+        c = self.db.conn()
+        now = time.time()
+        c.execute("INSERT INTO outage_span VALUES (?,?,?)", (name, now, now))
+        span, saved, down, missed = c.execute("SELECT last_insert_rowid()").fetchone()[0], now, None, 0
+        while True:
+            t0 = time.time()
+            try:
+                if not PROBES.closed:
+                    ok = any(dns_probe(s, bind) for s in OUTAGE_RESOLVERS)  # the second only if the first misses
+                    if not ok:
+                        missed += 1
+                        down = down or t0
+                    elif down is not None:
+                        if missed >= 2:  # one round of lost packets isn't a drop
+                            c.execute("INSERT INTO outage VALUES (?,?,?)", (name, down, t0))
+                        down, missed = None, 0
+                    self.outage_now[name] = down if missed >= 2 else None
+                if t0 - saved >= 60:
+                    c.execute("UPDATE outage_span SET ts_end = ? WHERE rowid = ?", (t0, span))
+                    saved = t0
+            except Exception:
+                log.exception("outage checker for %s failed", name)
+            time.sleep(max(0.05, every - (time.time() - t0)))
+
     def isp_connections(self):
         """(name, bind) for the main connection and every secondary connection."""
         return [(self.cfg["isp"]["main_name"], None)] + [(c["name"], c["bind"]) for c in self.cfg["connections"]]
@@ -3460,10 +3543,12 @@ class Monitor:
         minute_cutoff = max(cutoff, now - float(st["minute_retention_days"]) * 86400)
         raw_cutoff = max(minute_cutoff, now - float(st["raw_retention_days"]) * 86400)
         for tables, cut in ((("ping", "dns"), raw_cutoff), (("ping_1m", "dns_1m", "cdn"), minute_cutoff),
-                            (("ping_1h", "dns_1h", "system", "speedtest", "isp", "traceroute"), cutoff)):
+                            (("ping_1h", "dns_1h", "system", "speedtest", "isp", "traceroute", "outage",
+                             "outage_span"), cutoff)):
             if cut > 0:
-                for table in tables:
-                    self.db.conn().execute(f"DELETE FROM {table} WHERE ts < ?", (cut,))
+                for table in tables:  # a span the checker is still running in started long ago: go by its end
+                    col = "ts_end" if table == "outage_span" else "ts"
+                    self.db.conn().execute(f"DELETE FROM {table} WHERE {col} < ?", (cut,))
         self.db.conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     # -- speedtest
@@ -3513,6 +3598,7 @@ class Monitor:
         Mbps when a scheduled test ran despite a busy network, stored with the results."""
         if not self.st_lock.acquire(blocking=blocking):
             return False
+        self.st_status = self.starting_status(scope)
         self.st_busy = busy
         try:
             if scope == "regions":
@@ -3524,7 +3610,7 @@ class Monitor:
                 for conn in self.cfg["connections"]:
                     if conn["name"] == scope[5:]:
                         self._save_speedtest(time.time(), "connection", conn["name"],
-                                             self._run_cli(None, conn["name"], conn["bind"]))
+                                             self._run_cli(conn["speedtest_server"], conn["name"], conn["bind"]))
             else:
                 for sid in (self.cfg["speedtest"]["servers"] or [None]):
                     self._save_speedtest(time.time(), "main", "Auto" if sid is None else f"Server {sid}",
@@ -3535,6 +3621,12 @@ class Monitor:
             self.st_status, self.st_busy = {"running": False}, None
             self.st_lock.release()
         return True
+
+    @staticmethod
+    def starting_status(scope):
+        """st_status while a test is getting ready (looking up servers) and before the CLI says anything."""
+        label = {"main": "Auto", "regions": "Regions", "global": "Random server"}.get(scope, scope[5:])
+        return {"running": True, "label": label, "phase": "connecting", "started": time.time()}
 
     def global_due(self):
         """Main speedtests still to go before the next global one (0 = now), or None if they're off."""
@@ -3588,8 +3680,10 @@ class Monitor:
 
     def _run_cli(self, server_id, label, bind=None):
         st = self.cfg["speedtest"]
-        self.st_status = {"running": True, "label": label, "server_id": server_id, "started": time.time()}
-        cmd = [st["binary"], "--format=json", "--accept-license", "--accept-gdpr"]
+        self.st_status = {"running": True, "label": label, "server_id": server_id, "phase": "connecting",
+                          "started": time.time()}
+        # --progress=yes: a JSON line for each step (server chosen, ping, download, upload), for the live view
+        cmd = [st["binary"], "--format=json", "--progress=yes", "--accept-license", "--accept-gdpr"]
         if server_id:
             cmd += ["--server-id", str(server_id)]
         if bind:
@@ -3599,18 +3693,33 @@ class Monitor:
         log.info("running speedtest %s (server=%s)", label, server_id or "auto")
         PROBES.close()
         try:
-            p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=st["timeout_seconds"],
-                               **SUBPROCESS_FLAGS)
-            result, err = None, None
-            for line in (p.stdout + "\n" + p.stderr).splitlines():
-                try:
-                    obj = json.loads(line)
-                except ValueError:
-                    continue
-                if obj.get("type") == "result":
-                    result = obj
-                elif obj.get("level") == "error":
-                    err = obj.get("message")
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+                                 **SUBPROCESS_FLAGS)
+            killed = []
+            timer = threading.Timer(float(st["timeout_seconds"]), lambda: (killed.append(1), p.kill()))
+            timer.start()
+            result, err, other = None, None, []
+            try:
+                for line in p.stdout:
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        other.append(line.strip())
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    if obj.get("type") == "result":
+                        result = obj
+                    elif obj.get("level") == "error":
+                        err = obj.get("message")
+                    else:
+                        self._show_progress(obj)
+                p.wait()
+            finally:
+                timer.cancel()
+                p.stdout.close()
+            if killed:
+                raise subprocess.TimeoutExpired(cmd, st["timeout_seconds"])
             if result:
                 srv = result.get("server", {})
                 row.update(
@@ -3626,7 +3735,7 @@ class Monitor:
                     data_bytes=(result["download"].get("bytes") or 0) + (result["upload"].get("bytes") or 0),
                 )
             else:
-                row["error"] = err or p.stderr.strip()[-500:] or f"speedtest exited with code {p.returncode}"
+                row["error"] = err or "\n".join(x for x in other if x)[-500:] or f"speedtest exited with code {p.returncode}"
         except FileNotFoundError:
             row["error"] = f"speedtest binary not found at {st['binary']}"
         except OSError as e:  # e.g. permission denied
@@ -3638,6 +3747,24 @@ class Monitor:
         if row["error"]:
             log.warning("speedtest %s failed: %s", label, row["error"])
         return row
+
+    def _show_progress(self, obj):
+        """Update st_status from one of the CLI's progress lines. A new dict each time: the API may be reading it."""
+        kind = obj.get("type")
+        if kind == "testStart":
+            srv = obj.get("server") or {}
+            upd = {"server_id": srv.get("id"), "server_name": srv.get("name"), "server_location": srv.get("location"),
+                   "server_country": srv.get("country"), "isp": isp_brand(obj.get("isp"))}
+        elif kind in ("ping", "download", "upload"):
+            d = obj.get(kind) or {}
+            upd = {"phase": kind, "progress": d.get("progress")}
+            if kind == "ping":
+                upd["ping_ms"] = d.get("latency")
+            elif d.get("bandwidth") is not None:
+                upd[f"{kind}_mbps"] = round(d["bandwidth"] * 8 / 1e6, 2)
+        else:
+            return
+        self.st_status = dict(self.st_status, **upd)
 
     def _save_speedtest(self, ts, kind, label, row):
         row = dict(row, busy_mbps=self.st_busy)
@@ -3780,6 +3907,8 @@ def api_config(m, q):
         "dev": is_dev_build(m),
         "repo": REPO_URL,
         "chart_band": c["web"]["chart_band"],
+        "tile_order": c["web"]["tile_order"],
+        "card_order": c["web"]["card_order"],
         "update": update_summary(m),
         # every ISP the main connection has been on, for filtering the latency charts by ISP
         "isp_history": [{"isp": i, "first": a, "last": b} for i, a, b in m.db.query(
@@ -3813,6 +3942,8 @@ def api_config(m, q):
                       if c["speedtest"]["enabled"] and c["speedtest"]["regions"] else None},
         "system": {"interval_seconds": c["system"]["interval_seconds"]},
         "isp": {"enabled": c["isp"]["enabled"], "connections": [n for n, _ in m.isp_connections()]},
+        "outages": {"enabled": c["outages"]["enabled"], "interval_seconds": c["outages"]["interval_seconds"],
+                    "secondary_interval_seconds": c["outages"]["secondary_interval_seconds"]},
         "docker_bridge": m.docker_bridge,
         "retention_days": c["storage"]["retention_days"],
         "storage": {k: v for k, v in c["storage"].items() if k != "database"},
@@ -3879,6 +4010,27 @@ def api_dns(m, q):
     return {"from": frm, "to": to, "bucket": bucket, "series": series, "stats": stats}
 
 
+def api_speedtest_status(m, q):
+    """The running speedtest's progress (polled about once a second while one runs)."""
+    return m.st_status
+
+
+def api_speedtest_step(m, q):
+    """For the < > arrows on the Speedtest card: the good main result just before (dir=older) or after (dir=newer)
+    a time, with its place in the list (index 0 = the latest) and how many there are."""
+    main = "COALESCE(kind, 'main') = 'main' AND error IS NULL"
+    ts = q_time(q, "ts", time.time())
+    older = q.get("dir", "older") != "newer"
+    total = m.db.scalar(f"SELECT COUNT(*) FROM speedtest WHERE {main}")
+    row = m.db.query(f"SELECT {','.join(ST_COLS)} FROM speedtest WHERE {main} AND ts {'<' if older else '>'} ?"
+                     f" ORDER BY ts {'DESC' if older else 'ASC'} LIMIT 1", (ts,))
+    if not row:
+        return {"result": None, "index": None, "total": total}
+    r = dict(zip(ST_COLS, row[0]))
+    return {"result": r, "index": m.db.scalar(f"SELECT COUNT(*) FROM speedtest WHERE {main} AND ts > ?", (r["ts"],)),
+            "total": total}
+
+
 def api_speedtest(m, q):
     now = time.time()
     to = q_time(q, "to", now)
@@ -3942,8 +4094,18 @@ def isp_current(m):
         # share of the last day's checks that got through (a lookup service refusing, e.g. HTTP 429, isn't an outage)
         n, up = m.db.query("SELECT COUNT(*), SUM(error IS NULL OR error LIKE '%HTTP %') FROM isp"
                            " WHERE connection = ? AND ts > ?", (name, time.time() - 86400))[0]
+        usual = m.db.query("SELECT isp FROM isp WHERE connection = ? AND error IS NULL AND ts > ? GROUP BY isp"
+                           " ORDER BY COUNT(*) DESC LIMIT 1", (name, time.time() - 7 * 86400))
         out.append({"connection": name, "latest": latest, "last_ok": ok, "logo": bool(ok and isp_domain(ok["isp"])),
-                    "uptime24h": round(100.0 * up / n, 2) if n else None})
+                    "uptime24h": round(100.0 * up / n, 2) if n else None, "usual_isp": usual[0][0] if usual else None})
+    # the main connection has failed over when it's on a backup's address, or on a backup's ISP that isn't its own
+    main = out[0] if out else None
+    if main and main["last_ok"] and not (main["latest"] or {}).get("error"):
+        mo = main["last_ok"]
+        main["failover"] = any(
+            o["last_ok"] and (o["last_ok"]["ip"] == mo["ip"]
+                              or (o["last_ok"]["isp"] == mo["isp"] and main["usual_isp"] not in (None, mo["isp"])))
+            for o in out[1:])
     return out
 
 
@@ -4307,6 +4469,26 @@ def api_isp(m, q):
     return {"from": frm, "to": to, "series": series}
 
 
+def api_outages(m, q):
+    """Each connection's drops in a range, the times the outage checker was running, and any drop going on now."""
+    now = time.time()
+    to = q_time(q, "to", now)
+    frm = q_time(q, "from", to - 7 * 86400)
+    out = []
+    for name, _ in m.isp_connections():
+        args = (name, frm, to)
+        drops = [list(r) for r in m.db.query("SELECT ts, ts_end FROM outage WHERE connection = ? AND ts_end > ?"
+                                             " AND ts < ? ORDER BY ts", args)]
+        if m.outage_now.get(name):
+            drops.append([m.outage_now[name], now])
+        watched = [list(r) for r in m.db.query("SELECT ts, ts_end FROM outage_span WHERE connection = ? AND ts_end > ?"
+                                               " AND ts < ? ORDER BY ts", args)]
+        if m.outage_now and name in m.outage_now and watched:  # the checker is running: its span reaches now
+            watched[-1][1] = max(watched[-1][1], now)
+        out.append({"connection": name, "drops": drops, "watched": watched})
+    return {"from": frm, "to": to, "now": now, "connections": out}
+
+
 def api_summary(m, q):
     now = time.time()
     last = {m.db.name_of(t): (rtt, ts) for t, rtt, ts in m.db.query(
@@ -4351,6 +4533,7 @@ def api_summary(m, q):
             "last_ok": dict(zip(ST_COLS, ok[0])) if ok else None,
             "latest": dict(zip(ST_COLS, latest[0])) if latest else None,
             "averages": averages,
+            "count": m.db.scalar(f"SELECT COUNT(*) FROM speedtest WHERE {main} AND error IS NULL"),
             "regions": [dict(regions.get(r["name"], {}), name=r["name"], flag=flags.get(r["name"], ""))
                         for r in m.cfg["speedtest"]["regions"]],
             "regions_avg": {label: st_avg(m, "kind = 'region'", (), now - span)
@@ -4363,7 +4546,7 @@ def api_summary(m, q):
 
 
 ST_COLS = ["ts", "server_name", "server_location", "isp", "ping_ms", "jitter_ms", "download_mbps", "upload_mbps",
-           "packet_loss", "data_bytes", "result_url", "error", "busy_mbps"]
+           "packet_loss", "data_bytes", "result_url", "error", "busy_mbps", "server_id"]
 
 
 def global_summary(m, now):
@@ -4519,6 +4702,7 @@ def api_run_speedtest(m, q):
         return {"started": False, "reason": "unknown connection"}
     if scope not in ("main", "regions", "global") and not scope.startswith("conn:"):
         return {"started": False, "reason": "unknown scope"}
+    m.st_status = m.starting_status(scope)
     threading.Thread(target=m.run_speedtest, kwargs={"blocking": False, "scope": scope}, daemon=True).start()
     return {"started": True}
 
@@ -4805,10 +4989,12 @@ class CloudflareAccess:
 
 GET_ROUTES = {
     "/api/config": api_config, "/api/ping": api_ping, "/api/dns": api_dns,
-    "/api/speedtest": api_speedtest, "/api/system": api_system,
+    "/api/speedtest": api_speedtest, "/api/speedtest/status": api_speedtest_status,
+    "/api/speedtest/step": api_speedtest_step, "/api/system": api_system,
     "/api/system/history": api_system_history, "/api/summary": api_summary, "/api/isp": api_isp,
     "/api/traceroute": api_traceroute, "/api/cdn": api_cdn,
     "/api/routes/changes": api_route_changes, "/api/routes/compare": api_route_compare,
+    "/api/outages": api_outages,
 }
 POST_ROUTES = {"/api/speedtest/run": api_run_speedtest, "/api/cdn/run": api_run_cdn, "/api/update/run": api_run_update,
                "/api/update/check": api_check_update}

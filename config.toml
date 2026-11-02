@@ -20,6 +20,13 @@ start_at_boot = true  # start netBae when this machine boots; false = only after
                       # (applied by netbae config / start / restart, the installer and netbae update)
 chart_band = "none"   # spread band on the latency charts by default: "none", "p5-p95" or "min-max"
                       # (each browser remembers its own choice; drawn with 12 or fewer lines)
+tile_order = []       # order of the ping group tiles, e.g. ["Network", "Gaming", "DNS"]: those first, the rest
+                      # after them as usual. "*" stands for the rest, e.g. ["Network", "*", "Regions"]
+card_order = []       # order of the dashboard's cards; empty = the usual order:
+                      #   ["speedtest", "ping", "speed_servers", "routes", "dns", "cdn", "speed_history", "global", "outages",
+                      #    "system_history"]
+                      # (speedtest = the Speedtest and System cards). List the ones you want first; "*" stands for the
+                      # rest, e.g. ["speedtest", "routes", "*"] puts Routes back above Ping latency, as before 1.24.7
 
 # Read-only copy of the dashboard on a second port, for sharing (best through a Cloudflare
 # Tunnel or Tailscale Funnel - see the README; don't port-forward it on your router).
@@ -111,7 +118,7 @@ enabled = true         # automatic speedtests: the schedule (main, regions and s
                        # first test after a new install. false = only when you press Run now
 manual = true          # the dashboard's Run buttons; works even when enabled = false
 interval_minutes = 60
-offset_minutes = 0     # e.g. 6 -> runs at hh:06 instead of hh:00
+offset_minutes = 15    # hh:15; secondary connections default to hh:45 so the two never overlap
 # Empty = Ookla picks the best server automatically.
 # Otherwise list server IDs (find them with: speedtest -L); each listed server
 # is tested in turn on every run, e.g. servers = [12492, 2629]
@@ -142,12 +149,20 @@ timeout_seconds = 300
 
 [isp]
 # Checks the public IP and ISP of the main connection and every secondary connection
-# (via ipinfo.io), shown in the header and as markers along the top of the charts, so you
-# can see when your router failed over to another connection.
+# (via ipinfo.io), shown in the header and summary bars ("Failover active" when the main
+# connection is going out through a backup), with a line on the latency charts when it changes.
 enabled = true
 interval_minutes = 10
 offset_minutes = 0
 main_name = "Main"     # what to call your main connection
+
+[outages]
+# A tiny DNS query (about 150 bytes there and back) through each connection every few seconds,
+# so drops of a few seconds show up in the Disconnections card: one row per day for the last
+# week. A secondary connection is checked less often to save mobile data (about 2.5 MB a day at 5s).
+enabled = true
+interval_seconds = 1             # main connection (about 13 MB a day)
+secondary_interval_seconds = 5   # each [[connections]] entry
 
 [traceroute]
 # Traces the route to every ping target (and the speedtest server) and looks up which network
@@ -178,5 +193,7 @@ disk_path = "/"        # the drive shown as Boot drive ("/" = the one the system
 # targets = ["1.1.1.1", "8.8.8.8", "google.com", "valve:auto"]   # or "all" to ping every main target over it too
 # trace = "all"                 # trace the route to every main destination over it too (for Compare ISPs), or "pinged"
 # speedtest = false             # true also runs speedtests over it (pings and traces only by default)
-# speedtest_interval_minutes = 1440   # once a day (mobile data isn't free). 0 = manual only
+# speedtest_interval_minutes = 60     # hourly at :45; 1440 = daily (mobile data isn't free). 0 = manual only
 # speedtest_offset_minutes = 45
+# speedtest_server = 12491      # an Ookla server id to always test against, e.g. your mobile ISP's own
+#                               # server (often unmetered); unset = the nearest one

@@ -388,6 +388,15 @@ function nearLines(chart, e) {
 // A dashed vertical line wherever the main connection moved to another ISP, labelled on the chart
 // An ISP's name with its logo in front (the server fetches and caches the icon; unknown ISPs just lose the img).
 // nameToo = false: only the logo, with the name on hover.
+// A summary bar's ISP item: the logo, then "ISP" over the name. c is a connection's entry from the summary's isp list.
+function ispStat(c) {
+  const x = c && c.last_ok;
+  if (!x || !x.isp) return '';
+  if (c.failover) return `<div class="stat isp-stat" title="${esc(c.connection)} is going out through the backup connection (${esc(x.isp)} ${esc(x.ip || '')})"><div><div class="label">ISP</div><div class="v warn">Failover active</div></div></div>`;
+  const img = c.logo ? `<img src="api/isp/logo?isp=${encodeURIComponent(x.isp)}" alt="" onerror="this.remove()">` : '';
+  return `<div class="stat isp-stat" title="${esc(c.connection)}: ${esc(x.isp)}${x.asn ? ` (${esc(x.asn)})` : ''}">${img}<div><div class="label">ISP</div><div class="v">${esc(x.isp)}</div></div></div>`;
+}
+
 function ispTag(isp, nameToo = true) {
   if (!isp) return '';
   const img = `<img class="isp-logo" src="api/isp/logo?isp=${encodeURIComponent(isp)}" alt="" loading="lazy" onerror="this.remove()"${nameToo ? '' : ` title="${esc(isp)}"`}>`;
@@ -416,7 +425,7 @@ const ispChangeLines = {
       let row = 0;
       while (placed.some((r) => r.row === row && lx < r.x2 + 4 && lx + w > r.x1 - 4)) row++;
       placed.push({ row, x1: lx, x2: lx + w });
-      const by = a.bottom - 4 - row * 17;
+      const by = a.top + 15 + row * 17;  // along the top, clear of the lines (which mostly sit low)
       ctx.fillStyle = css('--card'); ctx.fillRect(lx - 3, by - 14, w + 6, 15);
       ctx.fillStyle = color; ctx.fillText(label, lx, by);
     }
@@ -648,9 +657,34 @@ function memberTile(p, color, v6) {
 }
 
 // One card per group showing the group's average; click to expand into per-host tiles.
+// Ping groups in the order of [web] tile_order: listed groups first (or around "*", which stands for the rest),
+// the others in their usual order.
+function tileGroups() {
+  const groups = [...new Set(lastPing.map((p) => p.group))];
+  const order = (CONFIG.tile_order || []).map((g) => String(g).toLowerCase());
+  const rest = order.includes('*') ? order.indexOf('*') : order.length;
+  const rank = (g) => { const i = order.indexOf(g.toLowerCase()); return i < 0 ? rest : i; };
+  return groups.map((g, i) => [g, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([g]) => g);
+}
+
+// The dashboard's cards in the order of [web] card_order (names below; "*" stands for the rest).
+const CARDS = { speedtest: 'cards-speed', ping: 'panel-ping', speed_servers: 'panel-regions', routes: 'panel-routes',
+  dns: 'panel-dns', cdn: 'panel-cdn', speed_history: 'panel-speed', global: 'panel-global', outages: 'panel-outages',
+  system_history: 'panel-system' };
+function orderCards() {
+  const order = (CONFIG.card_order || []).map((c) => String(c).toLowerCase().replace(/[ -]/g, '_'));
+  if (!order.length) return;
+  const page = Object.keys(CARDS);  // the page's own order
+  const rest = order.includes('*') ? order.indexOf('*') : order.length;
+  const rank = (c) => { const i = order.indexOf(c); return i < 0 ? rest : i; };
+  const footer = $('#footer');
+  page.map((c, i) => [c, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1])
+    .forEach(([c]) => { const el = document.getElementById(CARDS[c]); if (el) footer.before(el); });
+}
+
 function renderTiles() {
   const open = new Set(store.get('tiles:open', []));
-  const groups = [...new Set(lastPing.map((p) => p.group))];
+  const groups = tileGroups();
   // IPv6 twins are shown inside their IPv4 tile; group numbers stay IPv4 so they compare over time
   const v6 = Object.fromEntries(lastPing.filter((p) => p.family === 6).map((p) => [p.twin, p]));
   $('#ping-tiles').innerHTML = groups.map((g) => {
@@ -688,14 +722,12 @@ function renderSummaryBar(s) {
   const stat = (label, value, title, cls = '') => `<div class="stat" title="${esc(title)}"><div class="label">${label}</div><div class="v ${cls}">${value}</div></div>`;
   const sys = s.system || {};
   const pctCls = (v) => (v >= 90 ? 'bad' : v >= 75 ? 'warn' : '');
-  const logo = isp && isp.logo && isp.last_ok
-    ? `<div class="stat isp-stat" title="${esc(isp.connection)}: ${esc(isp.last_ok.isp)}"><img src="api/isp/logo?isp=${encodeURIComponent(isp.last_ok.isp)}" alt="${esc(isp.last_ok.isp)}" onerror="this.parentNode.remove()"></div>` : '';
   // your connection's own latency: the Nearest region (the closest Ookla servers), else the closest region city
   const regions = lastPing.filter((p) => p.method === 'region' && p.family !== 6 && !p.connection && p.avg5m != null);
   const nearest = regions.find((p) => p.name === 'Nearest');
   const near = nearest || regions.sort((x, y) => x.avg5m - y.avg5m)[0];
   const items = [
-    logo,
+    ispStat(isp),
     stat('Hosts up', `${up(sites)}<small>/ ${sites.length}</small>`, 'Sites whose latest ping answered (not counting regions or IPv6)', upCls(sites)),
     mine.length ? stat('Your hosts up', `${up(mine)}<small>/ ${mine.length}</small>`, 'Your own extra_targets whose latest ping answered', upCls(mine)) : '',
     isp && isp.uptime24h != null ? stat('ISP uptime', `${fmtPct(isp.uptime24h, isp.uptime24h < 100 ? 2 : 0)}<small>24h</small>`, `Share of ${isp.connection}'s ISP checks in the last 24 hours that reached the internet`, isp.uptime24h >= 99.9 ? 'good' : isp.uptime24h >= 99 ? 'warn' : 'bad') : '',
@@ -705,7 +737,8 @@ function renderSummaryBar(s) {
     stat('Jitter', `${fmtMs(mean(sites.map((p) => p.jitter5m)))}<small>ms</small>`, 'Average change between consecutive pings to each site, last 5 minutes'),
     stat('Packet loss', fmtLoss(mean(sites.map((p) => p.loss5m)), 2), 'Average packet loss across sites in the last 5 minutes'),
     dns != null ? stat('DNS', `${fmtMs(dns)}<small>ms</small>`, 'Average DNS lookup time in the last 5 minutes') : '',
-    st ? stat('Speed', `${fmtMbps(st.download_mbps)}<small style="color:${PALETTE[0]}">↓</small> ${fmtMbps(st.upload_mbps)}<small><span style="color:${PALETTE[2]}">↑</span> Mbps</small>`, `Latest speedtest, ${fmtAgo(st.ts)}`) : '',
+    s.speedtest?.status?.running ? stat('Speed', '<span class="testing"><span class="pulse"></span>testing…</span>', 'A speedtest is running now: see the Speedtest card')
+      : st ? stat('Speed', `${fmtMbps(st.download_mbps)}<small style="color:${PALETTE[0]}">↓</small> ${fmtMbps(st.upload_mbps)}<small><span style="color:${PALETTE[2]}">↑</span> Mbps</small>`, `Latest speedtest, ${fmtAgo(st.ts)}`) : '',
     // this machine's own stats, set apart from the connection ones
     sys.cpu != null || sys.mem != null ? '<div class="stat-sep" aria-hidden="true"></div>' : '',
     sys.cpu != null ? stat('CPU', `${Math.round(sys.cpu)}<small>% 24h</small>`, 'Average CPU use on this machine over the last 24 hours (the System tile below shows it live)', pctCls(sys.cpu)) : '',
@@ -730,10 +763,9 @@ function renderConnBars(s) {
     const [cls, state] = offline || (sites.length && !up) ? ['bad', 'No internet']
       : up < sites.length || loss >= 5 ? ['bad', up < sites.length ? `${sites.length - up} down` : 'Heavy loss']
         : loss >= 1 ? ['warn', 'Some loss'] : ['good', 'Healthy'];
-    const name = isp && isp.last_ok ? isp.last_ok.isp : '';
     const items = [
       `<div class="stat status-stat" title="${esc(c.name)}, from the last 5 minutes of pings and its ISP check"><div class="label">${esc(c.name)}</div><div class="state"><span class="dot"></span>${esc(state)}</div></div>`,
-      name ? `<div class="stat isp-stat" title="${esc(c.name)}: ${esc(name)}">${isp.logo ? `<img src="api/isp/logo?isp=${encodeURIComponent(name)}" alt="" onerror="this.remove()">` : ''}<div><div class="label">ISP</div><div class="v">${esc(name)}</div></div></div>` : '',
+      ispStat(isp),
       sites.length ? stat('Hosts up', `${up}<small>/ ${sites.length}</small>`, `${c.name}'s ping targets whose latest ping answered`, up === sites.length ? 'good' : 'bad') : '',
       isp && isp.uptime24h != null ? stat('Uptime', `${fmtPct(isp.uptime24h, isp.uptime24h < 100 ? 2 : 0)}<small>24h</small>`, `Share of ${c.name}'s ISP checks in the last 24 hours that reached the internet`, isp.uptime24h >= 99.9 ? 'good' : isp.uptime24h >= 99 ? 'warn' : 'bad') : '',
       sites.length ? stat('Avg latency', `${fmtMs(mean(sites.map((p) => p.avg5m)))}<small>ms</small>`, `Average of ${c.name}'s 5-minute ping averages`) : '',
@@ -752,7 +784,8 @@ function statusHtml(s, sites, upCount, bar) {
   const down = sites.length - upCount;
   const loss = mean(sites.map((p) => p.loss5m)) || 0;
   const [cls, state] = offline || upCount === 0 ? ['bad', 'No internet']
-    : down > sites.length * 0.1 || loss >= 5 ? ['bad', down ? `${down} hosts down` : 'Heavy packet loss']
+    : main && main.failover ? ['warn', 'Failover active']
+      : down > sites.length * 0.1 || loss >= 5 ? ['bad', down ? `${down} hosts down` : 'Heavy packet loss']
       : down || loss >= 1 ? ['warn', down ? `${down} host${down > 1 ? 's' : ''} down` : 'Some packet loss']
         : ['good', 'Healthy'];
   bar.classList.remove('good', 'warn', 'bad');
@@ -768,10 +801,12 @@ async function refreshSummary() {
   if (s.isp_changes) CONFIG.isp_changes = s.isp_changes;  // a failover gets its chart line without a reload
   ROUTES = { ...(s.routes || {}), ...CDN_ROUTES };
   renderSummaryBar(s);
+  renderConnToggles();
   $('#isp-now').innerHTML = (s.isp || []).map((c) => {
     const x = c.last_ok;
     const failing = c.latest && c.latest.error;
     const logo = c.logo ? `<img class="isp-logo" src="api/isp/logo?isp=${encodeURIComponent(x.isp)}" alt="" onerror="this.remove()">` : '';
+    if (x && c.failover) return `<span title="Going out through the backup connection: ${esc(x.isp || '?')} ${esc(x.ip || '')} · checked ${fmtAgo(x.ts)}">${esc(c.connection)}: <b class="warn-text">Failover active</b></span>`;
     return x ? `<span title="${esc(x.asn || '')} · checked ${fmtAgo(x.ts)}${failing ? ' · latest check failed' : ''}">${esc(c.connection)}: ${logo}<b>${esc(x.isp || '?')}</b> ${esc(x.ip || '')}</span>`
       // "no internet" only when the check couldn't connect; a lookup service refusing (e.g. HTTP 429) isn't an outage
       : failing ? `<span title="${esc(c.latest.error)}">${esc(c.connection)}: <span class="error-text">${/HTTP \d{3}/.test(c.latest.error) ? 'ISP lookup failed' : 'no internet'}</span></span>` : '';
@@ -779,27 +814,98 @@ async function refreshSummary() {
   renderTiles();
 
   const st = s.speedtest;
-  const ok = st.last_ok;
-  if (ok) {
-    const avg = st.averages || {};
-    const col = (label, key, unit, fmt) => `
-      <div>
-        <div class="label">${label}</div>
-        <div class="big">${fmt(ok[key])}<small>${unit}</small></div>
-        <div class="avgs">${['24h', '7d'].map((p) => `<div><span>${p} avg</span> <b>${fmt(avg[p]?.[key])}</b></div>`).join('')}</div>
-      </div>`;
+  SPEED = st;
+  // a new test since: the older result being looked at moves one place further from the latest
+  if (speedView && st.count !== speedView.total) { speedView.index += st.count - speedView.total; speedView.total = st.count; }
+  renderSpeedResult();
+  renderSpeedMeta();
+
+  renderRegions(st);
+  renderGlobal(st.global);
+  renderSpeedButtons();
+  if (st.status.running) watchSpeedtest();
+}
+
+// ------------------------------------------------------------------ speedtest card
+// The latest result (or, with the < > arrows, an older one), live progress while a test runs, and the buttons.
+let SPEED = null;      // the speedtest part of the last /api/summary
+let speedView = null;  // {result, index, total} while looking at an older result; null = the latest
+
+const PHASES = { connecting: 'Finding a server', ping: 'Measuring ping', download: 'Testing download', upload: 'Testing upload' };
+function renderSpeedResult() {
+  const st = SPEED;
+  if (!st) return;
+  const avg = st.averages || {};
+  const a7 = avg['7d'] || {};
+  const live = !speedView && st.status?.running ? st.status : null;
+  const x = speedView ? speedView.result : st.last_ok;
+  const where = (r) => (r?.server_name ? `${esc(r.server_name)}${r.server_location ? `<span class="muted">, ${esc(r.server_location)}</span>` : ''}` : '-');
+  const serverTitle = (r) => (r?.server_name ? `${r.server_name}${r.server_location ? ', ' + r.server_location : ''}${r.server_country ? ', ' + r.server_country : ''}${r.server_id ? ` (Ookla server ${r.server_id})` : ''}` : '');
+  const avgs = (key, fmt) => `<div class="avgs">${['24h', '7d'].map((p) => `<div><span>${p} avg</span> <b>${fmt(avg[p]?.[key])}</b></div>`).join('')}</div>`;
+  if (live) {
+    // numbers fill in as each step finishes; the step under way shows its running speed
+    const order = ['connecting', 'ping', 'download', 'upload'];
+    const at = order.indexOf(live.phase);
+    const pct = live.progress == null ? 0 : Math.round(live.progress * 100);
+    const col = (label, key, unit, fmt, phase) => {
+      const i = order.indexOf(phase);
+      const v = i <= at ? live[key] : null;
+      const state = i === at ? `${PHASES[phase]}… ${phase === 'ping' ? '' : pct + '%'}` : i < at ? 'done' : 'waiting';
+      return `<div class="${i === at ? 'live-now' : i > at ? 'live-wait' : ''}"><div class="label">${label}</div>
+        <div class="big">${v == null ? '<span class="muted">…</span>' : fmt(v)}<small>${unit}</small></div><div class="avgs">${state}</div></div>`;
+    };
+    $('#speed-summary').innerHTML = col('Download', 'download_mbps', 'Mbps', fmtMbps, 'download')
+      + col('Upload', 'upload_mbps', 'Mbps', fmtMbps, 'upload') + col('Ping', 'ping_ms', 'ms', fmtMs, 'ping');
+    const done = at < 0 ? 0 : at === 0 ? 0.03 : at === 1 ? 0.06 : at === 2 ? 0.08 + 0.46 * (live.progress || 0) : 0.54 + 0.46 * (live.progress || 0);
+    $('#speed-details').innerHTML = `
+      <div><div class="label">Server</div><div class="val" title="${esc(serverTitle(live))}">${live.server_name ? where(live) : '<span class="muted">choosing…</span>'}</div></div>
+      <div><div class="label">ISP</div><div class="val">${live.isp ? ispTag(live.isp) : '-'}</div></div>
+      <div class="speed-live"><div class="label"><span class="pulse"></span>${esc(PHASES[live.phase] || 'Running')}${live.label && !['Auto'].includes(live.label) ? ` · ${esc(live.label)}` : ''}</div>
+        <div class="progress"><span style="width:${Math.round(done * 100)}%"></span></div>
+        <div class="sub">started ${fmtAgo(live.started)}</div></div>`;
+  } else if (x) {
+    const col = (label, key, unit, fmt) => `<div><div class="label">${label}</div><div class="big">${fmt(x[key])}<small>${unit}</small></div>${avgs(key, fmt)}</div>`;
     $('#speed-summary').innerHTML = col('Download', 'download_mbps', 'Mbps', fmtMbps)
       + col('Upload', 'upload_mbps', 'Mbps', fmtMbps) + col('Ping', 'ping_ms', 'ms', fmtMs);
-    const a7 = avg['7d'] || {};
     $('#speed-details').innerHTML = [
-      ['ISP', ok.isp ? ispTag(ok.isp) : '-'],
-      ['Jitter', `${fmtMs(ok.jitter_ms)} ms`, `7d avg ${fmtMs(a7.jitter_ms)}`],
-      ['Packet loss', ok.packet_loss == null ? '-' : fmtPct(ok.packet_loss), `7d avg ${a7.packet_loss == null ? '-' : fmtPct(a7.packet_loss)}`],
-      ['Data used', fmtBytes(ok.data_bytes), `24h ${fmtBytes(avg['24h']?.data_bytes)} · 7d ${fmtBytes(a7.data_bytes)}`],
-    ].map(([l, v, sub]) => `<div><div class="label">${l}</div><div class="val">${v}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`).join('');
+      ['Server', where(x), x.result_url ? `<a href="${esc(x.result_url)}" target="_blank" rel="noopener">result ↗</a>${x.server_id ? ` · id ${x.server_id}` : ''}` : (x.server_id ? `id ${x.server_id}` : ''), serverTitle(x)],
+      ['ISP', x.isp ? ispTag(x.isp) : '-'],
+      ['Jitter', `${fmtMs(x.jitter_ms)} ms`, `7d avg ${fmtMs(a7.jitter_ms)}`],
+      ['Packet loss', x.packet_loss == null ? '-' : fmtPct(x.packet_loss), `7d avg ${a7.packet_loss == null ? '-' : fmtPct(a7.packet_loss)}`],
+      ['Data used', fmtBytes(x.data_bytes), `24h ${fmtBytes(avg['24h']?.data_bytes)} · 7d ${fmtBytes(a7.data_bytes)}`],
+    ].map(([l, v, sub, title]) => `<div><div class="label">${l}</div><div class="val"${title ? ` title="${esc(title)}"` : ''}>${v}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`).join('');
   }
+  // the < > arrows: older and newer results
+  const total = st.count || 0;
+  const idx = speedView ? speedView.index : 0;
+  const nav = $('#speed-nav');
+  nav.hidden = total < 2;
+  $('#speed-older').disabled = idx + 1 >= total;
+  $('#speed-newer').disabled = !speedView;
+  const hm = (ts) => new Date(ts * 1000).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  $('#speed-pos').innerHTML = live ? '<b>Running now</b>'
+    : speedView ? `<b>${hm(x.ts)}</b> <span class="muted">· ${fmtAgo(x.ts)} · ${total - idx} of ${total}</span>`
+      : x ? `<b>Latest</b> <span class="muted">· ${fmtAgo(x.ts)}</span>` : '';
+  $('#speed-pos').title = speedView ? 'Click to go back to the latest result' : '';
+  $('#speed-card').classList.toggle('history', !!speedView);
+}
+
+async function stepSpeed(dir) {
+  const from = speedView ? speedView.result.ts : SPEED?.last_ok?.ts;
+  if (from == null) return;
+  const r = await api('speedtest/step', { ts: from, dir }).catch(() => null);
+  if (!r) return;
+  speedView = r.result && r.index > 0 ? r : (dir === 'newer' ? null : speedView);
+  renderSpeedResult();
+  renderSpeedMeta();
+}
+
+function renderSpeedMeta() {
+  const st = SPEED;
+  const ok = st.last_ok;
   const tests = st.averages?.['7d']?.tests;
-  let meta = ok ? `Latest: ${esc(ok.server_name || '')}${ok.server_location ? ', ' + esc(ok.server_location) : ''} · ${fmtAgo(ok.ts)}${tests ? ` · ${tests} tests in 7d` : ''}` : '';
+  let meta = speedView ? `Looking at an older result; averages are for the last 24 hours and 7 days.${tests ? ` ${tests} tests in 7d.` : ''}`
+    : ok && tests ? `${tests} tests in 7d` : '';
   if (st.latest && st.latest.error) meta += `<div class="error-text">Last run failed (${fmtAgo(st.latest.ts)}): ${esc(st.latest.error)}</div>`;
   const hm = (ts) => new Date(ts * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
   // the config's next run is from when the page loaded: step it forward past runs that have happened since
@@ -810,10 +916,30 @@ async function refreshSummary() {
   if (CONFIG.speedtest.enabled && next) meta += `<div>Next scheduled run: ${when(next)}${nextRegions ? ` · regions: ${when(nextRegions)}` : ''}</div>`;
   if (!CONFIG.speedtest.enabled) meta += `<div>Scheduled speedtests are off in the config${CONFIG.speedtest.manual ? '; Run now still works' : ''}.</div>`;
   $('#speed-meta').innerHTML = meta;
+}
 
-  renderRegions(st);
-  renderGlobal(st.global);
+// While a test runs (started here, by the schedule or from another browser): poll its progress every second,
+// then reload everything once it's done.
+let speedWatch = null;
+function watchSpeedtest() {
+  if (speedWatch || document.hidden) return;
+  speedWatch = setInterval(async () => {
+    const status = await api('speedtest/status').catch(() => null);
+    if (!status || !SPEED) return;
+    SPEED.status = status;
+    renderSpeedResult();
+    renderSpeedButtons();
+    if (!status.running) {
+      clearInterval(speedWatch);
+      speedWatch = null;
+      await refreshSummary().catch(() => {});
+      panels.forEach((p) => p.refresh());
+    }
+  }, 1000);
+}
 
+function renderSpeedButtons() {
+  const st = SPEED;
   const running = st.status.running;
   const btn = $('#run-speedtest');
   btn.hidden = !!CONFIG.public || !CONFIG.speedtest.manual;  // the public dashboard is read-only
@@ -849,7 +975,7 @@ const sortRows = (rows, sort, val = (x, k) => x[k]) => (!sort ? rows : [...rows]
 // Sortable columns of the speedtest result lists: [key, heading, left-aligned]
 const RESULT_COLS = {
   global: [['ts', 'Time'], ['label', 'City', true], ['server', 'Server', true], ['download_mbps', 'Down Mbps'], ['upload_mbps', 'Up Mbps'],
-    ['ping_ms', 'Ping ms'], ['jitter_ms', 'Jitter ms'], ['packet_loss', 'Loss'], ['data_bytes', 'Data']],
+    ['ping_ms', 'Ping ms'], ['jitter_ms', 'Jitter ms'], ['packet_loss', 'Loss'], ['data_bytes', 'Data'], ['isp', 'ISP', true]],
   history: [['ts', 'Time'], ['label', 'Test'], ['download_mbps', 'Down Mbps'], ['upload_mbps', 'Up Mbps'], ['ping_ms', 'Ping ms'],
     ['jitter_ms', 'Jitter ms'], ['packet_loss', 'Loss'], ['data_bytes', 'Data'], ['isp', 'ISP'], ['server', 'Server']],
 };
@@ -868,12 +994,13 @@ function renderRegions(st) {
   const conns = st.connections || [];
   $('#region-table').hidden = $('#panel-regions').hidden = !regions.length && !conns.length;
   if (regions.length || conns.length) {
-    const latestCells = (x) => (!x || x.ts == null ? '<td colspan="6" class="muted" style="text-align:left">not tested yet</td>'
+    const nowIsp = (name) => ISP_NOW.find((c) => c.connection === name)?.last_ok?.isp;
+    const latestCells = (x, isp) => (!x || x.ts == null ? `${isp ? `<td style="text-align:left">${ispTag(isp)}</td><td colspan="5"` : '<td colspan="6"'} class="muted" style="text-align:left">not tested yet</td>`
       : x.error ? `<td colspan="6" class="error-text" style="text-align:left" title="${esc(x.error)}">failed: ${esc(x.error.slice(0, 60))}</td>`
       : `<td style="text-align:left">${ispTag(x.isp)}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td>
          <td>${fmtMs(x.ping_ms)}</td><td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td>`);
     const avgCells = (a) => `<td>${fmtMbps(a?.download_mbps)}</td><td>${fmtMbps(a?.upload_mbps)}</td><td>${fmtMs(a?.ping_ms)}</td><td>${fmtBytes(a?.data_bytes)}</td>`;
-    const row = (name, x, a, cls = '', action = '', route = '') => `<tr class="${cls}"><td>${name}</td>${latestCells(x)}${avgCells(a)}
+    const row = (name, x, a, cls = '', action = '', route = '', isp = '') => `<tr class="${cls}"><td>${name}</td>${latestCells(x, isp)}${avgCells(a)}
       <td>${x?.ts ? fmtAgo(x.ts) : ''}</td><td style="text-align:left">${route ? routeHtml(route) : ''}</td><td>${action}</td></tr>`;
     $('#region-table').innerHTML = `
       <thead>
@@ -886,7 +1013,7 @@ function renderRegions(st) {
       <tbody>
         ${row('<b>Closest server</b>', ok, st.averages?.['7d'], 'strong', '', 'speedtest:Auto')}
         ${conns.map((x) => row(`<b>${esc(x.name)}</b>`, x.ts != null && x.error && x.last_ok ? x.last_ok : x, x.avg7d, 'strong',
-          CONFIG.speedtest.manual && !CONFIG.public ? `<button class="link run-conn" data-conn="${esc(x.name)}">Run</button>` : '')).join('')}
+          CONFIG.speedtest.manual && !CONFIG.public ? `<button class="link run-conn" data-conn="${esc(x.name)}">Run</button>` : '', '', nowIsp(x.name))).join('')}
         ${sortRows(regions, regionSort, regionVal).map((x) => row(`${flag(x.flag)}${esc(x.name)}`, x, x.avg7d, '', '', `region:${x.name}`)).join('')}
         ${regions.length ? `<tr class="strong total"><td><b>All regions</b></td><td colspan="6" class="muted" style="text-align:left">${st.regions_avg?.['7d']?.tests ?? 0} tests in 7 days</td>${avgCells(st.regions_avg?.['7d'])}<td></td><td></td><td></td></tr>` : ''}
       </tbody>`;
@@ -915,13 +1042,13 @@ function renderGlobal(g) {
     <tbody>
       <tr class="avg-row"><td><b>Average (30 days)</b></td><td style="text-align:left" class="muted">${a.tests} test${a.tests === 1 ? '' : 's'}</td><td></td>
         <td>${fmtMbps(a.download_mbps)}</td><td>${fmtMbps(a.upload_mbps)}</td><td>${fmtMs(a.ping_ms)}</td><td>${fmtMs(a.jitter_ms)}</td>
-        <td>${a.packet_loss == null ? '-' : fmtPct(a.packet_loss)}</td><td>${fmtBytes(a.data_bytes)}</td><td></td></tr>
+        <td>${a.packet_loss == null ? '-' : fmtPct(a.packet_loss)}</td><td>${fmtBytes(a.data_bytes)}</td><td></td><td></td></tr>
       ${sortRows(g.recent, globalSort, resultVal).map((x) => x.error
-        ? `<tr><td>${fmtTime(x.ts)}</td><td style="text-align:left">${flag(x.flag)}${esc(x.label)}</td><td colspan="8" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
+        ? `<tr><td>${fmtTime(x.ts)}</td><td style="text-align:left">${flag(x.flag)}${esc(x.label)}</td><td colspan="9" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
         : `<tr><td class="time-cell">${ispTag(x.isp, false)}${fmtTime(x.ts)}</td><td style="text-align:left">${flag(x.flag)}${esc(x.label)}</td>
            <td style="text-align:left">${esc(x.server_name || '')}${x.server_location ? ', ' + esc(x.server_location) : ''}</td>
            <td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td><td>${fmtMs(x.jitter_ms)}</td>
-           <td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td>
+           <td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td><td style="text-align:left">${ispTag(x.isp)}</td>
            <td>${x.result_url ? `<a href="${esc(x.result_url)}" target="_blank" rel="noopener">result ↗</a>` : ''}</td></tr>`).join('')}
     </tbody>` : '<tbody><tr><td class="muted">No global speedtests yet.</td></tr></tbody>';
 }
@@ -1156,10 +1283,14 @@ function panelButton(root, text, title, onClick) {
 function yZoom(root, key, chart) {
   let scale = store.get(`yscale:${key}`, 1); // 0 = show everything
   let offset = 0;                             // axis minimum when panned
+  // logarithmic: a big spike doesn't flatten the low lines. null = automatic (on when there's a big peak)
+  let log = store.get(`ylog2:${key}`, null);
+  let logOk = true, lowest, peaky = false;
   let auto;
   const bar = document.createElement('div');
   bar.className = 'zoom';
-  bar.innerHTML = `<button data-z="up" title="Pan up">▲</button><button data-z="down" title="Pan down">▼</button>
+  bar.innerHTML = `<button data-z="log" title="Logarithmic scale: big spikes no longer squash the lower pings (on by itself when there's a big peak)">Log</button>
+    <button data-z="up" title="Pan up">▲</button><button data-z="down" title="Pan down">▼</button>
     <button data-z="in" title="Zoom in">+</button><button data-z="out" title="Zoom out">−</button>
     <button data-z="fit" title="Fit to the averages">Fit</button><button data-z="all" title="Show everything">All</button>`;
   const wrap = $('.chart-wrap', root);
@@ -1167,12 +1298,18 @@ function yZoom(root, key, chart) {
   chart.options.layout = { padding: { top: 30 } }; // room for the buttons
   const span = () => (auto || 0) * scale;
   const apply = () => {
-    const zoomed = scale && auto;
-    chart.options.scales.y.min = zoomed ? +offset.toPrecision(4) : undefined;
-    chart.options.scales.y.max = zoomed ? +(offset + span()).toPrecision(4) : undefined;
-    bar.querySelectorAll('button').forEach((b) => b.classList.toggle('on',
-      (b.dataset.z === 'fit' && scale === 1 && !offset) || (b.dataset.z === 'all' && scale === 0)));
+    const y = chart.options.scales.y;
+    const useLog = (log ?? peaky) && logOk && lowest > 0;
+    const zoomed = !useLog && scale && auto;
+    y.type = useLog ? 'logarithmic' : 'linear';
+    y.min = useLog ? +(lowest * 0.8).toPrecision(1) : zoomed ? +offset.toPrecision(4) : undefined;
+    y.max = zoomed ? +(offset + span()).toPrecision(4) : undefined;
+    bar.querySelectorAll('button').forEach((b) => b.classList.toggle('on', (b.dataset.z === 'log' && useLog)
+      || (!useLog && ((b.dataset.z === 'fit' && scale === 1 && !offset) || (b.dataset.z === 'all' && scale === 0)))));
     bar.querySelectorAll('[data-z="up"],[data-z="down"]').forEach((b) => { b.disabled = !zoomed; });
+    bar.querySelectorAll('[data-z="in"],[data-z="out"],[data-z="fit"],[data-z="all"]').forEach((b) => { b.disabled = useLog; });
+    const lb = $('[data-z="log"]', bar);
+    lb.hidden = !logOk;
     wrap.classList.toggle('pannable', !!zoomed);
   };
   const zoomTo = (newScale) => { // anchored at 0 until panned, then keep the middle of the view in place
@@ -1183,6 +1320,7 @@ function yZoom(root, key, chart) {
   bar.addEventListener('click', (e) => {
     const z = e.target.closest('button')?.dataset.z;
     if (!z) return;
+    if (z === 'log') { log = !(log ?? peaky); store.set(`ylog2:${key}`, log); }
     if (z === 'up') offset += span() * 0.25;
     if (z === 'down') offset = Math.max(0, offset - span() * 0.25);
     if (z === 'in') { if (scale) zoomTo(scale / 2); else { scale = 0.5; offset = 0; } }
@@ -1211,10 +1349,15 @@ function yZoom(root, key, chart) {
   chart.canvas.addEventListener('pointerup', end);
   chart.canvas.addEventListener('pointercancel', end);
   return {
-    reset() { scale = 1; offset = 0; store.set(`yscale:${key}`, scale); apply(); },
-    // values: the numbers the axis should fit (average lines); floor: minimum axis max
-    fit(values, floor = 1) {
+    reset() { scale = 1; offset = 0; log = null; store.set(`yscale:${key}`, scale); store.set(`ylog2:${key}`, null); apply(); },
+    // values: the numbers the axis should fit (average lines); floor: minimum axis max; logOk: Log makes sense
+    fit(values, floor = 1, canLog = true) {
       const v = values.filter((x) => x != null).sort((a, b) => a - b);
+      logOk = canLog;
+      lowest = v.find((x) => x > 0);
+      // a big peak: the highest point is over 5x the typical (90th percentile) one, which would squash the rest
+      const p90 = v[Math.floor(v.length * 0.9)];
+      peaky = v.length > 5 && p90 > 0 && v[v.length - 1] > p90 * 5;
       // the highest average just under the top, so the lines use most of the chart's height
       auto = v.length ? niceCeil(Math.max(floor, v[v.length - 1] * 1.05)) : undefined;
       apply();
@@ -1260,79 +1403,11 @@ const ispLabel = (ctx) => (ctx.raw.failed
   ? ` ${ctx.raw.conn} ISP check failed${ctx.raw.isp ? ` (on ${ctx.raw.isp})` : ''}`
   : ` ${ctx.raw.conn} ISP: ${ctx.raw.isp}${ctx.raw.ip ? ` · ${ctx.raw.ip}` : ''}${ctx.raw.changed ? '  (changed)' : ''}`);
 
-// ISP check marks start hidden (the header already names each connection's ISP). Once shown, every ISP's marks
-// are drawn, including one that turns up later in a failover, except those hidden one by one.
-const ispShown = () => ({ show: store.get('isp:show', false), off: new Set(store.get('isp:off', [])) });
-
-async function ispOverlay(root, r, onToggle) {
-  if (!CONFIG.isp?.enabled) return [];
-  let legend = $('.isp-legend', root);
-  if (!legend) {
-    legend = document.createElement('div');
-    legend.className = 'isp-legend';
-    $('.chips', root).after(legend);
-    legend.addEventListener('click', (e) => {
-      let { show, off } = ispShown();
-      const keys = [...legend.querySelectorAll('button[data-key]')].map((x) => x.dataset.key);
-      if (e.target.closest('.isp-title')) {  // the label toggles every ISP marker at once
-        const anyOn = show && keys.some((k) => !off.has(k));
-        show = !anyOn; off = new Set();
-      } else {
-        const b = e.target.closest('button[data-key]');
-        if (!b) return;
-        const k = b.dataset.key;
-        if (!show) { show = true; off = new Set(keys.filter((x) => x !== k)); }  // just this one
-        else if (off.has(k)) off.delete(k);
-        else off.add(k);
-        if (keys.every((x) => off.has(x))) { show = false; off = new Set(); }
-      }
-      store.set('isp:show', show);
-      store.set('isp:off', [...off]);
-      onToggle();
-    });
-  }
-  // routine checks ~14px apart; ISP/IP changes are always included and drawn larger
-  const d = await api('isp', { from: r.from.toFixed(0), to: r.to.toFixed(0), points: Math.max(30, Math.round(root.clientWidth / 14)) });
-  const { show, off } = ispShown();
-  const on = { has: (k) => show && !off.has(k) };
-  const datasets = [];
-  const buttons = [];
-  const keys = [];
-  CONFIG.isp.connections.forEach((conn, ci) => {
-    // a failed check is drawn in the colour of the ISP the connection was on (the one before it, or else after it)
-    const raw = d.series[conn] || [];
-    let cur = raw.find((p) => p[1] && p[1] !== 'check failed')?.[1] ?? null;
-    const pts = raw.map((p) => {
-      const failed = p[1] === 'check failed';
-      if (p[1] && !failed) cur = p[1];
-      return { x: p[0], y: 0.965 - ci * 0.06, isp: failed ? cur : p[1], ip: p[2], conn, changed: p[4], failed };
-    }).filter((p) => p.isp || p.failed);
-    for (const isp of [...new Set(pts.map((p) => p.isp))]) {
-      const color = isp ? ispColor(isp) : css('--muted');
-      const key = `${conn}|${isp}`;
-      keys.push(key);
-      const fails = pts.filter((p) => p.isp === isp && p.failed).length;
-      buttons.push(`<button data-key="${esc(key)}" class="${on.has(key) ? '' : 'off'}" title="Show or hide ${esc(conn)} ISP checks${fails ? ` (✕ = ${fails} failed)` : ''}">
-        <span style="color:${color}">✓</span>${esc(conn)}: ${esc(isp || 'unknown')}</button>`);
-      if (!on.has(key)) continue;
-      datasets.push({
-        role: 'isp', label: `${conn} ISP`, yAxisID: 'yIsp', showLine: false,
-        pointStyle: (c) => ispGlyph(color, !!c.raw?.failed, c.raw?.changed ? 15 : 10),
-        pointRadius: (c) => (c.raw?.changed ? 7.5 : 5), pointHoverRadius: 8, pointHitRadius: 8,
-        borderColor: color, backgroundColor: color, borderWidth: 0,
-        data: pts.filter((p) => p.isp === isp),
-      });
-    }
-  });
-  const allOff = keys.length && keys.every((k) => !on.has(k));
-  legend.innerHTML = buttons.length ? `<button class="isp-title${allOff ? ' off' : ''}" title="Each mark along the top of the chart is an ISP check, in that ISP's colour: a tick when it worked, a cross when it failed, one row per connection. A bigger mark means the ISP or IP changed. Click to show or hide them all.">ISP checks</button>${buttons.join('')}` : '';
-  return datasets;
-}
-
 // collapse: hosts are drawn as one line per category (catOf) until that category's table row is clicked to
 // expand it, which keeps chart rendering light even with a hundred hosts.
 function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams, lossLabel, defaultHide = HIDDEN_BY_DEFAULT,
-  collapse = false, catOf = (it) => it.group, memberNoun = 'hosts', chipRows = false, routeKey = null, catRoute = false }) {
+  collapse = false, catOf = (it) => it.group, memberNoun = 'hosts', chipRows = false, routeKey = null, catRoute = false,
+  byConnection = false }) {
   const defaultOff = items.filter((it) => defaultHide(it)).map((it) => it.id);
   // lines hidden by default start hidden once in browsers that saved their own choice before (then it's theirs)
   const saved = store.get(`off3:${id}`, null);
@@ -1375,6 +1450,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
   bandNote.after(ispSel);
   const chart = lineChart($('canvas', root), { yTitle: 'ms', plugins: [ispChangeLines] });
   const zoom = yZoom(root, id, chart);
+  if (byConnection) connToggle(root, () => refresh());
   // Only the average line gets a tooltip entry; it carries the band values with it.
   chart.options.plugins.tooltip.filter = (item) => item.dataset.role !== 'band';
 
@@ -1405,7 +1481,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     // ("id1+id2+..."); expanded, its hosts get their own lines and the category row keeps its totals.
     const fam = familySel && !familySel.hidden ? familySel.value : '4';
     const variants = fam === 'both' ? ['4', '6'] : [fam];
-    const chosen = items.filter((x) => sel.includes(x.id));
+    const chosen = items.filter((x) => sel.includes(x.id) && (!byConnection || connShown(x.conn)));
     const blocks = [];
     for (const cat of collapse ? [...new Set(chosen.map(catOf))] : [null]) {
       const mem = collapse ? chosen.filter((it) => catOf(it) === cat) : chosen;
@@ -1462,7 +1538,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
         data: pts.map((p) => ({ x: p[0], y: p[1], lo: band === 'none' ? null : p[loI], hi: p[hiI], bandName })),
       });
     }
-    zoom.fit(datasets.filter((ds) => ds.role !== 'band').flatMap((ds) => ds.data.map((p) => p.y)), metric === 'loss' ? 5 : 1);
+    zoom.fit(datasets.filter((ds) => ds.role !== 'band').flatMap((ds) => ds.data.map((p) => p.y)), metric === 'loss' ? 5 : 1, metric !== 'loss');
     for (const ds of datasets) ds.hidden = off.has(ds.key);
     chart.data.datasets = datasets;
     setXRange(chart, r);
@@ -1637,7 +1713,9 @@ function speedPanel() {
     const d = await api('speedtest', { from: r.from.toFixed(0), to: r.to.toFixed(0) });
     d.results = d.results.filter((x) => x.kind !== 'global');  // random servers worldwide have their own section
     // views: the main test, each region (configured or seen in range), or all regions side by side
-    const labels = [...new Set(['Auto', ...CONFIG.speedtest.regions, ...d.results.map((x) => x.label)])]
+    const isConn = (x) => x.kind === 'connection';
+    const connOf = (x) => (isConn(x) ? x.label : mainConn());
+    const labels = [...new Set(['Auto', ...CONFIG.speedtest.regions, ...d.results.filter((x) => !isConn(x)).map((x) => x.label)])]
       .filter((l) => l === 'Auto' || d.results.some((x) => x.label === l) || CONFIG.speedtest.regions.includes(l));
     const cur = viewSel.value || store.get('speed:view', 'Auto');
     viewSel.innerHTML = labels.map((l) => `<option value="${esc(l)}">${l === 'Auto' ? 'Closest server' : (flagChar(CONFIG.speedtest.flags?.[l]) + esc(l))}</option>`).join('')
@@ -1647,7 +1725,10 @@ function speedPanel() {
     const view = viewSel.value;
     const sel = chips.selected();
 
-    const rows = view === COMPARE ? d.results : d.results.filter((x) => x.label === view);
+    // Closest server: the main connection's tests and each secondary connection's, as the connection buttons pick
+    const rows = view === COMPARE ? d.results.filter((x) => !isConn(x))
+      : view === 'Auto' ? d.results.filter((x) => (isConn(x) || x.label === 'Auto') && connShown(connOf(x)))
+        : d.results.filter((x) => x.label === view);
     const ok = rows.filter((x) => !x.error);
     if (view === COMPARE) {
       // one line per test location, for the first selected metric
@@ -1660,12 +1741,15 @@ function speedPanel() {
       chart.options.scales.y.title.text = metric.unit;
       chart.options.scales.y1.display = false;
     } else {
-      chart.data.datasets = series.filter((s) => sel.includes(s.id)).map((s) => ({
-        label: s.label, unit: s.unit, yAxisID: s.axis, borderColor: s.color, backgroundColor: s.color,
-        borderDash: s.axis === 'y1' ? [4, 3] : [], spanGaps: true,
-        pointRadius: ok.length > 200 ? 0 : 2.5,
-        data: ok.map((x) => ({ x: x.ts * 1000, y: x[s.key] })),
-      }));
+      // a secondary connection's lines are dotted and fainter, with triangle points
+      const conns = [...new Set(ok.map(connOf))].sort((a, b) => (b === mainConn()) - (a === mainConn()));
+      chart.data.datasets = conns.flatMap((cn, ci) => series.filter((s) => sel.includes(s.id)).map((s) => ({
+        label: conns.length > 1 ? `${cn} ${s.label.toLowerCase()}` : s.label, unit: s.unit, yAxisID: s.axis,
+        borderColor: ci ? s.color + '99' : s.color, backgroundColor: ci ? s.color + '99' : s.color,
+        borderDash: ci ? (s.axis === 'y1' ? [1, 3] : [2, 3]) : s.axis === 'y1' ? [4, 3] : [], spanGaps: true,
+        pointStyle: ci ? 'triangle' : 'circle', pointRadius: ok.length > 200 ? 0 : ci ? 3.5 : 2.5,
+        data: ok.filter((x) => connOf(x) === cn).map((x) => ({ x: x.ts * 1000, y: x[s.key] })),
+      })));
       chart.options.scales.y.title.text = 'Mbps';
       chart.options.scales.y1.display = sel.includes('ping') || sel.includes('jitter');
     }
@@ -1723,6 +1807,7 @@ function speedPanel() {
   sizeSel.addEventListener('change', () => { pageSize = +sizeSel.value; store.set('speed:pagesize', pageSize); page = 0; refresh(); });
   $('.prev-page', pager).addEventListener('click', () => { page = Math.max(0, page - 1); refresh(); });
   $('.next-page', pager).addEventListener('click', () => { page += 1; refresh(); });
+  connToggle(root, refresh);
   const chips = chipFilter($('.chips', root), 'speed', series, refresh);
   chips.addToggleAll(root);
   const range = rangeControl($('.range', root), 'speed', '7d', refresh);
@@ -1763,7 +1848,7 @@ function systemPanel() {
       label: s.label, unit: s.unit, yAxisID: s.axis, borderColor: s.color, backgroundColor: s.color,
       borderDash: s.axis === 'y1' ? [4, 3] : s.axis === 'y2' ? [1, 2] : s.axis === 'y3' ? [8, 3] : [], spanGaps: false,
       data: d.series[s.id].map((p) => ({ x: p[0], y: p[1] })),
-    })).concat(await ispOverlay(root, r, refresh));
+    }));
     chart.options.scales.y.max = 100;
     setXRange(chart, r);
     chart.update();
@@ -2132,10 +2217,115 @@ function renderRouteMix() {
   $('#routes-note').textContent = `how ${isp || 'your connection'} reaches each destination, from its latest route`;
 }
 
+// ------------------------------------------------------------------ connection buttons
+// A button per internet connection (ISP logo, connection and ISP name) above the Ping latency and Speedtest history
+// charts: click one to show or hide that connection's pings and speedtests. Shared, so both charts follow it.
+const connPanels = [];
+const mainConn = () => CONFIG.isp?.connections?.[0] || 'Main';
+const connNames = () => [mainConn(), ...(CONFIG.connections || []).map((c) => c.name)];
+const connOff = () => new Set(store.get('conn:off', []));
+const connShown = (name) => !connOff().has(name || mainConn());
+function connToggle(root, onChange) {
+  if (!(CONFIG.connections || []).length) return;
+  const bar = document.createElement('div');
+  bar.className = 'conn-toggle';
+  $('.chips', root).before(bar);
+  connPanels.push({ bar, onChange });
+  bar.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-conn]');
+    if (!b) return;
+    const off = connOff();
+    const k = b.dataset.conn;
+    if (off.has(k)) off.delete(k); else off.add(k);
+    if (connNames().every((n) => off.has(n))) off.delete(k);  // at least one stays on
+    store.set('conn:off', [...off]);
+    renderConnToggles(true);
+    connPanels.forEach((p) => p.onChange());
+  });
+  renderConnToggles(true);
+}
+let connSig = '';
+function renderConnToggles(force = false) {
+  const isp = (n) => ISP_NOW.find((c) => c.connection === n)?.last_ok?.isp;
+  const sig = JSON.stringify([...connOff(), ...connNames().map(isp)]);
+  if (!force && sig === connSig) return;
+  connSig = sig;
+  const off = connOff();
+  const html = connNames().map((n) => `<button type="button" data-conn="${esc(n)}" class="${off.has(n) ? 'off' : ''}" aria-pressed="${!off.has(n)}"
+    title="Show or hide ${esc(n)}'s ${'pings and speedtests'}">${isp(n) ? ispTag(isp(n), false) : ''}<b>${esc(n)}</b>${isp(n) ? `<span class="muted">${esc(isp(n))}</span>` : ''}</button>`).join('');
+  connPanels.forEach((p) => { p.bar.innerHTML = html; });
+}
+
+// ------------------------------------------------------------------ disconnections
+// The outage checker's drops for the last week: one row per day (newest first) over a 00-24 hour axis, with a thin
+// bar per connection. A red mark is a drop; a grey stretch is when the checker wasn't running.
+function fmtDrop(s) {
+  s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h}h ${m}min` : m ? `${m}min ${sec}s` : `${sec}s`;
+}
+async function refreshOutages() {
+  const root = $('#panel-outages');
+  if (!root || !CONFIG.outages?.enabled) return;
+  root.hidden = false;
+  const sel = $('.outage-range', root);
+  if (!sel.dataset.ready) {
+    sel.dataset.ready = '1';
+    sel.value = String(store.get('outages:days', 7));
+    if (!sel.value) sel.value = '7';
+    sel.addEventListener('change', () => { store.set('outages:days', +sel.value); refreshOutages(); });
+  }
+  const nDays = +sel.value || 7;
+  const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - (nDays - 1));
+  const d = await api('outages', { from: (start / 1000).toFixed(0) });
+  const conns = d.connections;
+  const days = [];
+  for (let i = nDays - 1; i >= 0; i--) {
+    const a = new Date(start); a.setDate(a.getDate() + i);
+    const b = new Date(a); b.setDate(b.getDate() + 1);
+    days.push([a / 1000, b / 1000, a]);
+  }
+  const clip = (x, y, a, b) => [Math.max(x, a), Math.min(y, b)];
+  const pct = (t, a, b) => ((t - a) / (b - a)) * 100;
+  let total = 0, totalS = 0;
+  const rows = days.map(([a, b, date]) => {
+    const end = Math.min(b, d.now);
+    let n = 0, secs = 0, watched = 0;
+    const bars = conns.map((c) => {
+      const seg = (x, y, cls, title = '') => {
+        const [p, q] = clip(x, y, a, end);
+        if (q <= p) return '';
+        return `<span class="${cls}" style="left:${pct(p, a, b).toFixed(3)}%;width:${pct(q, a, b) - pct(p, a, b)}%"${title ? ` title="${esc(title)}"` : ''}></span>`;
+      };
+      const on = c.watched.map(([x, y]) => { const [p, q] = clip(x, y, a, end); watched += Math.max(0, q - p); return seg(x, y, 'on'); }).join('');
+      const drops = c.drops.filter(([x, y]) => y > a && x < end).map(([x, y]) => {
+        if (x >= a) n++;  // a drop over midnight counts on the day it started
+        const [p, q] = clip(x, y, a, end);
+        secs += q - p;
+        const t = new Date(x * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        return seg(x, Math.max(y, x + 1), 'drop', `${c.connection}: no internet from ${t} for ${fmtDrop(y - x)}`);
+      }).join('');
+      return `<div class="obar" title="${esc(c.connection)}">${on}${drops}</div>`;
+    }).join('');
+    total += n; totalS += secs;
+    const label = date.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+    const right = n ? `<b>${n}</b> <span>${fmtDrop(secs)}</span>` : watched ? '<span class="ok">✓</span>' : '<span class="muted">-</span>';
+    return `<div class="orow"><div class="oday">${esc(label)}</div><div class="obars">${bars}</div><div class="osum">${right}</div></div>`;
+  });
+  const axis = [0, 3, 6, 9, 12, 15, 18, 21, 24].map((h) => `<span style="left:${(h / 24) * 100}%">${String(h).padStart(2, '0')}</span>`).join('');
+  $('#outage-total', root).textContent = total
+    ? `Total of ${total} disconnection${total > 1 ? 's' : ''} (${fmtDrop(totalS)}) in the past ${nDays === 7 ? 'week' : `${nDays} days`}`
+    : `No disconnections in the past ${nDays === 7 ? 'week' : `${nDays} days`}`;
+  // a little picture of the two bars with this connection's one filled in
+  $('#outage-legend', root).innerHTML = conns.length > 1
+    ? conns.map((c, i) => `<span class="okey"><span class="okey-bars">${conns.map((_, j) => `<i class="${i === j ? 'on' : ''}"></i>`).join('')}</span>${esc(c.connection)}</span>`).join('') : '';
+  $('#outage-days', root).innerHTML = `<div class="orow oaxis"><div class="oday"></div><div class="obars">${axis}</div><div class="osum"></div></div>${rows.join('')}`;
+}
+
 async function refreshAll(force = false) {
   if (document.hidden && !force) return;
   updatePastBadge();
-  const jobs = [refreshSummary(), refreshSystem(), refreshSharing(), refreshCdn(), ...panels.filter((p) => force || p.isLive()).map((p) => p.refresh())];
+  const jobs = [refreshSummary(), refreshSystem(), refreshOutages(), refreshSharing(), refreshCdn(), ...panels.filter((p) => force || p.isLive()).map((p) => p.refresh())];
   const res = await Promise.allSettled(jobs);
   renderRouteMix();
   if (routeTab === 'changes') renderRouteChanges().catch(() => {});
@@ -2159,6 +2349,7 @@ async function main() {
   }
   themeChartDefaults();
   CONFIG = await api('config');
+  orderCards();
   // ?expand=Gaming,DNS opens those ping groups (handy for bookmarks and wall displays)
   const expand = new URLSearchParams(location.search).get('expand');
   if (expand) store.set('tiles:open', expand.split(','));
@@ -2167,12 +2358,12 @@ async function main() {
   const twins = new Set(CONFIG.ping.targets.filter((t) => t.family === 6).map((t) => t.twin));
   PING_COLORS = groupColors(v4Targets);
   const pingItems = v4Targets.map((t) => ({
-    id: t.id, label: t.name, color: PING_COLORS[t.id], group: t.group, v6: twins.has(t.id) ? `${t.id}#v6` : null,
+    id: t.id, label: t.name, color: PING_COLORS[t.id], group: t.group, v6: twins.has(t.id) ? `${t.id}#v6` : null, conn: t.connection || null,
     title: t.method === 'region' ? `${t.name}: fastest Ookla speedtest server (TCP)` : `${t.host}${t.method === 'tcp' ? ` (TCP ${t.port})` : ''}`,
   }));
   panels.push(latencyPanel({
     id: 'panel-ping', endpoint: 'ping', keyParam: 'targets', items: pingItems, defaultRange: '24h', lossLabel: 'Loss', routeKey: (it) => it.key,
-    collapse: true, chipRows: true,
+    collapse: true, chipRows: true, byConnection: true,
   }));
   $('#summary-bar').addEventListener('click', (e) => {
     if (!e.target.closest('#tiles-toggle')) return;
@@ -2235,13 +2426,19 @@ async function main() {
     try {
       const r = await fetch(`api/speedtest/run?scope=${scope}`, { method: 'POST' }).then((x) => x.json());
       btn.textContent = r.started ? 'Running…' : (r.reason || 'Busy');
+      if (r.started) {
+        speedView = null;  // back to the latest result, to watch this one
+        if (SPEED) SPEED.status = { running: true, phase: 'connecting', started: Date.now() / 1000 };
+        renderSpeedResult();
+        watchSpeedtest();
+        return;
+      }
     } catch { btn.textContent = 'Failed'; }
-    // poll a little faster while the test runs
-    const poll = setInterval(async () => {
-      await refreshSummary().catch(() => {});
-      if (!$('#run-speedtest').disabled) { clearInterval(poll); panels.forEach((p) => p.refresh()); }
-    }, 4000);
+    setTimeout(() => refreshSummary().catch(() => {}), 3000);
   };
+  $('#speed-older').addEventListener('click', () => stepSpeed('older'));
+  $('#speed-newer').addEventListener('click', () => stepSpeed('newer'));
+  $('#speed-pos').addEventListener('click', () => { if (speedView) { speedView = null; renderSpeedResult(); renderSpeedMeta(); } });
   $('#run-speedtest').addEventListener('click', () => startTest('main'));
   document.addEventListener('click', (e) => {
     // a route link, or anywhere else on a host's tile (its IPv4 route; the IPv6 line has its own link)

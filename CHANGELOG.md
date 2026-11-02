@@ -23,6 +23,26 @@ The main steps so far, with the full details per version below.
 | 1.23 | The dashboard over IPv6 as well as IPv4, Apple updates, iCloud and GitHub targets, ISP logos on speedtests |
 | 1.24 | Install on a UniFi OS console itself (Cloud Gateway, Dream Router, Dream Machine) |
 
+## 1.24.9 - 2026-11-02
+
+A Disconnections card that catches drops of seconds, Failover active, live speedtests and per-connection buttons on the charts.
+
+- The summary bars show the ISP's name next to its logo, for the main connection as well as secondary ones.
+- The speedtest tables show the ISP and its logo everywhere: the city results get an ISP column, and a secondary connection that hasn't been speedtested yet still shows its current ISP.
+- **Watch a speedtest as it runs:** the Speedtest card shows the server it picked, then ping, download and upload filling in live with a progress bar, and the summary bar's Speed says "testing…". It works for scheduled tests and ones started from another browser too.
+- The Speedtest card shows which server was used (name, city and Ookla id, with a link to the result).
+- **< > arrows on the Speedtest card** step through earlier results; click the date to jump back to the latest.
+- New `[web] tile_order` setting to choose the order of the ping group tiles.
+- **Ping latency now comes right after the Speedtest and System cards**, with Routes moved below Speedtests by server. The new `[web] card_order` setting changes the order of the cards, e.g. `["speedtest", "routes", "*"]` for the old layout.
+- **New Disconnections card:** each connection is checked every second (every 5 seconds for a backup) with a tiny DNS query, so drops of a few seconds are caught. The card shows the last week one day per row, with a thin bar for each connection, a red mark for each drop, and the count and total time down per day (a tick on days without any). It replaces the ISP check marks on the System history chart. New `[outages]` settings.
+- When the main connection has failed over to a backup, the header and summary bar say **Failover active** instead of showing the backup's ISP and IP as the main one.
+- New `[[connections]] speedtest_server` setting to always speedtest a secondary connection against one server, e.g. the mobile ISP's own, which is often unmetered.
+- Speedtests now run every hour at :15 by default, and a secondary connection's (when `speedtest = true`) every hour at :45, so the two never overlap. Set `offset_minutes` / `speedtest_interval_minutes` to keep the old times.
+- **Log** button on the Ping latency and DNS charts: a logarithmic scale, so one big spike doesn't flatten the lower pings. It turns on by itself when a chart has a big peak.
+- **Connection buttons** above Ping latency and Speedtest history (with each ISP's logo) show or hide each internet connection's pings and speedtests, so a backup's results can sit next to the main ones or be hidden.
+- The Disconnections card can show the last 7, 14, 30 or 90 days.
+- The ISP change labels on the latency charts sit along the top, so they don't cover the lines.
+
 ## 1.24.4 - 2026-11-01
 
 A summary bar and a Run button for secondary connections, and `netbae tunnel` on UniFi OS consoles.
