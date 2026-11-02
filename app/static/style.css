@@ -276,8 +276,10 @@ h2 .live-badge { margin-left: 8px; font-weight: 400; vertical-align: middle; }
 /* the connection buttons above Ping latency and Speedtest history */
 .conn-toggle { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
 .conn-toggle button { font: inherit; font-size: 12.5px; color: var(--text); background: var(--card-2); cursor: pointer;
-  border: 1px solid var(--accent); border-radius: 999px; padding: 3px 11px 3px 8px; display: inline-flex; gap: 6px; align-items: center; }
-.conn-toggle button .isp-logo { margin: 0; }
+  border: 1px solid var(--accent); border-radius: 999px; padding: 4px 12px 4px 9px; display: inline-flex; gap: 6px; align-items: center; line-height: 16px; }
+.conn-toggle button .isp-logo { margin: 0; display: block; flex: none; }
+.conn-toggle button > * { display: block; }
+#speed-conn { margin: -4px 0 12px; }
 .conn-toggle button.off { color: var(--muted); background: var(--chip-off); border-color: var(--border); }
 .conn-toggle button.off img { opacity: .4; filter: grayscale(1); }
 .orow { display: grid; grid-template-columns: 92px 1fr 110px; align-items: center; gap: 10px; padding: 5px 0; border-top: 1px solid var(--border); }

@@ -23,6 +23,17 @@ The main steps so far, with the full details per version below.
 | 1.23 | The dashboard over IPv6 as well as IPv4, Apple updates, iCloud and GitHub targets, ISP logos on speedtests |
 | 1.24 | Install on a UniFi OS console itself (Cloud Gateway, Dream Router, Dream Machine) |
 
+## 1.24.16 - 2026-11-02
+
+Speedtest history by ISP and connection, faster failover detection, and an unmasked public dashboard by default.
+
+- **Failover shows within seconds:** when a connection comes back from a drop of 10 seconds or more, the ISP is checked straight away instead of at the next 10-minute check, so Failover active (and the switch back) appears almost at once.
+- **Switch the Speedtest card between connections:** it shows the main connection by default, with buttons to see a secondary connection's latest result, averages, older results and next run. Run now tests the connection shown.
+- Speedtest history draws each connection in its own colours, so their speeds are easy to tell apart.
+- The text and logo in the connection buttons are centred properly.
+- Speedtest history draws each test as a small, see-through ISP logo, so you can see which ISP ran it without hiding the trend.
+- **The public dashboard shows your addresses unmasked by default:** visitors see your IPs, hostnames and domains as you do. It stays read-only and rate-limited. Set `[public] mask = true` to hide them again.
+
 ## 1.24.9 - 2026-11-02
 
 A Disconnections card that catches drops of seconds, Failover active, live speedtests and per-connection buttons on the charts.

@@ -31,9 +31,10 @@ card_order = []       # order of the dashboard's cards; empty = the usual order:
 # Read-only copy of the dashboard on a second port, for sharing (best through a Cloudflare
 # Tunnel or Tailscale Funnel - see the README; don't port-forward it on your router).
 # It runs alongside the main dashboard in the same service. Visitors can look but can't
-# run speedtests or anything else, and requests are rate-limited. Your public IPv4 addresses
-# show as 203.0.x.x, IPv6 addresses in any /48 you've had as 2403:5800:x:x:x:x:x:x, and
-# hostnames carrying your addresses, names on your own domain (found from your router, this
+# run speedtests or anything else, and requests are rate-limited. Visitors see your IP
+# addresses and hostnames as you do, unless you set mask = true: then your public IPv4
+# addresses show as 203.0.x.x, IPv6 addresses in any /48 you've had as 2403:5800:x:x:x:x:x:x,
+# and hostnames carrying your addresses, names on your own domain (found from your router, this
 # machine and your DNS search domain), names of hops inside your network and this machine's
 # name are hidden.
 [public]
@@ -44,6 +45,7 @@ requests_per_minute = 120         # per visitor; an open dashboard uses about 20
 total_requests_per_minute = 1200  # all visitors together
 hide = []                         # anything else to hide: addresses, prefixes or domains,
                                   # e.g. ["198.51.100.0/24", "2001:db8:1234::/48", "example.com"]
+mask = false                      # true = hide your IPs, domains, hostnames and city (the settings below)
 show_hostname = false             # true = show this machine's name (often includes yours, e.g. Sams-Pi)
 show_city = true                  # false = only the country of your ISP location, and no first city on routes
 
@@ -151,6 +153,8 @@ timeout_seconds = 300
 # Checks the public IP and ISP of the main connection and every secondary connection
 # (via ipinfo.io), shown in the header and summary bars ("Failover active" when the main
 # connection is going out through a backup), with a line on the latency charts when it changes.
+# Also checked straight away when a connection comes back from a drop of 10 seconds or more
+# (needs [outages] enabled), so a failover shows within seconds.
 enabled = true
 interval_minutes = 10
 offset_minutes = 0
@@ -187,7 +191,7 @@ disk_path = "/"        # the drive shown as Boot drive ("/" = the one the system
 # out of the other WAN. See "Monitoring a secondary connection" in the README.
 #
 # [[connections]]
-# name = "Secondary"
+# name = "Mobile backup"
 # bind = "192.168.1.51"         # a second IP on this machine (router policy-routes it to the secondary WAN),
 #                               # or an interface plugged into the secondary modem, e.g. "eth1" / "wlan0"
 # targets = ["1.1.1.1", "8.8.8.8", "google.com", "valve:auto"]   # or "all" to ping every main target over it too

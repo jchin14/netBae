@@ -89,7 +89,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 | **Charts that show jitter** | the average as a line with a shaded P5-P95 (or min-max) band; zoom and drag the y-axis |
 | **Speedtests** | the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages. Pings, DNS checks and traceroutes pause while a test runs, so neither skews the other |
 | **Worldwide view** | latency to 19 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them |
-| **Which ISP you're on** | each connection's public IP and ISP, checked every 10 minutes and marked on the System history chart, so failovers stand out |
+| **Which ISP you're on** | each connection's public IP and ISP, checked every 10 minutes and straight after any drop of 10 seconds or more, and marked on the System history chart, so failovers stand out |
 | **Routes** | every 12 hours, the route to each target: **on-net**, **direct**, via an **IX** (named) or **transit** through carriers like Cogent, Arelion or GTT, with each hand-over labelled **peering** or **paid transit** |
 | **Secondary connection** | test a second internet connection (e.g. a 5G failover link) alongside your main one |
 | **IPv4 and IPv6** | sites pinged and traced over both when your network has IPv6, side by side on the tiles and charts |
@@ -405,6 +405,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[public] host` / `port` | `"::"` / `8080` | `"127.0.0.1"` when the tunnel runs on this machine (`netbae tunnel` sets it) |
 | `[public] requests_per_minute` | `120` | per visitor; an open dashboard needs about 20 |
 | `[public] total_requests_per_minute` | `1200` | all visitors together |
+| `[public] mask` | `false` | `true` hides your IP addresses, domains, hostnames and (with `show_city = false`) city from visitors, see [What visitors see](#what-visitors-see); the settings below only apply with it on |
 | `[public] hide` | `[]` | more addresses, prefixes or domains to hide, e.g. `["198.51.100.0/24", "example.com"]` |
 | `[public] show_hostname` | `false` | show this machine's name (often includes yours, e.g. `Sams-Pi`) |
 | `[public] show_city` | `true` | `false` shows only the country of your ISP location and drops each route's first city |
@@ -497,7 +498,7 @@ New-NetIPAddress -InterfaceAlias "Ethernet" -IPAddress 192.168.1.51 -PrefixLengt
 
 ```toml
 [[connections]]
-name = "Secondary"
+name = "Mobile backup"
 bind = "192.168.1.51"          # or an interface: "eth1" on Linux, "en7" on macOS
 targets = ["1.1.1.1", "8.8.8.8", "google.com", "valve:auto"]   # or "all": every main ping target
 speedtest = true               # off by default: pings and traces only, which use very little data
@@ -594,7 +595,8 @@ The same charts and tables as on your own dashboard, with these differences:
 
 - **Read-only.** Visitors can browse every chart, range and route, but the Run buttons are gone and the server refuses every request that would start something (`POST` returns `403`). Speedtests and traces only run on their normal schedule.
 - **Rate-limited.** Each visitor gets `requests_per_minute` (120) and everyone together `total_requests_per_minute` (1200). An open dashboard needs about 20 a minute, and the public page refreshes every 30 seconds instead of 15. Past the limit visitors get `429` with a `Retry-After`. At most 32 public requests are worked on at once, and stalled connections are dropped after 20 seconds. Behind a tunnel or proxy on your network, the visitor's real address (`CF-Connecting-IP`, `X-Real-IP` or `X-Forwarded-For`) is what's limited.
-- **You're hidden.** This applies to everything the public page shows: ISP history, DNS servers, routes, hostnames and errors.
+- **Your addresses show in full** by default: your public IP, IPv6 prefix, router and machine names and your own domain names, as on your own dashboard. Anyone who sees them knows roughly where you are and who your ISP is, and can aim scans or floods at your router. Set `mask = true` to hide them:
+- **With `mask = true`, you're hidden.** This applies to everything the public page shows: ISP history, DNS servers, routes, hostnames and errors.
   - Your public IPv4 addresses show only the first half (`203.0.x.x`). Hostnames that carry them in any common form (`203-0-113-5`, `5.113.0.203`, `203000113005`, hex) show as `(hidden)`.
   - IPv6 addresses in your /48, including your router's, show only the ISP's /32 (`2403:5800:x:x:x:x:x:x`). Matching on the /48 covers every subnet you have, whether your ISP hands out a /48, /56, /60 or /64. netBae remembers every prefix it has seen on this machine's interfaces, so addresses from an old prefix stay hidden after your ISP changes it.
   - Any name on your own domain shows as `(hidden)`, e.g. a router called `unifi.home.example.com`. Your domains are found from the router's and this machine's names and the DNS search domain (names ending in `.lan`, `.local` or `.home.arpa` aren't treated as domains, since they don't identify you).

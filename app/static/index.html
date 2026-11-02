@@ -50,13 +50,14 @@
     <section class="grid2" id="cards-speed">
       <div class="card" id="speed-card">
         <div class="card-head">
-          <h2>Speedtest <span class="muted small">closest server · latest and averages</span></h2>
+          <h2>Speedtest <span id="speed-sub" class="muted small">closest server · latest and averages</span></h2>
           <span class="controls">
             <button id="run-global" class="btn ghost" title="A speedtest to a random server somewhere in the world" hidden>Run random</button>
             <button id="run-regions" class="btn ghost" hidden>Run regions</button>
             <button id="run-speedtest" class="btn">Run now</button>
           </span>
         </div>
+        <div id="speed-conn" class="conn-toggle" hidden></div>
         <div id="speed-nav" class="speed-nav" hidden>
           <button id="speed-older" class="btn ghost" type="button" title="Older result" aria-label="Older result">&lt;</button>
           <span id="speed-pos" class="small"></span>

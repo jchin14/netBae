@@ -816,7 +816,8 @@ async function refreshSummary() {
   const st = s.speedtest;
   SPEED = st;
   // a new test since: the older result being looked at moves one place further from the latest
-  if (speedView && st.count !== speedView.total) { speedView.index += st.count - speedView.total; speedView.total = st.count; }
+  const count = speedSrc().count;
+  if (speedView && count !== speedView.total) { speedView.index += count - speedView.total; speedView.total = count; }
   renderSpeedResult();
   renderSpeedMeta();
 
@@ -830,15 +831,52 @@ async function refreshSummary() {
 // The latest result (or, with the < > arrows, an older one), live progress while a test runs, and the buttons.
 let SPEED = null;      // the speedtest part of the last /api/summary
 let speedView = null;  // {result, index, total} while looking at an older result; null = the latest
+let speedConn = null;  // a secondary connection shown on the card instead of the main one (the buttons above it)
+
+// the shown connection's latest good result, latest result, averages and number of good tests
+function speedSrc() {
+  const st = SPEED;
+  const c = speedConn && (st?.connections || []).find((x) => x.name === speedConn);
+  if (!speedConn || !c) return { last_ok: st?.last_ok, latest: st?.latest, averages: st?.averages || {}, count: st?.count || 0 };
+  return { last_ok: c.last_ok, latest: c.ts != null ? c : null, averages: { '24h': c.avg24h, '7d': c.avg7d }, count: c.count || 0,
+    conn: CONFIG.connections.find((x) => x.name === speedConn) };
+}
+// a running test belongs to the card when it's for the connection shown
+const speedLiveHere = (status) => status?.running
+  && (speedConn ? status.label === speedConn : !(CONFIG.connections || []).some((c) => c.name === status.label));
+
+// buttons to switch the card between connections: the main one first, then each one that runs speedtests
+let speedConnSig = '';
+function renderSpeedConns() {
+  const bar = $('#speed-conn');
+  const st = SPEED;
+  const conns = (CONFIG.connections || []).filter((c) => c.speedtest || (st.connections || []).some((x) => x.name === c.name && x.ts != null));
+  if (speedConn && !conns.some((c) => c.name === speedConn)) speedConn = null;
+  bar.hidden = !conns.length;
+  if (bar.hidden) return;
+  const isp = (n) => ISP_NOW.find((c) => c.connection === n)?.last_ok?.isp;
+  const names = [mainConn(), ...conns.map((c) => c.name)];
+  const sig = JSON.stringify([speedConn, ...names.map(isp)]);
+  if (sig === speedConnSig) return;
+  speedConnSig = sig;
+  bar.innerHTML = names.map((n, i) => {
+    const on = i ? speedConn === n : !speedConn;
+    return `<button type="button" data-conn="${i ? esc(n) : ''}" class="${on ? '' : 'off'}" aria-pressed="${on}" title="Show ${esc(n)}'s speedtests">`
+      + `${isp(n) ? ispTag(isp(n), false) : ''}<b>${esc(n)}</b>${isp(n) ? `<span class="muted">${esc(isp(n))}</span>` : ''}</button>`;
+  }).join('');
+}
 
 const PHASES = { connecting: 'Finding a server', ping: 'Measuring ping', download: 'Testing download', upload: 'Testing upload' };
 function renderSpeedResult() {
   const st = SPEED;
   if (!st) return;
-  const avg = st.averages || {};
+  renderSpeedConns();
+  const src = speedSrc();
+  $('#speed-sub').textContent = `${speedConn ? speedConn : 'closest server'} · latest and averages`;
+  const avg = src.averages || {};
   const a7 = avg['7d'] || {};
-  const live = !speedView && st.status?.running ? st.status : null;
-  const x = speedView ? speedView.result : st.last_ok;
+  const live = !speedView && speedLiveHere(st.status) ? st.status : null;
+  const x = speedView ? speedView.result : src.last_ok;
   const where = (r) => (r?.server_name ? `${esc(r.server_name)}${r.server_location ? `<span class="muted">, ${esc(r.server_location)}</span>` : ''}` : '-');
   const serverTitle = (r) => (r?.server_name ? `${r.server_name}${r.server_location ? ', ' + r.server_location : ''}${r.server_country ? ', ' + r.server_country : ''}${r.server_id ? ` (Ookla server ${r.server_id})` : ''}` : '');
   const avgs = (key, fmt) => `<div class="avgs">${['24h', '7d'].map((p) => `<div><span>${p} avg</span> <b>${fmt(avg[p]?.[key])}</b></div>`).join('')}</div>`;
@@ -863,7 +901,10 @@ function renderSpeedResult() {
       <div class="speed-live"><div class="label"><span class="pulse"></span>${esc(PHASES[live.phase] || 'Running')}${live.label && !['Auto'].includes(live.label) ? ` · ${esc(live.label)}` : ''}</div>
         <div class="progress"><span style="width:${Math.round(done * 100)}%"></span></div>
         <div class="sub">started ${fmtAgo(live.started)}</div></div>`;
-  } else if (x) {
+  } else if (!x) {
+    $('#speed-summary').innerHTML = `<span class="muted">No results yet${speedConn ? ` for ${esc(speedConn)}` : ''}</span>`;
+    $('#speed-details').innerHTML = '';
+  } else {
     const col = (label, key, unit, fmt) => `<div><div class="label">${label}</div><div class="big">${fmt(x[key])}<small>${unit}</small></div>${avgs(key, fmt)}</div>`;
     $('#speed-summary').innerHTML = col('Download', 'download_mbps', 'Mbps', fmtMbps)
       + col('Upload', 'upload_mbps', 'Mbps', fmtMbps) + col('Ping', 'ping_ms', 'ms', fmtMs);
@@ -876,7 +917,7 @@ function renderSpeedResult() {
     ].map(([l, v, sub, title]) => `<div><div class="label">${l}</div><div class="val"${title ? ` title="${esc(title)}"` : ''}>${v}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`).join('');
   }
   // the < > arrows: older and newer results
-  const total = st.count || 0;
+  const total = src.count;
   const idx = speedView ? speedView.index : 0;
   const nav = $('#speed-nav');
   nav.hidden = total < 2;
@@ -891,9 +932,9 @@ function renderSpeedResult() {
 }
 
 async function stepSpeed(dir) {
-  const from = speedView ? speedView.result.ts : SPEED?.last_ok?.ts;
+  const from = speedView ? speedView.result.ts : speedSrc().last_ok?.ts;
   if (from == null) return;
-  const r = await api('speedtest/step', { ts: from, dir }).catch(() => null);
+  const r = await api('speedtest/step', { ts: from, dir, ...(speedConn ? { conn: speedConn } : {}) }).catch(() => null);
   if (!r) return;
   speedView = r.result && r.index > 0 ? r : (dir === 'newer' ? null : speedView);
   renderSpeedResult();
@@ -902,19 +943,24 @@ async function stepSpeed(dir) {
 
 function renderSpeedMeta() {
   const st = SPEED;
-  const ok = st.last_ok;
-  const tests = st.averages?.['7d']?.tests;
+  const src = speedSrc();
+  const ok = src.last_ok;
+  const tests = src.averages?.['7d']?.tests;
   let meta = speedView ? `Looking at an older result; averages are for the last 24 hours and 7 days.${tests ? ` ${tests} tests in 7d.` : ''}`
     : ok && tests ? `${tests} tests in 7d` : '';
-  if (st.latest && st.latest.error) meta += `<div class="error-text">Last run failed (${fmtAgo(st.latest.ts)}): ${esc(st.latest.error)}</div>`;
+  if (src.latest && src.latest.error) meta += `<div class="error-text">Last run failed (${fmtAgo(src.latest.ts)}): ${esc(src.latest.error)}</div>`;
   const hm = (ts) => new Date(ts * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
   // the config's next run is from when the page loaded: step it forward past runs that have happened since
   const upcoming = (ts, minutes) => { const now = Date.now() / 1000; while (ts && minutes > 0 && ts <= now) ts += minutes * 60; return ts; };
   const when = (ts) => `${hm(ts)} (${fmtIn(ts)})`;
   const next = upcoming(CONFIG.speedtest.next_run, CONFIG.speedtest.interval_minutes);
   const nextRegions = upcoming(CONFIG.speedtest.next_regions_run, CONFIG.speedtest.regions_interval_minutes);
-  if (CONFIG.speedtest.enabled && next) meta += `<div>Next scheduled run: ${when(next)}${nextRegions ? ` · regions: ${when(nextRegions)}` : ''}</div>`;
-  if (!CONFIG.speedtest.enabled) meta += `<div>Scheduled speedtests are off in the config${CONFIG.speedtest.manual ? '; Run now still works' : ''}.</div>`;
+  const c = src.conn;
+  if (c) {
+    const cnext = upcoming(c.next_run, c.speedtest_interval_minutes);
+    meta += cnext ? `<div>Next scheduled run: ${when(cnext)}</div>` : '<div>No scheduled speedtests on this connection; Run now still works.</div>';
+  } else if (CONFIG.speedtest.enabled && next) meta += `<div>Next scheduled run: ${when(next)}${nextRegions ? ` · regions: ${when(nextRegions)}` : ''}</div>`;
+  if (!c && !CONFIG.speedtest.enabled) meta += `<div>Scheduled speedtests are off in the config${CONFIG.speedtest.manual ? '; Run now still works' : ''}.</div>`;
   $('#speed-meta').innerHTML = meta;
 }
 
@@ -1399,6 +1445,43 @@ function ispGlyph(color, failed, size) {  // a small canvas Chart.js draws as th
   g.stroke();
   return (ispGlyphs[k] = c);
 }
+// A speedtest point: the ISP's logo in a ring of the line's colour, so each test shows which ISP ran it.
+// null until the logo has loaded (Chart.js then draws the plain shape), and for ISPs without a logo.
+const ispPoints = {};
+const ispLogoImgs = {};
+function ispPoint(isp, color, onReady, size = 7) {
+  if (!isp) return null;
+  const k = `${isp}|${color}|${size}`;
+  if (k in ispPoints) return ispPoints[k];
+  ispPoints[k] = null;
+  let logo = ispLogoImgs[isp];
+  if (!logo) {
+    logo = ispLogoImgs[isp] = new Image();
+    logo.src = `api/isp/logo?isp=${encodeURIComponent(isp)}`;
+  }
+  const draw = () => {
+    if (!logo.naturalWidth) return;  // no logo for this ISP
+    const dpr = window.devicePixelRatio || 1;
+    const c = document.createElement('canvas');
+    c.width = c.height = Math.ceil(size * dpr);
+    const g = c.getContext('2d');
+    g.scale(dpr, dpr);
+    const r = size / 2;
+    g.globalAlpha = 0.45;  // see-through, so the line underneath stays the thing you read
+    g.beginPath(); g.arc(r, r, r - 0.5, 0, 2 * Math.PI);
+    g.fillStyle = '#fff'; g.fill();
+    g.lineWidth = 1; g.strokeStyle = color; g.stroke();
+    g.save(); g.beginPath(); g.arc(r, r, r - 1, 0, 2 * Math.PI); g.clip();
+    g.drawImage(logo, 1, 1, size - 2, size - 2);
+    g.restore();
+    // an img sized in CSS pixels, since Chart.js draws a point image at its width x height
+    const img = new Image(size, size);
+    img.onload = () => { ispPoints[k] = img; onReady(); };
+    img.src = c.toDataURL();
+  };
+  if (logo.complete) draw(); else logo.addEventListener('load', draw, { once: true });
+  return null;
+}
 const ispLabel = (ctx) => (ctx.raw.failed
   ? ` ${ctx.raw.conn} ISP check failed${ctx.raw.isp ? ` (on ${ctx.raw.isp})` : ''}`
   : ` ${ctx.raw.conn} ISP: ${ctx.raw.isp}${ctx.raw.ip ? ` · ${ctx.raw.ip}` : ''}${ctx.raw.changed ? '  (changed)' : ''}`);
@@ -1701,10 +1784,10 @@ function speedPanel() {
   const viewSel = $('.server', root);
   const chart = lineChart($('canvas', root), { yTitle: 'Mbps', y1Title: 'ms' });
   const series = [
-    { id: 'download', label: 'Download', color: PALETTE[0], unit: 'Mbps', axis: 'y', key: 'download_mbps' },
-    { id: 'upload', label: 'Upload', color: PALETTE[2], unit: 'Mbps', axis: 'y', key: 'upload_mbps' },
-    { id: 'ping', label: 'Ping', color: PALETTE[1], unit: 'ms', axis: 'y1', key: 'ping_ms' },
-    { id: 'jitter', label: 'Jitter', color: PALETTE[4], unit: 'ms', axis: 'y1', key: 'jitter_ms' },
+    { id: 'download', label: 'Download', color: PALETTE[0], alt: ['#ec4899', '#0ea5e9'], unit: 'Mbps', axis: 'y', key: 'download_mbps' },
+    { id: 'upload', label: 'Upload', color: PALETTE[2], alt: ['#eab308', '#84cc16'], unit: 'Mbps', axis: 'y', key: 'upload_mbps' },
+    { id: 'ping', label: 'Ping', color: PALETTE[1], alt: ['#ef4444', '#f97316'], unit: 'ms', axis: 'y1', key: 'ping_ms' },
+    { id: 'jitter', label: 'Jitter', color: PALETTE[4], alt: ['#64748b', '#a855f7'], unit: 'ms', axis: 'y1', key: 'jitter_ms' },
   ];
   const COMPARE = '__compare__';
   const refresh = async () => {
@@ -1741,15 +1824,22 @@ function speedPanel() {
       chart.options.scales.y.title.text = metric.unit;
       chart.options.scales.y1.display = false;
     } else {
-      // a secondary connection's lines are dotted and fainter, with triangle points
+      // each connection gets its own lines: a secondary connection's in a different colour, with triangle points
       const conns = [...new Set(ok.map(connOf))].sort((a, b) => (b === mainConn()) - (a === mainConn()));
-      chart.data.datasets = conns.flatMap((cn, ci) => series.filter((s) => sel.includes(s.id)).map((s) => ({
+      chart.data.datasets = conns.flatMap((cn, ci) => series.filter((s) => sel.includes(s.id)).map((s) => {
+        const color = ci ? s.alt[(ci - 1) % s.alt.length] : s.color;
+        return {
         label: conns.length > 1 ? `${cn} ${s.label.toLowerCase()}` : s.label, unit: s.unit, yAxisID: s.axis,
-        borderColor: ci ? s.color + '99' : s.color, backgroundColor: ci ? s.color + '99' : s.color,
-        borderDash: ci ? (s.axis === 'y1' ? [1, 3] : [2, 3]) : s.axis === 'y1' ? [4, 3] : [], spanGaps: true,
-        pointStyle: ci ? 'triangle' : 'circle', pointRadius: ok.length > 200 ? 0 : ci ? 3.5 : 2.5,
-        data: ok.filter((x) => connOf(x) === cn).map((x) => ({ x: x.ts * 1000, y: x[s.key] })),
-      })));
+        borderColor: color, backgroundColor: color,
+        borderDash: s.axis === 'y1' ? [4, 3] : ci ? [6, 3] : [], spanGaps: true,
+        // each point is the logo of the ISP that ran the test, or a circle / triangle until it loads
+        // (plain hidden circles once there are too many to tell apart, since an image ignores pointRadius)
+        pointStyle: ok.length > 200 ? 'circle'
+          : (ctx) => ispPoint(ctx.raw?.isp, color, () => chart.update('none')) || (ci ? 'triangle' : 'circle'),
+        pointRadius: ci ? 4 : ok.length > 200 ? 0 : 2.5,
+        data: ok.filter((x) => connOf(x) === cn).map((x) => ({ x: x.ts * 1000, y: x[s.key], isp: x.isp })),
+      };
+      }));
       chart.options.scales.y.title.text = 'Mbps';
       chart.options.scales.y1.display = sel.includes('ping') || sel.includes('jitter');
     }
@@ -2041,7 +2131,7 @@ async function routeData(name, params = {}) {
   routeApi[name] = { key, ts: Date.now(), data };
   return data;
 }
-// what a route id is: "Netflix", "Cloudflare (IPv6)", "1.1.1.1 via Secondary", with its category
+// what a route id is: "Netflix", "Cloudflare (IPv6)", "1.1.1.1 via Mobile backup", with its category
 function routeNames() {
   const m = {};
   for (const d of routeDestinations()) m[d.key] = { name: d.name, cat: d.cat };
@@ -2428,7 +2518,8 @@ async function main() {
       btn.textContent = r.started ? 'Running…' : (r.reason || 'Busy');
       if (r.started) {
         speedView = null;  // back to the latest result, to watch this one
-        if (SPEED) SPEED.status = { running: true, phase: 'connecting', started: Date.now() / 1000 };
+        if (SPEED) SPEED.status = { running: true, phase: 'connecting', started: Date.now() / 1000,
+          label: scope.startsWith('conn:') ? decodeURIComponent(scope.slice(5)) : 'Auto' };
         renderSpeedResult();
         watchSpeedtest();
         return;
@@ -2439,7 +2530,15 @@ async function main() {
   $('#speed-older').addEventListener('click', () => stepSpeed('older'));
   $('#speed-newer').addEventListener('click', () => stepSpeed('newer'));
   $('#speed-pos').addEventListener('click', () => { if (speedView) { speedView = null; renderSpeedResult(); renderSpeedMeta(); } });
-  $('#run-speedtest').addEventListener('click', () => startTest('main'));
+  $('#run-speedtest').addEventListener('click', () => startTest(speedConn ? `conn:${encodeURIComponent(speedConn)}` : 'main'));
+  $('#speed-conn').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-conn]');
+    if (!b) return;
+    speedConn = b.dataset.conn || null;
+    speedView = null;
+    renderSpeedResult();
+    renderSpeedMeta();
+  });
   document.addEventListener('click', (e) => {
     // a route link, or anywhere else on a host's tile (its IPv4 route; the IPv6 line has its own link)
     const b = e.target.closest('.route-link');

@@ -50,7 +50,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.24.9"
+VERSION = "1.24.16"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -125,7 +125,8 @@ DEFAULT_CONFIG = {
     # optional read-only copy of the dashboard for sharing (e.g. through a Cloudflare Tunnel)
     "public": {"enabled": False, "host": "::", "port": 8080,
                "requests_per_minute": 120, "total_requests_per_minute": 1200, "hide": [],
-               "show_hostname": False, "show_city": True,
+               # mask = true hides your IPs, domains, hostnames and city (with hide, show_hostname, show_city)
+               "mask": False, "show_hostname": False, "show_city": True,
                # Cloudflare Access sign-in on the public address: signed-in visitors get the private dashboard
                "access_team": "", "access_aud": ""},
     # raw samples -> 1-minute summaries -> hourly summaries; 0 = keep forever
@@ -842,6 +843,8 @@ def load_config(path):
     pub = cfg["public"]
     pub["access_team"] = re.sub(r"^https?://|\.cloudflareaccess\.com.*$", "", str(pub["access_team"] or "").strip().lower())
     pub["access_aud"] = str(pub["access_aud"] or "").strip()
+    if not isinstance(pub["mask"], bool):
+        raise SystemExit("[public] mask must be true or false")
     if bool(pub["access_team"]) != bool(pub["access_aud"]):
         raise SystemExit("[public] access_team and access_aud go together: set both for Cloudflare Access sign-in, or neither")
     if pub["access_team"] and not re.fullmatch(r"[a-z0-9-]+", pub["access_team"]):
@@ -2945,6 +2948,7 @@ class Monitor:
         self.region_lookups = set()
         self.game_cache = {}
         self.trace_lock = threading.Lock()
+        self.isp_recheck_lock = threading.Lock()
         self.down_last = {}  # ping round kind -> ids that failed last round (see recheck_burst)
         self.first_traces_done = threading.Event()
         self.hop_geo = HopGeo(self.db)
@@ -3447,6 +3451,8 @@ class Monitor:
                     elif down is not None:
                         if missed >= 2:  # one round of lost packets isn't a drop
                             c.execute("INSERT INTO outage VALUES (?,?,?)", (name, down, t0))
+                            if t0 - down >= self.ISP_RECHECK_AFTER and self.cfg["isp"]["enabled"]:
+                                self.pool.submit(self.recheck_isp, name, t0 - down)
                         down, missed = None, 0
                     self.outage_now[name] = down if missed >= 2 else None
                 if t0 - saved >= 60:
@@ -3455,6 +3461,20 @@ class Monitor:
             except Exception:
                 log.exception("outage checker for %s failed", name)
             time.sleep(max(0.05, every - (time.time() - t0)))
+
+    ISP_RECHECK_AFTER = 10  # seconds: a drop at least this long gets an ISP check when it ends
+
+    def recheck_isp(self, name, secs):
+        """Check the ISP as soon as a connection is back from a longer drop, so a failover (or the switch back)
+        shows within seconds instead of at the next scheduled check. One check covers every connection, so
+        drops that end together share it."""
+        if not self.isp_recheck_lock.acquire(blocking=False):
+            return
+        try:
+            log.info("%s is back after a %.0fs drop: checking the ISP", name, secs)
+            self.collect_isp()
+        finally:
+            self.isp_recheck_lock.release()
 
     def isp_connections(self):
         """(name, bind) for the main connection and every secondary connection."""
@@ -3927,7 +3947,9 @@ def api_config(m, q):
                 "servers": c["dns"]["servers"], "domains": c["dns"]["domains"],
                 "ipv6_available": m.ipv6_available()},
         "connections": [{"name": x["name"], "bind": x["bind"], "speedtest": x["speedtest"],
-                         "speedtest_interval_minutes": x["speedtest_interval_minutes"]} for x in c["connections"]],
+                         "speedtest_interval_minutes": x["speedtest_interval_minutes"],
+                         "next_run": next_aligned(x["speedtest_interval_minutes"] * 60, x["speedtest_offset_minutes"] * 60)
+                         if x["speedtest"] and x["speedtest_interval_minutes"] > 0 else None} for x in c["connections"]],
         "speedtest": {"enabled": c["speedtest"]["enabled"], "manual": c["speedtest"]["manual"], "interval_minutes": c["speedtest"]["interval_minutes"],
                       "offset_minutes": c["speedtest"]["offset_minutes"], "servers": c["speedtest"]["servers"],
                       "next_run": next_aligned(c["speedtest"]["interval_minutes"] * 60,
@@ -4018,16 +4040,20 @@ def api_speedtest_status(m, q):
 def api_speedtest_step(m, q):
     """For the < > arrows on the Speedtest card: the good main result just before (dir=older) or after (dir=newer)
     a time, with its place in the list (index 0 = the latest) and how many there are."""
-    main = "COALESCE(kind, 'main') = 'main' AND error IS NULL"
+    conn = q.get("conn")  # a secondary connection's results instead of the main connection's
+    if conn and conn not in [c["name"] for c in m.cfg["connections"]]:
+        return {"result": None, "index": None, "total": 0}
+    main, p = (("kind = 'connection' AND label = ? AND error IS NULL", (conn,)) if conn
+               else ("COALESCE(kind, 'main') = 'main' AND error IS NULL", ()))
     ts = q_time(q, "ts", time.time())
     older = q.get("dir", "older") != "newer"
-    total = m.db.scalar(f"SELECT COUNT(*) FROM speedtest WHERE {main}")
+    total = m.db.scalar(f"SELECT COUNT(*) FROM speedtest WHERE {main}", p)
     row = m.db.query(f"SELECT {','.join(ST_COLS)} FROM speedtest WHERE {main} AND ts {'<' if older else '>'} ?"
-                     f" ORDER BY ts {'DESC' if older else 'ASC'} LIMIT 1", (ts,))
+                     f" ORDER BY ts {'DESC' if older else 'ASC'} LIMIT 1", (*p, ts))
     if not row:
         return {"result": None, "index": None, "total": total}
     r = dict(zip(ST_COLS, row[0]))
-    return {"result": r, "index": m.db.scalar(f"SELECT COUNT(*) FROM speedtest WHERE {main} AND ts > ?", (r["ts"],)),
+    return {"result": r, "index": m.db.scalar(f"SELECT COUNT(*) FROM speedtest WHERE {main} AND ts > ?", (*p, r["ts"])),
             "total": total}
 
 
@@ -4584,6 +4610,7 @@ def st_by_label(m, kind, now):
         good = m.db.query(f"SELECT {','.join(ST_COLS)} FROM speedtest WHERE kind = ? AND label = ? AND error IS NULL"
                           " ORDER BY ts DESC LIMIT 1", (kind, lbl))
         out[lbl]["last_ok"] = dict(zip(ST_COLS, good[0])) if good else None
+        out[lbl]["count"] = m.db.scalar("SELECT COUNT(*) FROM speedtest WHERE kind = ? AND label = ? AND error IS NULL", (kind, lbl))
     return out
 
 
@@ -5094,14 +5121,16 @@ def make_handler(monitor, public=False):
             if fn is None:
                 return False
             try:
-                out = fn(monitor, q if self.private else mask.unmask(q))
+                masked = not self.private and pcfg["mask"]
+                out = fn(monitor, mask.unmask(q) if masked else q)
                 if public and self.who and u.path == "/api/config":
                     out = dict(out, signed_in=self.who[0])
                 elif not self.private:
                     if u.path == "/api/config":
                         out = dict(out, public=True, sign_in=bool(access))
                         out.pop("update", None)  # updating is only for the private dashboard
-                    out = mask.apply(out)
+                    if masked:
+                        out = mask.apply(out)
                 self.send_json(out)
             except (BrokenPipeError, ConnectionResetError):
                 pass  # the browser went away (reload, closed tab) before the reply was sent
