@@ -90,7 +90,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 | **Speedtests** | the official [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli): download, upload, ping, jitter, packet loss, ISP and data used, with 24-hour and 7-day averages. Pings, DNS checks and traceroutes pause while a test runs, so neither skews the other |
 | **Worldwide view** | latency to 19 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them |
 | **Which ISP you're on** | each connection's public IP and ISP, checked every 10 minutes and straight after any drop of 10 seconds or more, and marked on the System history chart, so failovers stand out |
-| **Routes** | every 12 hours, the route to each target: **on-net**, **direct**, via an **IX** (named) or **transit** through carriers like Cogent, Arelion or GTT, with each hand-over labelled **peering** or **paid transit** |
+| **Routes** | every 12 hours, the route to each target: **on-net**, **direct**, via an **IX** (named) or **transit** through carriers like Cogent, Arelion or GTT, with each hand-over labelled **peering** or **paid transit**. Route details list the cities on the way and, for each sea crossing, the undersea cables it probably uses (a best guess from the cities on each side and who owns the cables, using [TeleGeography's Submarine Cable Map](https://www.submarinecablemap.com), downloaded monthly) |
 | **Secondary connection** | test a second internet connection (e.g. a 5G failover link) alongside your main one |
 | **IPv4 and IPv6** | sites pinged and traced over both when your network has IPv6, side by side on the tiles and charts |
 | **DNS over IPv4 and IPv6** | your router (IPv4 and IPv6), the DNS servers DHCP gave you when they aren't the router, and Cloudflare, Google, Quad9 (with and without ECS), OpenDNS, CleanBrowsing, AdGuard, NextDNS and Control D |
@@ -346,6 +346,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[storage] raw_retention_days` | `7` | every sample |
 | `[storage] minute_retention_days` | `90` | 1-minute summaries (count, average, min, max and a latency histogram) |
 | `[storage] retention_days` | `0` | hourly summaries, speedtests and system history (`0` = forever) |
+| `[storage] save_every_minutes` | `10` | pings, DNS and system stats wait in memory and are saved this often and when netBae stops, which cuts SD card wear about 10x. A power cut loses up to this much. `0` = save every sample straight away |
 | `[ping] interval_seconds` / `offset_seconds` | `30` / `0` | |
 | `[ping] timeout_seconds` | `2` | |
 | `[ping] extra_targets` | none | your own hosts, added to the built-in list: `{ name, host, group }`; `host = "gateway"` = your router; `method = "tcp"` (with `port`) for hosts that block ping; game servers below. One with the same host as a built-in target replaces it |
@@ -415,7 +416,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[[connections]] trace` | `"all"` | trace the route to every main destination over it every 12 hours, for the Routes card's **Compare ISPs** (a few hundred KB of traceroutes a day), or `"pinged"` for only its targets |
 | `[[connections]] speedtest` | `false` | also run speedtests over it (each uses up to 1 GB). Off, it only gets pings and traces |
 | `[[connections]] speedtest_interval_minutes` / `speedtest_offset_minutes` | `60` / `45` | every hour at :45, half an hour after the main connection's (`1440` = daily, `0` = only when you press Run) |
-| `[[connections]] speedtest_server` | | an Ookla server id to always test against, e.g. your mobile ISP's own server, which often doesn't count towards your data |
+| `[[connections]] speedtest_server` | | an Ookla server id to always test against, e.g. your mobile ISP's own server, which often doesn't count towards your data. If it can't be reached over the connection, netBae tests against the nearest server instead |
 
 </details>
 
@@ -451,7 +452,7 @@ Battle.net (Blizzard's login service, TCP 1119) and Minecraft (the Hypixel serve
 
 ### Region speedtests and pings
 
-Built-in cities: **Nearest** (the Ookla servers closest to you, wherever you are; the summary bar shows it as **Internet latency**) · 🇦🇺 Sydney, Melbourne, Perth · 🇳🇿 Auckland · 🇸🇬 Singapore · 🇭🇰 Hong Kong · 🇯🇵 Tokyo · 🇬🇺 Guam · 🇮🇳 Delhi · 🇴🇲 Oman · 🇺🇸 Los Angeles, New York · 🇨🇦 Toronto · 🇧🇷 São Paulo · 🇬🇧 London · 🇳🇱 Amsterdam · 🇫🇷 Paris · 🇮🇹 Milan · 🇿🇦 Cape Town.
+Built-in cities: **Nearest** (the Ookla servers closest to you, wherever you are; the summary bars show it as **Base latency**, next to **World avg latency**, the average over all sites) · 🇦🇺 Sydney, Melbourne, Perth · 🇳🇿 Auckland · 🇸🇬 Singapore · 🇭🇰 Hong Kong · 🇯🇵 Tokyo · 🇬🇺 Guam · 🇮🇳 Delhi · 🇴🇲 Oman · 🇺🇸 Los Angeles, New York · 🇨🇦 Toronto · 🇧🇷 São Paulo · 🇬🇧 London · 🇳🇱 Amsterdam · 🇫🇷 Paris · 🇮🇹 Milan · 🇿🇦 Cape Town.
 
 netBae looks up the Ookla servers in each city, measures them and uses the fastest. It retries the next one if a server fails and refreshes the list daily. Add your own with `{ name = "Frankfurt", city = "Frankfurt", country = "Germany", flag = "DE" }` or `{ name = "Work", server_id = 12345 }`. Ookla has no public servers in mainland China, so Hong Kong is the closest.
 
@@ -689,6 +690,8 @@ Charts automatically use the right one, so a whole year loads instantly even on 
 | Every ping and DNS lookup | 7 days | ~485 MB (ping 395, DNS 90) |
 | 1-minute summaries | 90 days | ~2 GB (ping 1, DNS 1) |
 | Hourly summaries, speedtests, system, ISP checks, routes | forever | ~300 MB a year |
+
+New samples and the latest summaries are held in memory and saved every `save_every_minutes` (10) and on shutdown. Saving each ping round straight away wrote about 23 GB a day on a Pi, mostly rewriting the same pages, enough to wear out an SD card in a year or two.
 
 Host names, DNS servers and domains are stored once and referred to by number, and each table is stored in (host, time) order so it needs only one extra index (by time).
 

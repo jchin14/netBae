@@ -23,6 +23,23 @@ The main steps so far, with the full details per version below.
 | 1.23 | The dashboard over IPv6 as well as IPv4, Apple updates, iCloud and GitHub targets, ISP logos on speedtests |
 | 1.24 | Install on a UniFi OS console itself (Cloud Gateway, Dream Router, Dream Machine) |
 
+## 1.24.28 - 2026-11-03
+
+Less disk writing, clearer latency stats in the summary bars.
+
+- Much less disk writing: pings, DNS and system stats are held in memory and saved every 10 minutes and when netBae stops, instead of every 30 seconds. On a Raspberry Pi this cuts SD card writes from about 23 GB a day. Set with `[storage] save_every_minutes` (`0` = save every sample, as before)
+- Summary bars show **Base latency** (to the nearest Ookla server: your connection's own latency) and, at the end, **World avg latency** (the average over all sites). They were called Internet latency and Avg latency
+- Each secondary connection (5G, VPN) gets its own Base latency, from the Ookla servers closest to it: for a VPN, near its exit
+- Chart tooltips show the day of the week and the year, e.g. "Wed 11 Nov 2026 1:20pm"
+- Route details now list each sea crossing and the undersea cables it probably uses (e.g. Sydney to Los Angeles: Southern Cross, Southern Cross NEXT or Hawaiki), with the likely one picked out when the carrier there co-owns it. This is a best guess from the cities on each side, since traceroute can't see the cable. Cable landings and owners come from TeleGeography's Submarine Cable Map (downloaded once a month, about 700 cables), with a built-in list until the first download finishes
+- Secondary connections' summary bars now show speed from their latest speedtest, like the main bar
+- A host now counts as down only after 3 lost pings in a row (about 90 seconds), so one dropped ping no longer flips the status to "1 host down". Single drops still show as packet loss
+- The status dot no longer has a ring around it
+- Hovering the status or Hosts up now lists which hosts are down
+- The summary bars' packet loss no longer counts hosts that are down (they show in Hosts up instead) or usenet servers, which drop the odd ping on every connection
+- A Reset view button at the top puts chart ranges, sorting, open groups, hidden lines and tabs back to their defaults
+- A secondary connection's speedtest now falls back to the nearest server when its `speedtest_server` can't be reached, instead of failing every time (e.g. "Cannot open socket" when the server has an IPv6 address and the connection is IPv4 only)
+
 ## 1.24.16 - 2026-11-02
 
 Speedtest history by ISP and connection, faster failover detection, and an unmasked public dashboard by default.

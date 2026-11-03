@@ -130,7 +130,7 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 40px; display: grid
 .summary-bar.bad { border-left-color: var(--bad); }
 .status-stat .state { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; letter-spacing: .06em;
   text-transform: uppercase; margin-top: 4px; white-space: nowrap; }
-.status-stat .dot { background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 20%, transparent); }
+.status-stat .dot { background: currentColor; }
 .summary-bar.good .state { color: var(--good); }
 .summary-bar.warn .state { color: var(--warn); }
 .summary-bar.bad .state { color: var(--bad); }

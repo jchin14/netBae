@@ -433,6 +433,14 @@ const ispChangeLines = {
   },
 };
 
+// Tooltip heading, e.g. "Mon 11 Nov 2026 1:20pm"
+function fmtTipTime(ms) {
+  const d = new Date(ms);
+  const date = d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }).replace(/,/g, '');
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).replace(/\s/g, '').toLowerCase();
+  return `${date} ${time}`;
+}
+
 function lineChart(canvas, { yTitle, y1Title, yMax, plugins = [] } = {}) {
   const scales = {
     x: { type: 'time', ticks: { maxRotation: 0, autoSkipPadding: 18 }, grid: { display: false }, border: { color: css('--border') } },
@@ -453,6 +461,7 @@ function lineChart(canvas, { yTitle, y1Title, yMax, plugins = [] } = {}) {
         legend: { display: false },
         tooltip: {
           callbacks: {
+            title: (items) => (items.length ? fmtTipTime(items[0].parsed.x) : ''),
             label: (ctx) => {
               if (ctx.dataset.role === 'isp') return ispLabel(ctx);
               const unit = ctx.dataset.unit || '';
@@ -485,10 +494,21 @@ function setStatus(ok, msg) {
 }
 
 // ------------------------------------------------------------------ summary tiles
+// Hosts that count towards the bars' packet loss: not ones that are down (that's Hosts up's job) and not usenet
+// servers, which drop the odd ping on every connection and would make every bar look lossy
+const lossSites = (xs) => xs.filter((p) => !p.down && !/usenet/i.test(`${p.group} ${p.name}`));
+
+// Tooltip text naming the hosts that are down (3 lost pings in a row), for the status and Hosts up stats
+function downList(xs) {
+  const names = xs.filter((p) => p.down).map((p) => p.name);
+  if (!names.length) return '';
+  return `\n\nDown: ${names.slice(0, 15).join(', ')}${names.length > 15 ? ` and ${names.length - 15} more` : ''}`;
+}
+
 function tileStatus(p) {
   const loss = p.loss5m ?? 0;
   if (p.last == null && p.last_ts == null) return '';
-  if (loss >= 10 || (p.last == null && loss >= 5)) return 'bad';
+  if (p.down || loss >= 10 || (p.last == null && loss >= 5)) return 'bad';
   // a single lost ping is a warning; far-away regions are slow by nature, so only sites get the latency check
   if (p.last == null || loss > 0 || (p.method !== 'region' && p.last > 150)) return 'warn';
   return 'good';
@@ -499,7 +519,8 @@ function tileWhy(p) {
   const loss = p.loss5m ?? 0;
   if (p.last == null && p.last_ts == null) return 'No measurements yet';
   const reasons = [];
-  if (p.last == null) reasons.push('the latest ping timed out');
+  if (p.down) reasons.push('down: the last 3 pings timed out');
+  else if (p.last == null) reasons.push('the latest ping timed out');
   if (loss > 0) reasons.push(`${fmtPct(loss)} packet loss in the last 5 minutes`);
   if (p.method !== 'region' && p.last > 150) reasons.push(`latency ${fmtMs(p.last)} ms (over 150 ms)`);
   const st = tileStatus(p);
@@ -564,7 +585,7 @@ function routeHtml(id) {
   const r = ROUTES[id];
   if (!r) return '<span class="muted">route not traced yet</span>';
   const { names, rel, html } = routeParts(r, id);
-  return `<button class="route-link" data-route="${esc(id)}" title="${esc(names.join(' → '))}${rel ? ` · ${rel}` : ''}${r.cities?.length ? ` · through ${esc(r.cities.join(' → '))}` : ''} · traced ${fmtAgo(r.ts)} · click for hops">${html}</button>`;
+  return `<button class="route-link" data-route="${esc(id)}" title="${esc(names.join(' → '))}${rel ? ` · ${rel}` : ''}${r.cities?.length ? ` · through ${esc(r.cities.join(' → '))}` : ''}${r.cables?.length ? ` · ${esc(r.cables.map((x) => (x.likely[0] || (x.maybe.length === 1 ? x.maybe[0] : `${x.from.replace(/, [A-Z]{2}$/, '')}-${x.to.replace(/, [A-Z]{2}$/, '')} cable`))).join(', '))}` : ''} · traced ${fmtAgo(r.ts)} · click for hops">${html}</button>`;
 }
 
 // a route's badge and words ("transit via Telstra Global to Akamai"), for a route object
@@ -610,6 +631,18 @@ const hopNetwork = (h) => {
   return dom ? `${esc(dom[1])} <span class="muted">no ASN</span>` : '<span class="muted">unknown network</span>';
 };
 
+// Sea crossings on a route and the undersea cables each may use: "likely" ones are co-owned by the carrier there
+function cablesHtml(cables, source) {
+  if (!cables?.length) return '';
+  const short = (c) => c.replace(/, [A-Z]{2}$/, '');
+  const rows = cables.map((x) => {
+    const names = x.likely.length ? `<b>${esc(x.likely.join(' or '))}</b>${x.carrier ? ` <span class="muted">(${esc(x.carrier)} co-owns ${x.likely.length > 1 ? 'them' : 'it'})</span>` : ''}${x.maybe.length ? `, or ${esc(x.maybe.join(', '))}` : ''}`
+      : x.maybe.length ? `one of ${esc(x.maybe.join(', '))}` : '<span class="muted">no known cable</span>';
+    return `<li>${x.approx ? '~' : ''}${esc(short(x.from))} → ${esc(short(x.to))}: ${names}</li>`;
+  }).join('');
+  return `<p class="small">Undersea cables (a best guess: traceroute can't see the cable, only the cities on each side${source ? `. Cable data: <a href="https://www.submarinecablemap.com" target="_blank" rel="noopener">${esc(source)}</a>` : ''})</p><ul class="route-hist">${rows}</ul>`;
+}
+
 async function showRoute(id, title) {
   const d = await api('traceroute', { target: id });
   const r = d.latest;
@@ -628,7 +661,8 @@ async function showRoute(id, title) {
     ${r ? `<p><span class="route-badge route-${ROUTE_CLASS[r.kind] || r.kind}">${esc(ROUTE_BADGE[r.kind] || r.kind || '?')}</span>
       ${pathHtml(r.path)}</p>
       ${cities.length ? `<p class="small">Through ${esc(cities.join(' → '))}</p>` : ''}
-      <p class="muted small">Destination ${esc(r.dest_host && r.dest_host !== r.dest ? `${r.dest_host} (${r.dest})` : (r.dest || ''))} · traced ${fmtAgo(r.ts)} · networks from Team Cymru's IP-to-ASN data, hostnames from reverse DNS, locations from router names (~ = IP geolocation, approximate)${d.rel_source ? `, who pays whom from CAIDA's AS relationships (${esc(d.rel_source)})` : ''}</p>
+      ${cablesHtml(r.cables, d.cable_source)}
+      <p class="muted small">Destination ${esc(r.dest_host && r.dest_host !== r.dest ? `${r.dest_host} (${r.dest})` : (r.dest || ''))} · traced ${fmtAgo(r.ts)} · networks from Team Cymru's IP-to-ASN data, hostnames from reverse DNS, locations from router names (~ = IP geolocation, approximate)${d.rel_source ? `, who pays whom from CAIDA's AS relationships (${esc(d.rel_source)})` : ''}${r.cables?.length ? `, undersea cables from ${esc(d.cable_source || "netBae's built-in list")}` : ''}</p>
       <div class="table-wrap"><table class="stats"><thead><tr><th>#</th><th style="text-align:left">Hop (hostname / IP)</th><th>ms</th><th style="text-align:left">Network</th><th style="text-align:left">Location</th></tr></thead><tbody>${hops}</tbody></table></div>
       <h3 class="small">Route changes</h3><ul class="route-hist">${hist}</ul>
       <p class="muted small">Locations are a best estimate, from router names or approximate IP geolocation. Spotted an issue?
@@ -692,7 +726,7 @@ function renderTiles() {
     const status = groupStatus(members);
     const avg = mean(members.map((p) => p.avg5m)); // members' 5-minute averages (spikes trimmed)
     const now = mean(members.map((p) => p.last));
-    const down = members.filter((p) => p.last == null && p.last_ts != null).length;
+    const down = members.filter((p) => p.down).length;
     const isOpen = open.has(g);
     return `
       <div class="card tile group${isOpen ? ' open' : ''}" data-group="${esc(g)}">
@@ -714,7 +748,7 @@ function renderTiles() {
 function renderSummaryBar(s) {
   const sites = lastPing.filter((p) => p.method !== 'region' && p.family !== 6 && !p.connection && p.last_ts != null);
   const mine = sites.filter((p) => p.custom);
-  const up = (xs) => xs.filter((p) => p.last != null).length;
+  const up = (xs) => xs.filter((p) => !p.down).length;
   const upCls = (xs) => (up(xs) === xs.length ? 'good' : up(xs) < xs.length * 0.9 ? 'bad' : 'warn');
   const isp = (s.isp || [])[0];
   const dns = mean(Object.values(s.dns || {}).map((d) => d.avg5m));
@@ -728,17 +762,17 @@ function renderSummaryBar(s) {
   const near = nearest || regions.sort((x, y) => x.avg5m - y.avg5m)[0];
   const items = [
     ispStat(isp),
-    stat('Hosts up', `${up(sites)}<small>/ ${sites.length}</small>`, 'Sites whose latest ping answered (not counting regions or IPv6)', upCls(sites)),
-    mine.length ? stat('Your hosts up', `${up(mine)}<small>/ ${mine.length}</small>`, 'Your own extra_targets whose latest ping answered', upCls(mine)) : '',
+    stat('Hosts up', `${up(sites)}<small>/ ${sites.length}</small>`, 'Sites that answered at least one of their last 3 pings (not counting regions or IPv6)' + downList(sites), upCls(sites)),
+    mine.length ? stat('Your hosts up', `${up(mine)}<small>/ ${mine.length}</small>`, 'Your own extra_targets that answered at least one of their last 3 pings' + downList(mine), upCls(mine)) : '',
     isp && isp.uptime24h != null ? stat('ISP uptime', `${fmtPct(isp.uptime24h, isp.uptime24h < 100 ? 2 : 0)}<small>24h</small>`, `Share of ${isp.connection}'s ISP checks in the last 24 hours that reached the internet`, isp.uptime24h >= 99.9 ? 'good' : isp.uptime24h >= 99 ? 'warn' : 'bad') : '',
-    nearest ? stat('Internet latency', `${fmtMs(nearest.avg5m)}<small>ms</small>`, '5-minute average to the Ookla speedtest server closest to you: the base latency of your connection')
-      : near ? stat('Nearest city', `${fmtMs(near.avg5m)}<small>ms ${esc(near.name)}</small>`, `5-minute average to ${near.name}, the closest of the region cities (the fastest Ookla server there)`) : '',
-    stat('Avg latency', `${fmtMs(mean(sites.map((p) => p.avg5m)))}<small>ms</small>`, 'Average of every site\'s 5-minute average, not counting regions'),
+    nearest ? stat('Base latency', `${fmtMs(nearest.avg5m)}<small>ms</small>`, 'Your connection\'s own latency: 5-minute average to the Ookla speedtest server closest to you')
+      : near ? stat('Base latency', `${fmtMs(near.avg5m)}<small>ms ${esc(near.name)}</small>`, `5-minute average to ${near.name}, the closest of the region cities (the fastest Ookla server there)`) : '',
     stat('Jitter', `${fmtMs(mean(sites.map((p) => p.jitter5m)))}<small>ms</small>`, 'Average change between consecutive pings to each site, last 5 minutes'),
-    stat('Packet loss', fmtLoss(mean(sites.map((p) => p.loss5m)), 2), 'Average packet loss across sites in the last 5 minutes'),
+    stat('Packet loss', fmtLoss(mean(lossSites(sites).map((p) => p.loss5m)), 2), 'Average packet loss across sites in the last 5 minutes, not counting hosts that are down or usenet servers'),
     dns != null ? stat('DNS', `${fmtMs(dns)}<small>ms</small>`, 'Average DNS lookup time in the last 5 minutes') : '',
     s.speedtest?.status?.running ? stat('Speed', '<span class="testing"><span class="pulse"></span>testing…</span>', 'A speedtest is running now: see the Speedtest card')
       : st ? stat('Speed', `${fmtMbps(st.download_mbps)}<small style="color:${PALETTE[0]}">↓</small> ${fmtMbps(st.upload_mbps)}<small><span style="color:${PALETTE[2]}">↑</span> Mbps</small>`, `Latest speedtest, ${fmtAgo(st.ts)}`) : '',
+    stat('World avg latency', `${fmtMs(mean(sites.map((p) => p.avg5m)))}<small>ms</small>`, 'Average of every site\'s 5-minute average (wherever its servers are), not counting regions'),
     // this machine's own stats, set apart from the connection ones
     sys.cpu != null || sys.mem != null ? '<div class="stat-sep" aria-hidden="true"></div>' : '',
     sys.cpu != null ? stat('CPU', `${Math.round(sys.cpu)}<small>% 24h</small>`, 'Average CPU use on this machine over the last 24 hours (the System tile below shows it live)', pctCls(sys.cpu)) : '',
@@ -754,23 +788,30 @@ function renderSummaryBar(s) {
 function renderConnBars(s) {
   const stat = (label, value, title, cls = '') => `<div class="stat" title="${esc(title)}"><div class="label">${label}</div><div class="v ${cls}">${value}</div></div>`;
   $('#conn-bars').innerHTML = (CONFIG.connections || []).map((c) => {
-    const sites = lastPing.filter((p) => p.connection === c.name && p.family !== 6 && p.last_ts != null);
+    const sites = lastPing.filter((p) => p.connection === c.name && p.method !== 'region' && p.family !== 6 && p.last_ts != null);
+    const nearest = lastPing.find((p) => p.connection === c.name && p.method === 'region' && p.avg5m != null);
     const isp = (s.isp || []).find((x) => x.connection === c.name);
     if (!sites.length && !isp) return '';
-    const up = sites.filter((p) => p.last != null).length;
-    const loss = mean(sites.map((p) => p.loss5m)) || 0;
+    const up = sites.filter((p) => !p.down).length;
+    const loss = mean(lossSites(sites).map((p) => p.loss5m)) || 0;
+    const ok = ((s.speedtest?.connections || []).find((x) => x.name === c.name) || {}).last_ok;
+    const running = s.speedtest?.status?.running && s.speedtest.status.label === c.name;
     const offline = isp && isp.latest && isp.latest.error && !/HTTP \d{3}/.test(isp.latest.error);
     const [cls, state] = offline || (sites.length && !up) ? ['bad', 'No internet']
       : up < sites.length || loss >= 5 ? ['bad', up < sites.length ? `${sites.length - up} down` : 'Heavy loss']
         : loss >= 1 ? ['warn', 'Some loss'] : ['good', 'Healthy'];
     const items = [
-      `<div class="stat status-stat" title="${esc(c.name)}, from the last 5 minutes of pings and its ISP check"><div class="label">${esc(c.name)}</div><div class="state"><span class="dot"></span>${esc(state)}</div></div>`,
+      `<div class="stat status-stat" title="${esc(`${c.name}, from the last 5 minutes of pings and its ISP check${downList(sites)}`)}"><div class="label">${esc(c.name)}</div><div class="state"><span class="dot"></span>${esc(state)}</div></div>`,
       ispStat(isp),
-      sites.length ? stat('Hosts up', `${up}<small>/ ${sites.length}</small>`, `${c.name}'s ping targets whose latest ping answered`, up === sites.length ? 'good' : 'bad') : '',
+      sites.length ? stat('Hosts up', `${up}<small>/ ${sites.length}</small>`, `${c.name}'s ping targets that answered at least one of their last 3 pings${downList(sites)}`, up === sites.length ? 'good' : 'bad') : '',
       isp && isp.uptime24h != null ? stat('Uptime', `${fmtPct(isp.uptime24h, isp.uptime24h < 100 ? 2 : 0)}<small>24h</small>`, `Share of ${c.name}'s ISP checks in the last 24 hours that reached the internet`, isp.uptime24h >= 99.9 ? 'good' : isp.uptime24h >= 99 ? 'warn' : 'bad') : '',
-      sites.length ? stat('Avg latency', `${fmtMs(mean(sites.map((p) => p.avg5m)))}<small>ms</small>`, `Average of ${c.name}'s 5-minute ping averages`) : '',
+      nearest ? stat('Base latency', `${fmtMs(nearest.avg5m)}<small>ms</small>`, `${c.name}'s own latency: 5-minute average to the Ookla speedtest server closest to it (for a VPN, near its exit)`)
+        : ok && ok.ping_ms != null ? stat('Base latency', `${fmtMs(ok.ping_ms)}<small>ms</small>`, `Idle ping to the speedtest server in ${c.name}'s latest speedtest (${fmtAgo(ok.ts)})`) : '',
       sites.length ? stat('Jitter', `${fmtMs(mean(sites.map((p) => p.jitter5m)))}<small>ms</small>`, 'Average change between consecutive pings, last 5 minutes') : '',
-      sites.length ? stat('Packet loss', fmtLoss(loss, 2), 'Average packet loss in the last 5 minutes') : '',
+      sites.length ? stat('Packet loss', fmtLoss(loss, 2), 'Average packet loss in the last 5 minutes, not counting hosts that are down or usenet servers') : '',
+      running ? stat('Speed', '<span class="testing"><span class="pulse"></span>testing…</span>', `A speedtest on ${c.name} is running now`)
+        : ok ? stat('Speed', `${fmtMbps(ok.download_mbps)}<small style="color:${PALETTE[0]}">↓</small> ${fmtMbps(ok.upload_mbps)}<small><span style="color:${PALETTE[2]}">↑</span> Mbps</small>`, `${c.name}'s latest speedtest, ${fmtAgo(ok.ts)}`) : '',
+      sites.length ? stat('World avg latency', `${fmtMs(mean(sites.map((p) => p.avg5m)))}<small>ms</small>`, `Average of ${c.name}'s 5-minute ping averages to every site`) : '',
     ].filter(Boolean);
     return `<section class="summary-bar conn-bar card ${cls}">${items.join('')}</section>`;
   }).join('');
@@ -782,7 +823,7 @@ function statusHtml(s, sites, upCount, bar) {
   const main = (s.isp || [])[0];
   const offline = main && main.latest && main.latest.error && !/HTTP \d{3}/.test(main.latest.error);
   const down = sites.length - upCount;
-  const loss = mean(sites.map((p) => p.loss5m)) || 0;
+  const loss = mean(lossSites(sites).map((p) => p.loss5m)) || 0;
   const [cls, state] = offline || upCount === 0 ? ['bad', 'No internet']
     : main && main.failover ? ['warn', 'Failover active']
       : down > sites.length * 0.1 || loss >= 5 ? ['bad', down ? `${down} hosts down` : 'Heavy packet loss']
@@ -790,7 +831,7 @@ function statusHtml(s, sites, upCount, bar) {
         : ['good', 'Healthy'];
   bar.classList.remove('good', 'warn', 'bad');
   bar.classList.add(cls);
-  return `<div class="stat status-stat" title="From the last 5 minutes of pings${main ? ` and ${esc(main.connection)}'s ISP check` : ''}">
+  return `<div class="stat status-stat" title="${esc(`From the last 5 minutes of pings${main ? ` and ${main.connection}'s ISP check` : ''}${downList(sites)}`)}">
     <div class="label">Status</div><div class="state"><span class="dot"></span>${esc(state)}</div></div>`;
 }
 
@@ -2670,5 +2711,13 @@ function themeToggle() {
   });
 }
 themeToggle();
+
+// Reset view: forget every saved view setting (ranges, sorts, open groups, hidden lines, tabs) except the theme
+$('#reset-view').addEventListener('click', () => {
+  try {
+    Object.keys(localStorage).filter((k) => k.startsWith('netbae:') && k !== 'netbae:theme').forEach((k) => localStorage.removeItem(k));
+  } catch { /* storage blocked: nothing saved to reset */ }
+  location.href = location.pathname;  // also drops any ?expand= or other view parameters
+});
 
 main();

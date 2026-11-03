@@ -55,6 +55,8 @@ database = "/var/lib/netbae/netbae.db"
 raw_retention_days = 7       # full-resolution samples (every ping)
 minute_retention_days = 90   # 1-minute summaries (count, avg, min, max, latency histogram)
 retention_days = 0           # hourly summaries, speedtests and system history
+save_every_minutes = 10      # pings, DNS and system stats wait in memory and are saved this often and on
+                             # shutdown (saves SD card wear; a power cut loses up to this much). 0 = save every sample
 
 [ping]
 interval_seconds = 30
@@ -200,4 +202,5 @@ disk_path = "/"        # the drive shown as Boot drive ("/" = the one the system
 # speedtest_interval_minutes = 60     # hourly at :45; 1440 = daily (mobile data isn't free). 0 = manual only
 # speedtest_offset_minutes = 45
 # speedtest_server = 12491      # an Ookla server id to always test against, e.g. your mobile ISP's own
-#                               # server (often unmetered); unset = the nearest one
+#                               # server (often unmetered), falling back to the nearest one if it
+#                               # can't be reached; unset = the nearest one

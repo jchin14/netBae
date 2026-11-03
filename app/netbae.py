@@ -21,9 +21,11 @@ import logging
 import logging.handlers
 import math
 import os
+import pathlib
 import platform
 import random
 import shutil
+import signal
 import re
 import socket
 import sqlite3
@@ -50,7 +52,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.24.16"
+VERSION = "1.24.28"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -131,7 +133,10 @@ DEFAULT_CONFIG = {
                "access_team": "", "access_aud": ""},
     # raw samples -> 1-minute summaries -> hourly summaries; 0 = keep forever
     "storage": {"database": os.path.join(WIN_DATA_DIR, "netbae.db") if IS_WINDOWS else "/var/lib/netbae/netbae.db",
-                "raw_retention_days": 7, "minute_retention_days": 90, "retention_days": 0},
+                "raw_retention_days": 7, "minute_retention_days": 90, "retention_days": 0,
+                # pings, DNS and system stats are kept in memory and written to disk this often (and on
+                # shutdown), which saves an SD card most of its wear; 0 = write every sample straight away
+                "save_every_minutes": 10},
     "ping": {
         "interval_seconds": 30,
         "offset_seconds": 0,
@@ -499,6 +504,10 @@ def normalize_connection(c, all_targets=None):
     for t in wanted:
         t = normalize_target(t)
         targets.append(dict(t, id=f"{name}|{t['id']}", group=name, bind=bind, connection=name))
+    # its own internet latency: the Ookla servers closest to it, found and pinged through it (a VPN's are near its exit)
+    targets.append({"id": f"{name}|region:Nearest", "name": "Nearest", "host": None, "method": "region", "port": None,
+                    "group": name, "region": dict(normalize_region("Nearest"), bind=bind), "flag": "", "bind": bind,
+                    "connection": name})
     server = c.get("speedtest_server")
     if server is not None and (isinstance(server, bool) or not str(server).isdigit()):
         raise SystemExit(f"connection {name}: speedtest_server must be an Ookla server id, e.g. 12491")
@@ -595,10 +604,23 @@ def find_region_servers(region):
     """Ookla servers in a region as [{id, host, port, ms}], fastest (by TCP connect) first."""
     if region.get("server_id"):
         return [{"id": region["server_id"], "host": None, "port": None, "ms": None}]
-    req = urllib.request.Request(OOKLA_SEARCH + urllib.parse.quote(region["search"]),
-                                 headers={"User-Agent": f"netBae/{VERSION}"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        servers = json.load(r)
+    bind = region.get("bind")  # searched through a secondary connection: Ookla lists the servers near its address
+    url = OOKLA_SEARCH + urllib.parse.quote(region["search"])
+    if bind:
+        u = urllib.parse.urlsplit(url)
+        conn = _BoundHTTPS(u.hostname, bind, 15)
+        try:
+            conn.request("GET", f"{u.path}?{u.query}", headers={"User-Agent": f"netBae/{VERSION}"})
+            r = conn.getresponse()
+            if r.status != 200:
+                raise OSError(f"Ookla server search returned HTTP {r.status}")
+            servers = json.loads(r.read())
+        finally:
+            conn.close()
+    else:
+        req = urllib.request.Request(url, headers={"User-Agent": f"netBae/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            servers = json.load(r)
     city = (region.get("city") or "").lower()
     found = []
     for x in servers:
@@ -613,7 +635,7 @@ def find_region_servers(region):
     # the first search result isn't always the best server: measure and sort, unreachable last
     # (a hostname that hangs in DNS shouldn't stall the lookup: give up on stragglers after 8 s)
     pool = ThreadPoolExecutor(max_workers=6)
-    futures = [pool.submit(tcp_ping, c["host"], c["port"], 3) if c["host"] else None for c in found]
+    futures = [pool.submit(tcp_ping, c["host"], c["port"], 3, bind) if c["host"] else None for c in found]
     wait([f for f in futures if f], timeout=8)
     pool.shutdown(wait=False)
     for c, f in zip(found, futures):
@@ -796,7 +818,7 @@ def load_config(path):
         # Regions too (an IPv6-capable Ookla server in the same city). Not the router, game servers or secondary
         # connections (bound to an IPv4 source address).
         for t in list(cfg["ping"]["targets"]):
-            if t["method"] == "region" or (t["method"] in ("icmp", "tcp") and not t.get("bind") and t["id"] != "gateway"
+            if (t["method"] == "region" and not t.get("bind")) or (t["method"] in ("icmp", "tcp") and not t.get("bind") and t["id"] != "gateway"
                                            and ":" not in t["host"] and (not is_ip(t["host"]) or t["host"] in V6_TWIN)):
                 t["family"] = 4
                 cfg["ping"]["targets"].append(dict(t, id=t["id"] + "#v6", name=f'{t["name"]} (IPv6)', family=6,
@@ -886,6 +908,8 @@ def load_config(path):
                      ("speedtest", "regions_interval_minutes")):
         if float(cfg[sec][key]) <= 0:
             raise SystemExit(f"[{sec}] {key} must be > 0")
+    if not 0 <= float(cfg["storage"]["save_every_minutes"]) <= 60:
+        raise SystemExit("[storage] save_every_minutes must be between 0 (save every sample) and 60")
     return cfg
 
 
@@ -1099,7 +1123,7 @@ COMBINE = ("SUM(n), SUM(ok), SUM(avg * ok) / NULLIF(SUM(ok), 0), MIN(mn), MAX(mx
 def rollup_hourly(db, spec, frm, to):
     keys = ", ".join(spec["keys"])
     db.conn().execute(
-        f"INSERT OR REPLACE INTO {spec['hourly']} ({keys}, ts, n, ok, avg, mn, mx, p5, p95, {', '.join(HIST_COLS)})"
+        f"INSERT OR REPLACE INTO {db.into(spec['hourly'])} ({keys}, ts, n, ok, avg, mn, mx, p5, p95, {', '.join(HIST_COLS)})"
         f" SELECT {keys}, CAST(ts / 3600 AS INTEGER) * 3600 AS h, {COMBINE}, {HIST_COMBINE}"
         f" FROM {spec['rollup']} WHERE ts >= ? AND ts < ? GROUP BY {keys}, h", (frm, to))
 
@@ -1108,19 +1132,27 @@ def rollup(db, spec, frm, to):
     keys = spec["keys"]
     sql = pct_select(spec["val"], "CAST(ts / 60 AS INTEGER) * 60", keys, spec["raw"], "ts >= ? AND ts < ?", hist=True)
     db.conn().execute(
-        f"INSERT OR REPLACE INTO {spec['rollup']} ({', '.join(keys)}, ts, n, ok, avg, mn, mx, p5, p95,"
+        f"INSERT OR REPLACE INTO {db.into(spec['rollup'])} ({', '.join(keys)}, ts, n, ok, avg, mn, mx, p5, p95,"
         f" {', '.join(HIST_COLS)}) {sql}",
         (frm, to))
 
 
+# Tables kept in memory between saves (see DB.start_buffer); summaries are rewritten every minute, so
+# they're buffered too. Raw samples are only ever added; a summary row in memory replaces the saved one.
+BUFFERED_RAW = ("ping", "dns", "system")
+BUFFERED_SUMMARY = ("ping_1m", "dns_1m", "ping_1h", "dns_1h")
+
+
 class DB:
-    def __init__(self, path):
+    def __init__(self, path, buffered=False):
         self.path = path
         d = os.path.dirname(path)
         if d:
             os.makedirs(d, exist_ok=True)
         self.local = threading.local()
         self._ids, self._names, self._names_lock = {}, {}, threading.Lock()
+        self.buffered, self.buf, self._buf_keep = buffered, None, None
+        self.write_lock = threading.RLock()  # writers to the in-memory tables take turns (shared cache locks)
         self.conn().executescript(SCHEMA)
         cols = {r[1] for r in self.query("PRAGMA table_info(speedtest)")}
         for col, typ in (("kind", "TEXT"), ("label", "TEXT"), ("data_bytes", "INTEGER"),
@@ -1152,6 +1184,55 @@ class DB:
             hops = json.loads(path or "[]")
             if len(hops) > 1 and hops[1].get("ixp"):
                 self.conn().execute("UPDATE traceroute SET kind = 'ix' WHERE rowid = ?", (rid,))
+        if buffered:
+            self.start_buffer()
+
+    # Writing every ping round to disk rewrote ~300 scattered 4 KB pages (one per host, DNS server and
+    # domain), twice a minute, plus the minute summaries: about 23 GB a day on a Pi's SD card. Instead the
+    # busy tables get an in-memory twin ("buf"), and on each connection a TEMP view with the table's name
+    # (which comes before main in name lookup) shows both, and writes go to buf (see into()). Queries don't
+    # change; save() moves the rows to disk every few minutes and on shutdown.
+    def start_buffer(self):
+        self.buf = f"file:netbae-buf-{os.getpid()}-{id(self)}?mode=memory&cache=shared"
+        self._buf_keep = sqlite3.connect(self.buf, uri=True, check_same_thread=False)  # keeps it alive
+        c = self.conn()
+        for t in BUFFERED_RAW + BUFFERED_SUMMARY:
+            sql = self.scalar("SELECT sql FROM main.sqlite_master WHERE type = 'table' AND name = ?", (t,))
+            c.execute(re.sub(r"^CREATE TABLE\s+(IF NOT EXISTS\s+)?\w+", f"CREATE TABLE IF NOT EXISTS buf.{t}", sql))
+            if t in BUFFERED_SUMMARY:
+                c.execute(f"CREATE INDEX IF NOT EXISTS buf.{t}_ts ON {t}(ts)")
+        self._views(c)
+
+    def _views(self, c):
+        for t in BUFFERED_RAW + BUFFERED_SUMMARY:
+            # a summary row redone in memory hides the saved one (the newest minute or hour is redone)
+            hide = f" WHERE ts < (SELECT COALESCE(MIN(ts), 1e18) FROM buf.{t})" if t in BUFFERED_SUMMARY else ""
+            c.execute(f"CREATE TEMP VIEW IF NOT EXISTS {t} AS SELECT * FROM main.{t}{hide}"
+                      f" UNION ALL SELECT * FROM buf.{t}")
+        self.local.views = True
+
+    def into(self, table):
+        """Where new rows for a table go: its in-memory twin while buffering."""
+        return f"buf.{table}" if self.buf and table in BUFFERED_RAW + BUFFERED_SUMMARY else table
+
+    def save(self):
+        """Write what's in memory to disk."""
+        if not self.buf:
+            return
+        with self.write_lock:
+            c = self.conn()
+            started = time.time()
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                n = 0
+                for t in BUFFERED_RAW + BUFFERED_SUMMARY:
+                    n += c.execute(f"INSERT OR REPLACE INTO main.{t} SELECT * FROM buf.{t}").rowcount
+                    c.execute(f"DELETE FROM buf.{t}")
+                c.execute("COMMIT")
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
+        log.debug("saved %d rows from memory in %.2fs", n, time.time() - started)
 
     # Ping targets, DNS servers and domains are stored as ids into the names table (1.8): writing
     # '2606:4700:4700::1111' and 'microsoft.com' on every row (and again in every index) took about
@@ -1256,10 +1337,20 @@ class DB:
     def conn(self):
         c = getattr(self.local, "c", None)
         if c is None:
-            c = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+            if self.buffered:  # a URI, so it can attach the shared in-memory tables
+                c = sqlite3.connect(pathlib.Path(self.path).absolute().as_uri(), uri=True, timeout=30,
+                                    isolation_level=None)
+            else:
+                c = sqlite3.connect(self.path, timeout=30, isolation_level=None)
             c.execute("PRAGMA journal_mode=WAL")
             c.execute("PRAGMA synchronous=NORMAL")
+            if self.buffered:
+                c.execute("ATTACH DATABASE ? AS buf", (f"file:netbae-buf-{os.getpid()}-{id(self)}"
+                                                      "?mode=memory&cache=shared",))
+                c.execute("PRAGMA read_uncommitted = 1")  # readers don't wait on (or block) the buffer's writers
             self.local.c = c
+        if self.buf and not getattr(self.local, "views", False):
+            self._views(c)
         return c
 
     def query(self, sql, params=()):
@@ -1272,14 +1363,17 @@ class DB:
     def insert_many(self, sql, rows):
         if not rows:
             return
-        c = self.conn()
-        c.execute("BEGIN")
-        try:
-            c.executemany(sql, rows)
-            c.execute("COMMIT")
-        except Exception:
-            c.execute("ROLLBACK")
-            raise
+        if self.buf:
+            sql = re.sub(r"\bINTO (\w+)", lambda m: "INTO " + self.into(m[1]), sql, count=1)
+        with self.write_lock:
+            c = self.conn()
+            c.execute("BEGIN")
+            try:
+                c.executemany(sql, rows)
+                c.execute("COMMIT")
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
 
 
 # --------------------------------------------------------------------------- probes
@@ -2231,6 +2325,248 @@ def route_cities(detailed):
     return out
 
 
+# --------------------------------------------------------------------------- undersea cables
+# Traceroute can't see a cable, but when two hops in a row are on different landmasses (Sydney, then Los Angeles)
+# the traffic crossed the sea between them, and only a handful of cables land on both sides. A cable whose owners
+# include the network carrying the traffic at that point is the likely one. Regions are country codes, with
+# Hawaii (HI) and Tasmania (TAS) apart from the rest of their country. Owners are the networks (ASNs) that own
+# or co-own the cable, listed only where well known; carriers that just lease capacity aren't matched.
+_TELSTRA, _SPARK, _OPTUS = {1221, 4637}, {4648}, {4804, 7474, 7473}
+_GOOGLE, _META, _AMAZON, _MSFT, _NTT = {15169, 396982}, {32934}, {16509}, {8075}, {2914}
+CABLES = [  # (name, regions it lands in, owner ASNs)
+    # Australia, New Zealand and the Pacific
+    ("Southern Cross", "AU NZ FJ HI US", _TELSTRA | _SPARK | _OPTUS),
+    ("Southern Cross NEXT", "AU NZ FJ US", _TELSTRA | _SPARK | _OPTUS),
+    ("Hawaiki", "AU NZ HI US", set()),
+    ("Telstra Endeavour", "AU HI", _TELSTRA),
+    ("Tasman Global Access", "AU NZ", _TELSTRA | _SPARK | {9500}),
+    ("Australia-Japan Cable", "AU GU JP", _TELSTRA),
+    ("Japan-Guam-Australia (JGA)", "AU GU JP", _GOOGLE | {7575}),
+    ("PPC-1", "AU GU", {7545}),
+    ("Indigo", "AU SG ID", _TELSTRA | _OPTUS | _GOOGLE | {7575, 4761}),
+    ("Australia-Singapore Cable", "AU SG ID", {4826}),
+    ("SEA-ME-WE 3", "AU SG ID MY TH VN PH HK CN TW KR JP IN LK PK AE OM SA DJ EG TR IT FR GB DE BE PT", _TELSTRA),
+    ("Bass Strait 1 & 2", "AU TAS", _TELSTRA),
+    ("Basslink", "AU TAS", set()),
+    ("Coral Sea Cable", "AU PG SB", set()),
+    ("Gondwana-1", "AU NC", set()),
+    # across the Pacific
+    ("Japan-US Cable Network", "JP HI US", set()),
+    ("PC-1", "JP US", _NTT),
+    ("Unity", "JP US", _GOOGLE),
+    ("FASTER", "JP TW US", _GOOGLE),
+    ("JUPITER", "JP PH US", _AMAZON | _META | _NTT | {17676, 3491}),
+    ("Trans-Pacific Express", "CN KR TW JP US", set()),
+    ("New Cross Pacific", "CN KR TW JP US", _MSFT),
+    ("Pacific Light Cable Network", "TW PH US", _GOOGLE | _META),
+    ("Topaz", "JP CA", _GOOGLE),
+    ("Asia-America Gateway", "US HI GU PH BN VN HK MY SG TH", set()),
+    ("SEA-US", "US HI GU PH ID", set()),
+    ("Echo", "US GU ID SG", _GOOGLE | _META),
+    ("Bifrost", "US GU PH ID SG", _META),
+    ("Curie", "US CL", _GOOGLE),
+    # within Asia
+    ("Asia Pacific Gateway", "JP KR CN TW HK VN TH MY SG", set()),
+    ("SJC", "JP CN HK PH BN SG", set()),
+    ("SJC2", "JP KR CN TW HK VN KH TH SG", set()),
+    ("APCN-2", "JP KR CN TW HK PH MY SG", set()),
+    ("EAC-C2C", "JP KR CN TW HK PH SG", set()),
+    ("Asia Submarine-cable Express", "JP PH HK MY SG", _NTT),
+    ("Apricot", "JP TW GU PH ID SG", _GOOGLE | _META),
+    ("i2i", "IN SG", {9498}),
+    ("Tata TIC", "IN SG", {4755, 6453}),
+    # Asia, the Middle East and Europe
+    ("SEA-ME-WE 4", "SG MY TH BD IN LK PK AE SA EG IT FR", set()),
+    ("SEA-ME-WE 5", "SG MY ID MM LK BD PK OM AE SA DJ EG TR IT FR", set()),
+    ("SEA-ME-WE 6", "SG MY ID BD LK IN PK AE QA SA DJ EG FR", set()),
+    ("AAE-1", "HK VN KH MY TH SG IN PK OM AE QA SA DJ EG GR IT FR", set()),
+    ("PEACE", "SG PK DJ KE EG FR", set()),
+    ("IMEWE", "IN PK AE SA EG IT FR", set()),
+    ("2Africa", "GB PT ES FR IT EG SA DJ KE ZA NG IN PK AE OM QA", _META),
+    ("Equiano", "PT NG NA ZA", _GOOGLE),
+    ("WACS", "GB PT NA ZA NG", set()),
+    ("SAFE", "ZA IN MY", set()),
+    # across the Atlantic
+    ("MAREA", "US ES", _MSFT | _META | {12956}),
+    ("Dunant", "US FR", _GOOGLE),
+    ("Grace Hopper", "US GB ES", _GOOGLE),
+    ("Amitié", "US GB FR", _META | _MSFT),
+    ("Havfrue / AEC-2", "US IE DK NO", _META | _GOOGLE),
+    ("AEC-1", "US IE", set()),
+    ("Atlantic Crossing-1", "US GB NL DE", {3356}),
+    ("Yellow (AC-2)", "US GB", {3356}),
+    ("Apollo", "US GB FR", {1273}),
+    ("FLAG Atlantic-1", "US GB FR", {15412}),
+    ("TGN-Atlantic", "US GB", {6453}),
+    ("Hibernia Express", "CA IE GB", {3257}),
+    ("EllaLink", "BR PT", set()),
+    # the Americas
+    ("Monet", "US BR", _GOOGLE),
+    ("Seabras-1", "US BR", set()),
+    ("BRUSA", "US BR", {12956}),
+    ("SAm-1", "US BR AR CL PE CO", {12956}),
+    ("Firmina", "US BR AR UY", _GOOGLE),
+    # short seas with too many cables to tell apart
+    ("one of the Channel / North Sea cables", "GB IE FR BE NL DE DK NO", set()),
+    ("one of the Japan-Korea cables", "JP KR", set()),
+    ("one of the Singapore-Indonesia cables", "SG ID", set()),
+]
+CABLES = [(name, set(regions.split()), owners) for name, regions, owners in CABLES]
+# Countries joined by land (traffic between them needn't cross the sea). Any other region is a landmass of its own.
+_LAND = {"North America": "US CA MX", "South America": "BR AR CL PE CO UY EC VE BO PY",
+         "Europe": "FR DE NL BE LU CH AT IT ES PT DK SE NO FI PL CZ SK HU RO BG GR TR RS HR SI UA",
+         "East Asia": "SG MY TH CN HK VN KH LA MM", "South Asia": "IN PK BD NP",
+         "Middle East": "AE OM SA QA BH KW IL JO", "Africa": "ZA KE NG EG GH MA TZ MZ NA DJ"}
+LANDMASS = {cc: land for land, ccs in _LAND.items() for cc in ccs.split()}
+
+
+# TeleGeography's Submarine Cable Map (submarinecablemap.com, CC BY-NC-SA 4.0): every cable with its landing points
+# and owners. Downloaded by each install (not shipped with netBae), refreshed monthly and cached next to the
+# database; the built-in list above is used until it's there or when it can't be fetched.
+CABLE_MAP_API = "https://www.submarinecablemap.com/api/v3/cable"
+CABLE_MAP_CREDIT = "TeleGeography's Submarine Cable Map (CC BY-NC-SA 4.0)"
+_CABLE_DB = {"loaded": 0, "cables": None}
+# TeleGeography's country names -> ISO codes, the codes netBae's cities end in ("Sydney, AU")
+_COUNTRY_CODES = dict(x.split("=") for x in (
+    "AL=Albania|DZ=Algeria|AS=American Samoa|AO=Angola|AI=Anguilla|AG=Antigua and Barbuda|AR=Argentina|AW=Aruba|"
+    "AU=Australia|AZ=Azerbaijan|BS=Bahamas|BH=Bahrain|BD=Bangladesh|BB=Barbados|BE=Belgium|BZ=Belize|BJ=Benin|"
+    "BM=Bermuda|BQ=Bonaire, Sint Eustatius and Saba|BR=Brazil|IO=British Indian Ocean Territory|BN=Brunei|"
+    "BG=Bulgaria|KH=Cambodia|CM=Cameroon|CA=Canada|CV=Cape Verde|KY=Cayman Islands|CL=Chile|CN=China|"
+    "CX=Christmas Island|CC=Cocos (Keeling) Islands|CO=Colombia|KM=Comoros|CD=Congo, Dem. Rep.|CG=Congo, Rep.|"
+    "CK=Cook Islands|CR=Costa Rica|HR=Croatia|CU=Cuba|CW=Curaçao|CY=Cyprus|CI=Côte d'Ivoire|DK=Denmark|"
+    "DJ=Djibouti|DM=Dominica|DO=Dominican Republic|EC=Ecuador|EG=Egypt|GQ=Equatorial Guinea|EE=Estonia|"
+    "FO=Faroe Islands|FJ=Fiji|FI=Finland|FR=France|GF=French Guiana|PF=French Polynesia|GA=Gabon|GM=Gambia|"
+    "GE=Georgia|DE=Germany|GH=Ghana|GI=Gibraltar|GR=Greece|GL=Greenland|GD=Grenada|GP=Guadeloupe|GU=Guam|"
+    "GT=Guatemala|GG=Guernsey|GN=Guinea|GW=Guinea-Bissau|GY=Guyana|HT=Haiti|HN=Honduras|IS=Iceland|IN=India|"
+    "ID=Indonesia|IR=Iran|IQ=Iraq|IE=Ireland|IM=Isle of Man|IL=Israel|IT=Italy|JM=Jamaica|JP=Japan|JE=Jersey|"
+    "JO=Jordan|KZ=Kazakhstan|KE=Kenya|KI=Kiribati|KW=Kuwait|LV=Latvia|LB=Lebanon|LR=Liberia|LY=Libya|LT=Lithuania|"
+    "MG=Madagascar|MY=Malaysia|MV=Maldives|MT=Malta|MH=Marshall Islands|MQ=Martinique|MR=Mauritania|MU=Mauritius|"
+    "YT=Mayotte|MX=Mexico|FM=Micronesia|MC=Monaco|MS=Montserrat|MA=Morocco|MZ=Mozambique|MM=Myanmar|NA=Namibia|"
+    "NR=Nauru|NL=Netherlands|NC=New Caledonia|NZ=New Zealand|NI=Nicaragua|NG=Nigeria|NU=Niue|"
+    "MP=Northern Mariana Islands|NO=Norway|OM=Oman|PK=Pakistan|PW=Palau|PA=Panama|PG=Papua New Guinea|PE=Peru|"
+    "PH=Philippines|PL=Poland|PT=Portugal|QA=Qatar|RO=Romania|RU=Russia|RE=Réunion|BL=Saint Barthélemy|"
+    "SH=Saint Helena, Ascension and Tristan da Cunha|KN=Saint Kitts and Nevis|LC=Saint Lucia|MF=Saint Martin|"
+    "PM=Saint Pierre and Miquelon|VC=Saint Vincent and the Grenadines|WS=Samoa|ST=Sao Tome and Principe|"
+    "SA=Saudi Arabia|SN=Senegal|SC=Seychelles|SL=Sierra Leone|SG=Singapore|SX=Sint Maarten|SB=Solomon Islands|"
+    "SO=Somalia|ZA=South Africa|KR=South Korea|ES=Spain|LK=Sri Lanka|SD=Sudan|SR=Suriname|SE=Sweden|SY=Syria|"
+    "TW=Taiwan|TZ=Tanzania|TH=Thailand|TL=Timor-Leste|TG=Togo|TK=Tokelau|TO=Tonga|TT=Trinidad and Tobago|"
+    "TN=Tunisia|TR=Turkey|TC=Turks and Caicos Islands|TV=Tuvalu|UG=Uganda|UA=Ukraine|AE=United Arab Emirates|"
+    "GB=United Kingdom|US=United States|UY=Uruguay|VU=Vanuatu|VE=Venezuela|VN=Vietnam|VG=Virgin Islands (U.K.)|"
+    "VI=Virgin Islands (U.S.)|WF=Wallis and Futuna|YE=Yemen|"
+).strip("|").split("|"))
+_COUNTRY_CODES = {name: code for code, name in _COUNTRY_CODES.items()}
+
+
+def load_cable_db(cache_path, refresh=True):
+    """Fill _CABLE_DB from the cache, downloading TeleGeography's cable list first when the cache is a month old
+    (or missing). [(name, regions, owners text)] for cables in service; planned ones are left out."""
+    try:
+        age = time.time() - os.path.getmtime(cache_path)
+    except OSError:
+        age = None
+    if refresh and (age is None or age > 30 * 86400):
+        try:
+            ids = [c["id"] for c in http_json(f"{CABLE_MAP_API}/all.json", timeout=30)]
+
+            def one(cid):
+                for attempt in range(3):
+                    try:
+                        return http_json(f"{CABLE_MAP_API}/{cid}.json", timeout=30)
+                    except Exception:
+                        time.sleep(2 * (attempt + 1))
+                return None
+            with ThreadPoolExecutor(max_workers=4) as pool:  # ~700 small files, about a minute
+                cables = [c for c in pool.map(one, ids) if c]
+            if len(cables) < len(ids) * 0.9:
+                raise OSError(f"only {len(cables)} of {len(ids)} cables downloaded")
+            rows = []
+            for c in cables:
+                if c.get("is_planned"):
+                    continue
+                regions = set()
+                for lp in c.get("landing_points") or []:
+                    cc = _COUNTRY_CODES.get(lp.get("country"))
+                    name = lp.get("name") or ""
+                    if cc == "US" and ", HI, " in name:
+                        cc = "HI"
+                    elif cc == "AU" and ", TAS, " in name:
+                        cc = "TAS"
+                    if cc:
+                        regions.add(cc)
+                if len(regions) > 1:
+                    rows.append([c["name"], sorted(regions), c.get("owners") or ""])
+            tmp = cache_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(rows, f)
+            os.replace(tmp, cache_path)
+            log.info("downloaded %d undersea cables from TeleGeography's Submarine Cable Map", len(rows))
+        except Exception as e:
+            log.warning("couldn't download the undersea cable list from TeleGeography (%s); %s", e,
+                        "using the cached copy" if age is not None else "using the built-in list")
+    try:
+        with open(cache_path) as f:
+            _CABLE_DB.update(loaded=time.time(), cables=[(n, set(r), o) for n, r, o in json.load(f)])
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def cable_owned_by(name, owners_text, owner_asns, carrier):
+    """True when the carrier (a hop's network: {asn, name}) owns or co-owns the cable."""
+    if owner_asns & org_asns(carrier.get("asn")):
+        return True
+    words = [w for w in re.findall(r"[a-z0-9]+", (carrier.get("name") or "").lower()) if len(w) > 2]
+    if not words or not owners_text:
+        return False
+    # the brand: its first word ("Telstra Global" -> telstra), or two when that's too common ("China Telecom")
+    brand = " ".join(words[:2]) if words[0] in _GENERIC_WORDS and len(words) > 1 else words[0]
+    if brand in _GENERIC_WORDS:
+        return False
+    return bool(re.search(rf"\b{re.escape(brand)}\b", owners_text.lower()))
+
+
+_GENERIC_WORDS = {"china", "global", "pacific", "asia", "the", "international", "level", "network", "networks",
+                  "telecom", "cable", "data", "net", "internet", "cloud", "south", "north", "east", "west"}
+
+
+def cable_candidates():
+    """[(name, regions, owner ASNs, owners text)]: TeleGeography's list when downloaded, else the built-in one.
+    Ownership known only by ASN (the built-in list) carries over to TeleGeography's cable of the same name."""
+    if not _CABLE_DB["cables"]:
+        return [(n, r, o, "") for n, r, o in CABLES]
+    known = {n.lower(): o for n, _, o in CABLES if o}
+    return [(n, r, next((o for k, o in known.items() if n.lower().startswith(k)), set()), owners)
+            for n, r, owners in _CABLE_DB["cables"]]
+
+
+def cable_region(city):
+    """'AU' for 'Sydney, AU' ('HI' for Honolulu, 'TAS' for Hobart), or None."""
+    name, _, cc = (city or "").rpartition(", ")
+    return {"Hobart": "TAS", "Honolulu": "HI"}.get(name, cc or None)
+
+
+def route_cables(detailed, home=None):
+    """Each sea crossing on a located route and the cables it may use:
+    [{from, to, likely: [cables the carrier there co-owns], maybe: [other cables landing on both sides], carrier}].
+    home ("Melbourne, AU") is where the route starts, for routes whose first located hop is already overseas."""
+    out, prev = [], {"city": home} if home else None
+    for h in detailed:
+        if not h.get("city"):
+            continue
+        if prev and h["city"] != prev["city"]:
+            a, b = cable_region(prev["city"]), cable_region(h["city"])
+            if a and b and a != b and LANDMASS.get(a, a) != LANDMASS.get(b, b):
+                cands = [c for c in cable_candidates() if a in c[1] and b in c[1]]
+                carriers = [x for x in (prev, h) if x.get("asn") or x.get("name")]
+                owned = lambda c: next((x for x in carriers if cable_owned_by(c[0], c[3], c[2], x)), None)
+                likely = [c for c in cands if owned(c)]
+                out.append({"from": prev["city"], "to": h["city"], "likely": [c[0] for c in likely],
+                            "maybe": [c[0] for c in cands if c not in likely],
+                            "carrier": owned(likely[0])["name"] if likely else None,
+                            "approx": prev.get("city_src") == "geo" or h.get("city_src") == "geo"})
+        prev = h
+    return out
+
+
 # Networks run by the same company, which count as one ISP on a route (a brand's addresses are often announced
 # by its parent, e.g. Exetel's by Superloop). Add to this when a route wrongly shows "transit" inside one company.
 SIBLING_ASNS = [{38195, 10143},           # Superloop, Exetel
@@ -2934,7 +3270,7 @@ class SystemStats:
 class Monitor:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.db = DB(cfg["storage"]["database"])
+        self.db = DB(cfg["storage"]["database"], buffered=float(cfg["storage"]["save_every_minutes"]) > 0)
         use_as_rel_dir(os.path.dirname(os.path.abspath(self.db.path)))
         self.sys = SystemStats(cfg["system"]["disk_path"])
         self.static_info = self.sys.static_info()
@@ -2952,6 +3288,8 @@ class Monitor:
         self.down_last = {}  # ping round kind -> ids that failed last round (see recheck_burst)
         self.first_traces_done = threading.Event()
         self.hop_geo = HopGeo(self.db)
+        threading.Thread(target=load_cable_db, daemon=True, name="cables",
+                         args=(os.path.join(os.path.dirname(os.path.abspath(self.db.path)), "submarine-cables.json"),)).start()
         self.docker_bridge = docker_bridge()
         if self.docker_bridge:
             log.warning("running on Docker's bridge network: the router, DHCP DNS and routes will show Docker's "
@@ -3015,6 +3353,8 @@ class Monitor:
                 hh, mm = str(c["web"]["auto_update_time"]).strip().split(":")
                 run_aligned("auto-update", 86400, int(hh) * 3600 + int(mm) * 60, lambda: auto_update(self))  # local time
         run_aligned("rollup", 60, 10, self.rollup_all)
+        if self.db.buf:
+            run_aligned("save", float(c["storage"]["save_every_minutes"]) * 60, 40, self.db.save)
         run_aligned("cleanup", 3600, 1800, self.cleanup)
         self.pool.submit(self.collect_system)
         if c["outages"]["enabled"]:
@@ -3114,7 +3454,7 @@ class Monitor:
 
     def region_servers(self, region, wait=True):
         """Cached fastest-first server list for a region; refreshed daily. None if unknown yet."""
-        name = region["name"]
+        name = (region["name"], region.get("bind"))  # a connection's Nearest is its own
         cached = self.region_cache.get(name)
         if cached and time.time() - cached[0] < (86400 if cached[1] else 600):
             return cached[1]
@@ -3132,8 +3472,8 @@ class Monitor:
             log.warning("speedtest server lookup for %s failed: %s", region["name"], e)
             servers = []
         finally:
-            self.region_lookups.discard(region["name"])
-        self.region_cache[region["name"]] = (time.time(), servers)
+            self.region_lookups.discard((region["name"], region.get("bind")))
+        self.region_cache[(region["name"], region.get("bind"))] = (time.time(), servers)
         return servers
 
     def trace_targets(self):
@@ -3183,7 +3523,7 @@ class Monitor:
         for t in self.cfg["ping"]["targets"]:
             if t["method"] == "game" and (self.game_cache.get((t["id"], t.get("bind"))) or (0,))[0] <= 0:
                 return False
-            if t["method"] == "region" and t["region"]["name"] not in self.region_cache:
+            if t["method"] == "region" and (t["region"]["name"], t["region"].get("bind")) not in self.region_cache:
                 return False
         return True
 
@@ -3225,6 +3565,7 @@ class Monitor:
             return  # previous round still running
         try:
             load_ix_prefixes(os.path.join(os.path.dirname(os.path.abspath(self.db.path)), "peeringdb-ix.json"))
+            load_cable_db(os.path.join(os.path.dirname(os.path.abspath(self.db.path)), "submarine-cables.json"))
             tr = self.cfg["traceroute"]
             isp = {c["connection"]: c["last_ok"] for c in isp_current(self)} if self.cfg["isp"]["enabled"] else {}
             conn_of_bind = {c["bind"]: c["name"] for c in self.cfg["connections"]}
@@ -3370,7 +3711,7 @@ class Monitor:
                 return SKIP if t.get("family") == 6 else None  # no IPv6 server in that city: no IPv6 line
             srv, addr = pick
             t["host"] = f'{srv["host"]}:{srv["port"]}'
-            return tcp_ping(addr, srv["port"], timeout) if addr else None
+            return tcp_ping(addr, srv["port"], timeout, t.get("bind")) if addr else None
         results = self.recheck_burst(targets, list(self.pool.map(probe, targets)), probe, "region")
         self.db.insert_many("INSERT OR IGNORE INTO ping VALUES (?,?,?)",
                             [(ts, self.db.name_id(t["id"]), r) for t, r in zip(targets, results)
@@ -3531,6 +3872,10 @@ class Monitor:
         )])
 
     def rollup_all(self):
+        with self.db.write_lock:
+            self._rollup_all()
+
+    def _rollup_all(self):
         now_m = int(time.time() // 60) * 60
         for spec in SERIES.values():
             start = self.db.scalar(f"SELECT MAX(ts) FROM {spec['rollup']}")
@@ -3568,7 +3913,7 @@ class Monitor:
             if cut > 0:
                 for table in tables:  # a span the checker is still running in started long ago: go by its end
                     col = "ts_end" if table == "outage_span" else "ts"
-                    self.db.conn().execute(f"DELETE FROM {table} WHERE {col} < ?", (cut,))
+                    self.db.conn().execute(f"DELETE FROM main.{table} WHERE {col} < ?", (cut,))
         self.db.conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     # -- speedtest
@@ -3629,8 +3974,16 @@ class Monitor:
             elif scope.startswith("conn:"):
                 for conn in self.cfg["connections"]:
                     if conn["name"] == scope[5:]:
-                        self._save_speedtest(time.time(), "connection", conn["name"],
-                                             self._run_cli(conn["speedtest_server"], conn["name"], conn["bind"]))
+                        ts = time.time()
+                        row = self._run_cli(conn["speedtest_server"], conn["name"], conn["bind"])
+                        # the pinned server can be unreachable over this link (e.g. the CLI tries its IPv6
+                        # address on an IPv4-only connection and gives up): fall back to the nearest one.
+                        # Only on errors the CLI reports itself, which come before any data is used.
+                        if conn["speedtest_server"] and str(row["error"] or "").startswith("Error:"):
+                            log.info("speedtest %s: server %s failed, trying the nearest server",
+                                     conn["name"], conn["speedtest_server"])
+                            row = self._run_cli(None, conn["name"], conn["bind"])
+                        self._save_speedtest(ts, "connection", conn["name"], row)
             else:
                 for sid in (self.cfg["speedtest"]["servers"] or [None]):
                     self._save_speedtest(time.time(), "main", "Auto" if sid is None else f"Server {sid}",
@@ -4156,7 +4509,9 @@ def latest_routes(m):
         p = json.loads(path or "[]")
         out[tid] = {"ts": ts, "kind": fix_route_kind(kind, p), "path": with_rels(p),
                     "cities": route_cities(detailed),  # the public dashboard may hide the first hops' cities
-                    "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
+                    "public_cities": route_cities(PublicMask.hide_home_hops(detailed)),
+                    "cables": route_cables(detailed),
+                    "public_cables": route_cables(PublicMask.hide_home_hops(detailed))}
     by_host = {}  # address -> ping target with a route (hostnames don't match a DNS server's address)
     for t in m.cfg["ping"]["targets"]:
         host = t.get("host") or ""  # region and game targets find their server at runtime
@@ -4333,7 +4688,9 @@ def api_cdn(m, q):
             out["routes"][tid] = {"ts": ts, "kind": fix_route_kind(kind, json.loads(path or "[]")),
                                   "path": with_rels(json.loads(path or "[]")),
                                   "cities": route_cities(detailed),
-                                  "public_cities": route_cities(PublicMask.hide_home_hops(detailed))}
+                                  "public_cities": route_cities(PublicMask.hide_home_hops(detailed)),
+                                  "cables": route_cables(detailed),
+                                  "public_cables": route_cables(PublicMask.hide_home_hops(detailed))}
     return out
 
 
@@ -4471,7 +4828,11 @@ def api_traceroute(m, q):
              "kind": fix_route_kind(kind, json.loads(path or "[]")), "path": with_rels(json.loads(path or "[]")),
              "hops": locate_hops(json.loads(hops or "[]")) if i == 0 else None, "error": err}
             for i, (ts, dest, kind, path, hops, err, dh, first) in enumerate(rows)]
-    return {"target": tid, "latest": hist[0] if hist else None, "history": hist, "rel_source": as_rel_serial()}
+    if hist and hist[0]["hops"]:
+        hist[0]["cables"] = route_cables(hist[0]["hops"])
+        hist[0]["public_cables"] = route_cables(PublicMask.hide_home_hops(hist[0]["hops"]))
+    return {"target": tid, "latest": hist[0] if hist else None, "history": hist, "rel_source": as_rel_serial(),
+            "cable_source": CABLE_MAP_CREDIT if _CABLE_DB["cables"] else None}
 
 
 def api_isp(m, q):
@@ -4523,6 +4884,8 @@ def api_summary(m, q):
     for t, rtt in m.db.query("SELECT target, rtt FROM ping WHERE ts > ? ORDER BY ts", (now - 300,)):
         recent.setdefault(m.db.name_of(t), []).append(rtt)
     agg = {t: (trimmed_mean(v), len(v), sum(x is not None for x in v), jitter(v)) for t, v in recent.items()}
+    # a host only counts as down after 3 lost pings in a row, so one dropped ping doesn't flip the status
+    down = {t for t, v in recent.items() if len(v) >= 3 and all(x is None for x in v[-3:])}
     ping = []
     for t in m.cfg["ping"]["targets"]:
         l = last.get(t["id"], (None, None))
@@ -4533,7 +4896,7 @@ def api_summary(m, q):
                      "group": t["group"], "flag": t.get("flag", ""), "connection": t.get("connection"),
                      "family": t.get("family"), "twin": t.get("twin"),
                      "where": t.get("where") or ("finding nearest server…" if t["method"] == "game" else None),
-                     "last": r2(l[0]), "last_ts": l[1],
+                     "last": r2(l[0]), "last_ts": l[1], "down": t["id"] in down,
                      "avg5m": r2(a[0]) if a else None,
                      "loss5m": round(100.0 * (a[1] - a[2]) / a[1], 1) if a else None,
                      "jitter5m": r2(a[3]) if a else None, "custom": bool(t.get("custom"))})
@@ -4893,6 +5256,9 @@ class PublicMask:
             if "public_cities" in o:  # a route summary
                 o = dict(o, cities=o["cities"] if self.show_city else o["public_cities"])
                 del o["public_cities"]
+            if "public_cables" in o:  # sea crossings: the public version leaves out ones from your city
+                o = dict(o, cables=o["cables"] if self.show_city else o["public_cables"])
+                del o["public_cables"]
             if not self.show_city and isinstance(o.get("hops"), list):
                 o = dict(o, hops=self.hide_home_hops(o["hops"]))
             return {self.text(k) if isinstance(k, str) else k: self._walk(v) for k, v in o.items()}
@@ -5484,10 +5850,20 @@ def main():
                      listen_url(pserver), int(pub["requests_per_minute"]))
         except OSError as e:
             log.error("couldn't start the public dashboard on port %d (%s); the main dashboard still runs", pport, e)
+    def stop(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, stop)  # systemctl stop, docker stop, launchd: save what's in memory first
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if monitor.db.buf:
+            monitor.db.save()
+            log.info("saved the latest samples to disk, stopping")
+        logging.shutdown()
+        os._exit(0)  # don't wait for a speedtest or trace still running in the pool
 
 
 if __name__ == "__main__":

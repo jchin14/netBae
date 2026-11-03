@@ -197,8 +197,8 @@ wait_api || fail "API not answering after update"
 ok "update kept the config and restarted"
 
 # a firmware update: only /data survives
+systemctl disable --now netbae netbae-update.path >/dev/null 2>&1  # stopping saves what's in memory
 before=$(rows)
-systemctl disable --now netbae netbae-update.path >/dev/null 2>&1
 rm -f /etc/systemd/system/netbae* /usr/local/bin/netbae
 userdel netbae
 useradd --system other-service  # takes netbae's old uid, as a firmware update can
