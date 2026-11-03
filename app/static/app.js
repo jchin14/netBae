@@ -519,6 +519,9 @@ function setStatus(ok, msg) {
 // servers, which drop the odd ping on every connection and would make every bar look lossy
 const lossSites = (xs) => xs.filter((p) => !p.down && !/usenet/i.test(`${p.group} ${p.name}`));
 
+// Giganews often stops answering pings while its usenet service works fine, so it isn't counted in Hosts up
+const upSites = (xs) => xs.filter((p) => !/giganews/i.test(`${p.id} ${p.name}`));
+
 // Tooltip text naming the hosts that are down (3 lost pings in a row), for the status and Hosts up stats
 function downList(xs) {
   const names = xs.filter((p) => p.down).map((p) => p.name);
@@ -767,7 +770,7 @@ function renderTiles() {
 // The bar at the top: hosts up and the main connection's averages, from the same 5-minute numbers as the tiles.
 // Regions (far away by design), IPv6 twins and secondary connections are left out so it compares over time.
 function renderSummaryBar(s) {
-  const sites = lastPing.filter((p) => p.method !== 'region' && p.family !== 6 && !p.connection && p.last_ts != null);
+  const sites = upSites(lastPing.filter((p) => p.method !== 'region' && p.family !== 6 && !p.connection && p.last_ts != null));
   const mine = sites.filter((p) => p.custom);
   const up = (xs) => xs.filter((p) => !p.down).length;
   const upCls = (xs) => (up(xs) === xs.length ? 'good' : up(xs) < xs.length * 0.9 ? 'bad' : 'warn');
@@ -783,7 +786,7 @@ function renderSummaryBar(s) {
   const near = nearest || regions.sort((x, y) => x.avg5m - y.avg5m)[0];
   const items = [
     ispStat(isp),
-    stat('Hosts up', `${up(sites)}<small>/ ${sites.length}</small>`, 'Sites that answered at least one of their last 3 pings (not counting regions or IPv6)' + downList(sites), upCls(sites)),
+    stat('Hosts up', `${up(sites)}<small>/ ${sites.length}</small>`, 'Sites that answered at least one of their last 3 pings (not counting regions, IPv6 or Giganews)' + downList(sites), upCls(sites)),
     mine.length ? stat('Your hosts up', `${up(mine)}<small>/ ${mine.length}</small>`, 'Your own extra_targets that answered at least one of their last 3 pings' + downList(mine), upCls(mine)) : '',
     isp && isp.uptime24h != null ? stat('ISP uptime', `${fmtPct(isp.uptime24h, isp.uptime24h < 100 ? 2 : 0)}<small>24h</small>`, `Share of ${isp.connection}'s ISP checks in the last 24 hours that reached the internet`, isp.uptime24h >= 99.9 ? 'good' : isp.uptime24h >= 99 ? 'warn' : 'bad') : '',
     nearest ? stat('Base latency', `${fmtMs(nearest.avg5m)}<small>ms</small>`, 'Your connection\'s own latency: 5-minute average to the Ookla speedtest server closest to you')
@@ -809,7 +812,7 @@ function renderSummaryBar(s) {
 function renderConnBars(s) {
   const stat = (label, value, title, cls = '') => `<div class="stat" title="${esc(title)}"><div class="label">${label}</div><div class="v ${cls}">${value}</div></div>`;
   $('#conn-bars').innerHTML = (CONFIG.connections || []).map((c) => {
-    const sites = lastPing.filter((p) => p.connection === c.name && p.method !== 'region' && p.family !== 6 && p.last_ts != null);
+    const sites = upSites(lastPing.filter((p) => p.connection === c.name && p.method !== 'region' && p.family !== 6 && p.last_ts != null));
     const nearest = lastPing.find((p) => p.connection === c.name && p.method === 'region' && p.avg5m != null);
     const isp = (s.isp || []).find((x) => x.connection === c.name);
     if (!sites.length && !isp) return '';
@@ -2102,8 +2105,9 @@ function setupUpdateButton() {
       CONFIG.update = Object.assign(u, r); CONFIG.dev = r.dev; renderUpdate(u);
       checkedAt = Date.now();
       const after = v.textContent;
-      v.textContent = r.available ? `v${u.latest} available` : r.dev ? 'dev build ✓' : 'up to date ✓';
-      setTimeout(() => { if (v.textContent !== 'checking…') v.textContent = after; }, 3000);
+      v.textContent = r.available ? `v${u.latest} available` : r.dev ? `dev build, newer than v${u.latest} ✓` : 'up to date ✓';
+      v.classList.add('checked');
+      setTimeout(() => { v.classList.remove('checked'); if (v.textContent !== 'checking…') v.textContent = after; }, 8000);
       return;
     }
     if (u.available) {
@@ -2151,6 +2155,15 @@ function routeDestinations() {
   for (const sv of CONFIG.dns?.enabled ? CONFIG.dns.servers : []) {
     if (sv.lan || sv.host === 'gateway') continue;  // resolvers on your own network aren't traced
     out.push({ key: `dns:${sv.id}`, name: sv.name + (sv.family === 6 ? ' (IPv6)' : ''), cat: 'DNS resolvers', conn: null });
+  }
+  const names = connNames();  // each connection traces every other one's public address
+  for (const from of names) {
+    for (const to of names) {
+      const key = from === names[0] ? `peer:${to}` : `${from}|peer:${to}`;
+      if (from === to || !ROUTES[key]) continue;
+      const isp = ISP_NOW.find((c) => c.connection === to)?.last_ok?.isp;
+      out.push({ key, name: `${to}${isp ? ` (${isp})` : ''}`, cat: 'Your other connections', conn: from === names[0] ? null : from });
+    }
   }
   if (CDN_DATA) {  // every CDN address the resolvers handed out, under its CDN's name
     const label = {};
@@ -2203,7 +2216,7 @@ function routeNames() {
   for (const d of routeDestinations()) m[d.key] = { name: d.name, cat: d.cat };
   return (id) => {
     const [conn, base] = id.includes('|') ? id.split('|', 2) : [null, id];
-    const d = m[id] || m[base] || { name: base.replace(/^(dns|cdn|region|speedtest):/, '').replace('Auto', 'Speedtest server'), cat: '' };
+    const d = m[id] || m[base] || { name: base.replace(/^(dns|cdn|region|speedtest|peer):/, '').replace('Auto', 'Speedtest server'), cat: '' };
     return conn && !m[id] ? { name: d.name, cat: d.cat, conn } : { ...d, conn: m[id] ? null : conn };
   };
 }

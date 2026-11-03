@@ -23,6 +23,15 @@ The main steps so far, with the full details per version below.
 | 1.23 | The dashboard over IPv6 as well as IPv4, Apple updates, iCloud and GitHub targets, ISP logos on speedtests |
 | 1.24 | Install on a UniFi OS console itself (Cloud Gateway, Dream Router, Dream Machine) |
 
+## 1.25.4 - 2026-11-04
+
+Routes between your connections, plus small fixes.
+
+- With more than one connection, each one now traces a route to every other one's public address, shown in Routes under "Your other connections"
+- Clicking the version number shows the update check result for longer, and a dev build says which release it's newer than
+- Neptune Internet now shows its logo
+- Hosts up no longer counts Giganews, which often ignores pings while working fine
+
 ## 1.25.0 - 2026-11-04
 
 Pick a speedtest server, a faster dashboard, and more reliable `netbae tunnel` setup.

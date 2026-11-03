@@ -66,6 +66,7 @@ h1 { font-size: 19px; margin: 0; font-weight: 700; letter-spacing: -.01em; displ
 h1 .version { font: 500 11px var(--mono); color: var(--muted); text-decoration: none; border: 1px solid var(--border);
   border-radius: 6px; padding: 1px 6px; align-self: center; }
 h1 .version:hover { color: var(--text); border-color: var(--muted); }
+h1 .version.checked { color: var(--text); border-color: var(--accent, var(--text)); font-weight: 600; }
 .update-btn { font: inherit; font-size: 11px; font-weight: 600; color: #fff; background: var(--accent); border: none; border-radius: 6px;
   padding: 2px 9px; cursor: pointer; align-self: center; }
 .update-btn:disabled { opacity: .7; cursor: default; }

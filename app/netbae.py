@@ -53,7 +53,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.25.0"
+VERSION = "1.25.4"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -1623,7 +1623,7 @@ ISP_DOMAINS = {
     "Superloop": "superloop.com", "Exetel": "exetel.com.au", "Telstra": "telstra.com.au", "Optus": "optus.com.au",
     "TPG": "tpg.com.au", "iiNet": "iinet.net.au", "Internode": "internode.on.net", "Aussie Broadband": "aussiebroadband.com.au",
     "Vocus": "vocus.com.au", "Dodo": "dodo.com", "Vodafone": "vodafone.com", "Leaptel": "leaptel.com.au",
-    "Launtel": "launtel.net.au", "Starlink": "starlink.com", "Spark": "spark.co.nz", "One NZ": "one.nz",
+    "Launtel": "launtel.net.au", "Neptune": "neptune.net.au", "Starlink": "starlink.com", "Spark": "spark.co.nz", "One NZ": "one.nz",
     "2degrees": "2degrees.nz", "Comcast": "xfinity.com", "AT&T": "att.com", "Verizon": "verizon.com",
     "Spectrum": "spectrum.com", "Charter": "spectrum.com", "Cox": "cox.com", "T-Mobile": "t-mobile.com",
     "BT": "bt.com", "Sky": "sky.com", "Virgin Media": "virginmedia.com", "Deutsche Telekom": "telekom.de",
@@ -1659,7 +1659,7 @@ def isp_logo(name):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": f"netBae/{VERSION}"})
             with urllib.request.urlopen(req, timeout=10) as r:
-                body = r.read(200_000)
+                body = r.read(1_000_000)  # some favicons are big (Neptune's is 370 KB)
                 ctype = r.headers.get("Content-Type", "image/x-icon").split(";")[0]
                 if r.status == 200 and body and ctype.startswith("image/"):
                     logo = (ctype, body)
@@ -3535,6 +3535,17 @@ class Monitor:
             for tid, host, bind in list(out):
                 if bind is None and ":" not in host and not tid.endswith("#v6") and f"{c['name']}|{tid}" not in ids:
                     out.append((f"{c['name']}|{tid}", host, c["bind"]))
+        # with several connections, each one traces every other one's public IPv4 address, as "peer:<to>" from
+        # the main connection and "<from>|peer:<to>" from a secondary (skipped while two share an address)
+        conns = self.isp_connections()
+        if len(conns) > 1 and self.cfg["isp"]["enabled"]:
+            ip = {c["connection"]: (c["last_ok"] or {}).get("ip") for c in isp_current(self)}
+            main = self.cfg["isp"]["main_name"]
+            for src, bind in conns:
+                for dst, _ in conns:
+                    to = ip.get(dst)
+                    if dst != src and to and ":" not in to and to != ip.get(src):
+                        out.append((f"peer:{dst}" if src == main else f"{src}|peer:{dst}", to, bind))
         return out
 
     def lookups_done(self):
@@ -3848,15 +3859,19 @@ class Monitor:
                 return (time.time(), name, r["ip"], r["isp"], r["asn"], r["location"], None)
             except Exception as e:
                 return (time.time(), name, None, None, None, None, str(e)[:200])
-        before = {c["connection"]: (c["last_ok"] or {}).get("asn") for c in isp_current(self)}
+        last = {c["connection"]: c["last_ok"] or {} for c in isp_current(self)}
+        before = {k: v.get("asn") for k, v in last.items()}
         rows = list(self.pool.map(one, self.isp_connections()))
         self.db.insert_many("INSERT INTO isp VALUES (?,?,?,?,?,?,?)", rows)
         # a connection that moved to another ISP (a failover, or a secondary just routed out its own WAN) gets its
         # routes traced again now, instead of showing the old ISP's routes until the next 12-hourly round
         moved = {r[1] for r in rows if r[4] and before.get(r[1]) and r[4] != before[r[1]]}
-        if moved and self.cfg["traceroute"]["enabled"]:
+        # a connection with a new (or first) address gets traced again from the others too
+        readdressed = {r[1] for r in rows if r[2] and r[2] != last.get(r[1], {}).get("ip")}
+        if (moved or readdressed) and self.cfg["traceroute"]["enabled"]:
             main = self.cfg["isp"]["main_name"]
-            keep = lambda tid: (tid.split("|")[0] if "|" in tid else main) in moved
+            keep = lambda tid: ((tid.split("|")[0] if "|" in tid else main) in moved
+                                or tid.split("|")[-1].removeprefix("peer:") in readdressed and "peer:" in tid)
             self.pool.submit(lambda: self.collect_traceroutes(skip={x[0] for x in self.trace_targets() if not keep(x[0])}))
         self.record_own_prefixes()
 
