@@ -262,10 +262,15 @@ function chipFilter(el, key, items, onChange, defaultOff = [], rows = null, hove
       // in rows, the category's swatch is its middle host's colour, the same one its combined line is drawn in
       const sq = rows ? `<i class="host-sq" style="background:${members[Math.floor((members.length - 1) / 2)].color}"></i> ` : '';
       label.innerHTML = `${sq}${esc(g)}${rows ? ` <span class="count">${members.length}</span>` : ''}`;
-      label.title = `Show or hide all of ${g}`;
-      label.addEventListener('click', () => {
-        const allOff = members.every((x) => off.has(x.id));
-        members.forEach((x) => (allOff ? off.delete(x.id) : off.add(x.id)));
+      label.title = `Show or hide all of ${g} (double-click: show only ${g})`;
+      label.addEventListener('click', (e) => {
+        if (e.altKey || e.metaKey || e.ctrlKey || e.detail === 2) {
+          // double-click / modifier: solo this category
+          items.forEach((x) => ((x.group ?? '') === g ? off.delete(x.id) : off.add(x.id)));
+        } else {
+          const allOff = members.every((x) => off.has(x.id));
+          members.forEach((x) => (allOff ? off.delete(x.id) : off.add(x.id)));
+        }
         changed();
       });
       wrap.appendChild(label);
@@ -393,7 +398,7 @@ function ispStat(c) {
   const x = c && c.last_ok;
   if (!x || !x.isp) return '';
   if (c.failover) return `<div class="stat isp-stat" title="${esc(c.connection)} is going out through the backup connection (${esc(x.isp)} ${esc(x.ip || '')})"><div><div class="label">ISP</div><div class="v warn">Failover active</div></div></div>`;
-  const img = c.logo ? `<img src="api/isp/logo?isp=${encodeURIComponent(x.isp)}" alt="" onerror="this.remove()">` : '';
+  const img = c.logo ? `<img src="api/isp/logo?isp=${encodeURIComponent(c.logo_isp || x.isp)}" alt="" onerror="this.remove()">` : '';
   return `<div class="stat isp-stat" title="${esc(c.connection)}: ${esc(x.isp)}${x.asn ? ` (${esc(x.asn)})` : ''}">${img}<div><div class="label">ISP</div><div class="v">${esc(x.isp)}</div></div></div>`;
 }
 
@@ -485,6 +490,22 @@ function setXRange(chart, r) {
 let CONFIG;
 let PING_COLORS = {};
 const panels = [];
+// Charts load once they're near the screen, so the first paint only waits for what you can see
+const seenPanels = new Set();
+let panelWatch = null;
+function watchPanels() {
+  if (!('IntersectionObserver' in window)) { panels.forEach((p) => seenPanels.add(p)); return; }
+  panelWatch = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      const p = e.isIntersecting && panels.find((x) => x.root === e.target);
+      if (!p || seenPanels.has(p)) continue;
+      seenPanels.add(p);
+      panelWatch.unobserve(e.target);
+      p.refresh();
+    }
+  }, { rootMargin: '600px 0px' });
+  panels.forEach((p) => panelWatch.observe(p.root));
+}
 let lastOk = 0;
 
 function setStatus(ok, msg) {
@@ -846,7 +867,7 @@ async function refreshSummary() {
   $('#isp-now').innerHTML = (s.isp || []).map((c) => {
     const x = c.last_ok;
     const failing = c.latest && c.latest.error;
-    const logo = c.logo ? `<img class="isp-logo" src="api/isp/logo?isp=${encodeURIComponent(x.isp)}" alt="" onerror="this.remove()">` : '';
+    const logo = c.logo ? `<img class="isp-logo" src="api/isp/logo?isp=${encodeURIComponent(c.logo_isp || x.isp)}" alt="" onerror="this.remove()">` : '';
     if (x && c.failover) return `<span title="Going out through the backup connection: ${esc(x.isp || '?')} ${esc(x.ip || '')} · checked ${fmtAgo(x.ts)}">${esc(c.connection)}: <b class="warn-text">Failover active</b></span>`;
     return x ? `<span title="${esc(x.asn || '')} · checked ${fmtAgo(x.ts)}${failing ? ' · latest check failed' : ''}">${esc(c.connection)}: ${logo}<b>${esc(x.isp || '?')}</b> ${esc(x.ip || '')}</span>`
       // "no internet" only when the check couldn't connect; a lookup service refusing (e.g. HTTP 429) isn't an outage
@@ -1020,7 +1041,7 @@ function watchSpeedtest() {
       clearInterval(speedWatch);
       speedWatch = null;
       await refreshSummary().catch(() => {});
-      panels.forEach((p) => p.refresh());
+      panels.filter((p) => seenPanels.has(p)).forEach((p) => p.refresh());
     }
   }, 1000);
 }
@@ -1031,6 +1052,9 @@ function renderSpeedButtons() {
   const btn = $('#run-speedtest');
   btn.hidden = !!CONFIG.public || !CONFIG.speedtest.manual;  // the public dashboard is read-only
   btn.disabled = running;
+  const pick = $('#speed-server');
+  pick.hidden = btn.hidden || !!speedConn;  // a secondary connection tests to its own server
+  pick.disabled = running;
   btn.textContent = running ? `Running ${st.status.label && st.status.label !== 'Auto' ? st.status.label : ''}…`.replace(' …', '…') : 'Run now';
   btn.title = st.status.waiting
     ? `A scheduled test is waiting: the network is busy (${fmtMbps(st.status.busy_mbps)} Mbps on ${st.status.busy_source}). Run now starts one straight away.`
@@ -1625,7 +1649,8 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     }
     const series = blocks.flatMap((b) => (b.summary && !b.open ? [b.summary] : b.members));  // drawn
     const wanted = [...new Set(blocks.flatMap((b) => (b.summary ? [b.summary.key] : []).concat(b.open ? b.members.map((x) => x.key) : [])))];
-    const params = { from: r.from.toFixed(0), to: r.to.toFixed(0), points, ...(extraParams ? extraParams() : {}) };
+    // per-point P5/P95 only for the p5-p95 band: working them out triples the server's time on long ranges
+    const params = { from: r.from.toFixed(0), to: r.to.toFixed(0), points, pct: band === 'pct' && metric !== 'loss' ? 1 : 0, ...(extraParams ? extraParams() : {}) };
     if (ispSel.value) params.isp = ispSel.value;
     params[keyParam] = wanted.join(',') || '__none__';
     const d = await api(endpoint, params);
@@ -2456,7 +2481,7 @@ async function refreshOutages() {
 async function refreshAll(force = false) {
   if (document.hidden && !force) return;
   updatePastBadge();
-  const jobs = [refreshSummary(), refreshSystem(), refreshOutages(), refreshSharing(), refreshCdn(), ...panels.filter((p) => force || p.isLive()).map((p) => p.refresh())];
+  const jobs = [refreshSummary(), refreshSystem(), refreshOutages(), refreshSharing(), refreshCdn(), ...panels.filter((p) => seenPanels.has(p) && (force || p.isLive())).map((p) => p.refresh())];
   const res = await Promise.allSettled(jobs);
   renderRouteMix();
   if (routeTab === 'changes') renderRouteChanges().catch(() => {});
@@ -2560,7 +2585,7 @@ async function main() {
       if (r.started) {
         speedView = null;  // back to the latest result, to watch this one
         if (SPEED) SPEED.status = { running: true, phase: 'connecting', started: Date.now() / 1000,
-          label: scope.startsWith('conn:') ? decodeURIComponent(scope.slice(5)) : 'Auto' };
+          label: scope.startsWith('conn:') ? decodeURIComponent(scope.slice(5)) : scope.startsWith('server:') ? decodeURIComponent(scope.slice(7)) : 'Auto' };
         renderSpeedResult();
         watchSpeedtest();
         return;
@@ -2571,13 +2596,17 @@ async function main() {
   $('#speed-older').addEventListener('click', () => stepSpeed('older'));
   $('#speed-newer').addEventListener('click', () => stepSpeed('newer'));
   $('#speed-pos').addEventListener('click', () => { if (speedView) { speedView = null; renderSpeedResult(); renderSpeedMeta(); } });
-  $('#run-speedtest').addEventListener('click', () => startTest(speedConn ? `conn:${encodeURIComponent(speedConn)}` : 'main'));
+  const pickSel = $('#speed-server');
+  pickSel.innerHTML = '<option value="">Nearest</option>' + (CONFIG.speedtest.picks || []).map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  $('#run-speedtest').addEventListener('click', () => startTest(speedConn ? `conn:${encodeURIComponent(speedConn)}`
+    : pickSel.value ? `server:${encodeURIComponent(pickSel.value)}` : 'main'));
   $('#speed-conn').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-conn]');
     if (!b) return;
     speedConn = b.dataset.conn || null;
     speedView = null;
     renderSpeedResult();
+    renderSpeedButtons();
     renderSpeedMeta();
   });
   document.addEventListener('click', (e) => {
@@ -2683,9 +2712,10 @@ async function main() {
     + '<a href="https://github.com/jchin14" target="_blank" rel="noopener">jchin14</a> · '
     + '<a href="https://buymeacoffee.com/jchin14" target="_blank" rel="noopener">buy me a coffee</a> · '
     + `${scheduleText()} · `
-    + 'tip: double-click a chip to show only that series'
+    + 'tip: double-click a chip or category to show only that one'
     + '<div class="disclaimer">netBae isn\'t affiliated with or endorsed by any internet provider, carrier or service shown here. Names and logos belong to their owners.</div>';
 
+  watchPanels();
   await refreshAll(true);
   setInterval(refreshAll, CONFIG.public ? REFRESH_MS * 2 : REFRESH_MS);  // public: go easy on the server
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(); });

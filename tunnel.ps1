@@ -43,6 +43,7 @@ if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
 }
 if (-not (Test-Path $Conf)) { Fail "netBae isn't installed here ($Conf not found)" }
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+$ProgressPreference = 'SilentlyContinue'   # Invoke-WebRequest is very slow with the progress bar (cloudflared is ~55 MB)
 
 # ---------------------------------------------------------------- config
 function Get-ConfValue([string]$Section, [string]$Key) {
@@ -128,15 +129,30 @@ function Update-Cloudflared([string]$Cf) {  # cloudflared's own updater; never f
 }
 function Install-Cloudflared {
     $cf = Find-Cloudflared
-    if ($cf) { Update-Cloudflared $cf; return $cf }
+    # a copy that won't run (e.g. left by a cancelled download before netBae 1.24.31) is downloaded again
+    $works = $false
+    if ($cf) { try { $works = [bool]((& $cf --version 2>$null) | Select-Object -First 1) } catch { } }
+    if ($works) { Update-Cloudflared $cf; return $cf }
+    if ($cf -and $cf -ne "$AppDir\cloudflared\cloudflared.exe") { Fail "$cf doesn't run. Reinstall cloudflared, or remove it so netBae can download its own copy" }
     Info "Installing cloudflared (Cloudflare's tunnel program)"
     $dir = "$AppDir\cloudflared"
     New-Item -ItemType Directory -Force $dir | Out-Null
     $arch = if ([Environment]::Is64BitOperatingSystem) { 'amd64' } else { '386' }
-    Invoke-WebRequest "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-$arch.exe" `
-        -OutFile "$dir\cloudflared.exe" -UseBasicParsing
-    Info "Installed $((& "$dir\cloudflared.exe" --version) | Select-Object -First 1)"
-    "$dir\cloudflared.exe"
+    $exe = "$dir\cloudflared.exe"; $tmp = "$dir\cloudflared-download.exe"
+    Info 'Downloading cloudflared (about 55 MB)'
+    # into a temporary file first, so a cancelled or failed download doesn't leave a broken cloudflared.exe
+    try {
+        Invoke-WebRequest "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-$arch.exe" `
+            -OutFile $tmp -UseBasicParsing
+        $ver = (& $tmp --version) | Select-Object -First 1
+        if (-not $ver) { throw 'the downloaded file is not a working cloudflared' }
+        Move-Item $tmp $exe -Force
+    } catch {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+        Fail "couldn't download cloudflared ($($_.Exception.Message)). Install it from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/ or with: winget install --id Cloudflare.cloudflared"
+    }
+    Info "Installed $ver"
+    $exe
 }
 function New-CfDir {
     New-Item -ItemType Directory -Force $CfDir | Out-Null

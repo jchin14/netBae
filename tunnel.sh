@@ -151,22 +151,34 @@ install_cloudflared() {
     [[ -n $brew && -n ${SUDO_USER:-} ]] || die "install Homebrew (https://brew.sh), then: brew install cloudflared"
     sudo -u "$SUDO_USER" "$brew" install cloudflared
   elif [[ -n $UNIFI ]]; then  # apt on UniFi OS belongs to UniFi
-    install_cloudflared_binary
+    install_cloudflared_binary || true
   elif command -v apt-get >/dev/null; then
-    install -d -m 0755 /usr/share/keyrings
-    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
-    echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
-      >/etc/apt/sources.list.d/cloudflared.list
-    apt-get update -qq && apt-get install -y -qq cloudflared >/dev/null || install_cloudflared_binary
+    # any failure here (e.g. pkg.cloudflare.com unreachable) falls back to Cloudflare's release build
+    install_cloudflared_apt || { c_warn "Cloudflare's apt repository didn't work; downloading cloudflared instead"
+                                 install_cloudflared_binary || true; }
   elif command -v dnf >/dev/null || command -v yum >/dev/null; then
-    curl -fsSL https://pkg.cloudflare.com/cloudflared-ascii.repo -o /etc/yum.repos.d/cloudflared.repo
-    "$(command -v dnf || command -v yum)" install -y -q cloudflared || install_cloudflared_binary
+    { curl -fsSL https://pkg.cloudflare.com/cloudflared-ascii.repo -o /etc/yum.repos.d/cloudflared.repo \
+        && "$(command -v dnf || command -v yum)" install -y -q cloudflared; } \
+      || { rm -f /etc/yum.repos.d/cloudflared.repo
+           c_warn "Cloudflare's package repository didn't work; downloading cloudflared instead"
+           install_cloudflared_binary || true; }
   else
-    install_cloudflared_binary
+    install_cloudflared_binary || true
   fi
   CF=$(find_cf || true)
   [[ -n $CF ]] || die "couldn't install cloudflared - see https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
   c_info "Installed $("$CF" --version 2>/dev/null | head -1)"
+}
+install_cloudflared_apt() {  # Cloudflare's apt repository; on failure removes it again so apt isn't left broken
+  local key=/usr/share/keyrings/cloudflare-main.gpg list=/etc/apt/sources.list.d/cloudflared.list
+  install -d -m 0755 /usr/share/keyrings
+  if curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o "$key.new" && mv -f "$key.new" "$key" \
+     && echo "deb [signed-by=$key] https://pkg.cloudflare.com/cloudflared any main" >"$list" \
+     && apt-get update -qq && apt-get install -y -qq cloudflared >/dev/null; then
+    return 0
+  fi
+  rm -f "$key.new" "$list"
+  return 1
 }
 update_cloudflared() {  # bring an installed cloudflared up to date from wherever it came from (never fatal)
   local old new brew

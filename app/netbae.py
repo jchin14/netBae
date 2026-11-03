@@ -9,6 +9,7 @@ import base64
 import bisect
 import copy
 import glob
+import gzip
 import ctypes
 import ctypes.util
 import hashlib
@@ -52,7 +53,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.24.28"
+VERSION = "1.25.0"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -570,6 +571,24 @@ WORLD_CITIES = {
     "Buenos Aires": ("Buenos Aires", "Buenos Aires", "Argentina", "AR"), "Santiago": ("Santiago", "Santiago", "Chile", "CL"),
     "Lima": ("Lima", "Lima", "Peru", "PE"),
 }
+
+
+# The Speedtest card's server menu: a few common places besides the nearest server
+SPEEDTEST_PICKS = {"Sydney": "Sydney", "Los Angeles": "Los Angeles", "Ashburn": ("Ashburn", "Ashburn, VA", "United States", "US"),
+                   "Frankfurt": "Frankfurt", "Hong Kong": "Hong Kong", "Singapore": "Singapore"}
+
+
+def speedtest_pick(name):
+    """A menu pick as a region, or None if it isn't one."""
+    v = SPEEDTEST_PICKS.get(name)
+    if v is None:
+        return None
+    if isinstance(v, tuple):
+        return {"name": name, "search": v[0], "city": v[1], "country": v[2], "flag": v[3]}
+    if v in REGIONS:
+        return normalize_region(v)
+    se, c, co, f = WORLD_CITIES[v]
+    return {"name": name, "search": se, "city": c, "country": co, "flag": f}
 
 
 def global_cities():
@@ -1609,7 +1628,7 @@ ISP_DOMAINS = {
     "Spectrum": "spectrum.com", "Charter": "spectrum.com", "Cox": "cox.com", "T-Mobile": "t-mobile.com",
     "BT": "bt.com", "Sky": "sky.com", "Virgin Media": "virginmedia.com", "Deutsche Telekom": "telekom.de",
     "Orange": "orange.com", "Swisscom": "swisscom.ch", "Init7": "init7.net", "Singtel": "singtel.com",
-    "Rogers": "rogers.com", "Bell Canada": "bell.ca", "Cloudflare": "cloudflare.com",
+    "Rogers": "rogers.com", "Bell Canada": "bell.ca", "Cloudflare": "cloudflare.com", "PureVPN": "purevpn.com",
 }
 
 
@@ -3971,6 +3990,8 @@ class Monitor:
                     self._region_test(region)
             elif scope == "global":
                 self._global_test()
+            elif scope.startswith("server:"):
+                self._region_test(speedtest_pick(scope[7:]))
             elif scope.startswith("conn:"):
                 for conn in self.cfg["connections"]:
                     if conn["name"] == scope[5:]:
@@ -3998,7 +4019,8 @@ class Monitor:
     @staticmethod
     def starting_status(scope):
         """st_status while a test is getting ready (looking up servers) and before the CLI says anything."""
-        label = {"main": "Auto", "regions": "Regions", "global": "Random server"}.get(scope, scope[5:])
+        label = {"main": "Auto", "regions": "Regions", "global": "Random server"}.get(
+            scope, scope[7:] if scope.startswith("server:") else scope[5:])
         return {"running": True, "label": label, "phase": "connecting", "started": time.time()}
 
     def global_due(self):
@@ -4196,20 +4218,21 @@ def split_list(v):
     return [x for x in (v or "").split(",") if x]
 
 
-def aggregate(m, name, frm, to, bucket, keys=None, extra=("", ())):
+def aggregate(m, name, frm, to, bucket, keys=None, extra=("", ()), hist=True):
     """Rows of (key, bucket, n, ok, avg, min, max, p5, p95). bucket=None aggregates the whole range.
     A key made of ids joined with "+" ("a+b+c+") is one combined series of all those hosts' samples, e.g. a
     whole category, or a resolver's IPv4 and IPv6 addresses together."""
     combos = [k for k in keys or [] if "+" in k]
     singles = [k for k in keys or [] if "+" not in k]
-    out = aggregate_keys(m, name, frm, to, bucket, singles, extra) if singles or not keys else []
+    out = aggregate_keys(m, name, frm, to, bucket, singles, extra, hist=hist) if singles or not keys else []
     for combo in combos:
         members = [x for x in combo.split("+") if x]
-        out += [(combo,) + r[1:] for r in aggregate_keys(m, name, frm, to, bucket, members, extra, combined=True)]
+        out += [(combo,) + r[1:] for r in aggregate_keys(m, name, frm, to, bucket, members, extra, combined=True, hist=hist)]
     return sorted(out, key=lambda r: r[1])
 
 
-def aggregate_keys(m, name, frm, to, bucket, keys=None, extra=("", ()), combined=False):
+def aggregate_keys(m, name, frm, to, bucket, keys=None, extra=("", ()), combined=False, hist=True):
+    """hist=False skips the histograms (about 3x faster): P5/P95 then come from each summary row's own."""
     spec = SERIES[name]
     key = spec["keys"][0]
     kexpr = "'all'" if combined else key  # combined: every key's samples in one series
@@ -4246,7 +4269,16 @@ def aggregate_keys(m, name, frm, to, bucket, keys=None, extra=("", ()), combined
         return [(name_of(r[0]),) + tuple(r[1:]) for r in rows]
     # Combine summary rows: exact count/min/max, sample-weighted avg, and P5/P95 from the added-up
     # histograms. Rows from before histograms existed fall back to weighted per-row percentiles.
-    sql = (f"SELECT {kexpr}, {bexpr} AS b, {COMBINE}, {HIST_SUMS} FROM {spec[level]} WHERE {where}"
+    hist = hist or bucket is None  # whole-range stats always use them (the table's P5 and P95)
+    source = spec[level]
+    if bucket is None and level == "rollup" and span > 3 * 3600:
+        # whole-range stats from the hourly rows for the whole hours, and 1-minute rows only for the ragged
+        # ends: the same numbers, but a day of 1-minute rows for hundreds of hosts takes seconds on a Pi
+        h0, h1 = math.ceil(frm / 3600) * 3600, math.floor(to / 3600) * 3600
+        cols = ", ".join(spec["keys"] + ["ts", "n", "ok", "avg", "mn", "mx", "p5", "p95"] + HIST_COLS)
+        source = (f"(SELECT {cols} FROM {spec['hourly']} WHERE ts >= {h0} AND ts < {h1}"
+                  f" UNION ALL SELECT {cols} FROM {spec['rollup']} WHERE ts < {h0} OR ts >= {h1})")
+    sql = (f"SELECT {kexpr}, {bexpr} AS b, {COMBINE}{', ' + HIST_SUMS if hist else ''} FROM {source} WHERE {where}"
            f" GROUP BY {kexpr}, b ORDER BY b")
     out = []
     for row in m.db.query(sql, params):
@@ -4258,9 +4290,9 @@ def aggregate_keys(m, name, frm, to, bucket, keys=None, extra=("", ()), combined
     return out
 
 
-def latency_series(m, name, frm, to, bucket, keys=None, extra=("", ())):
+def latency_series(m, name, frm, to, bucket, keys=None, extra=("", ()), hist=True):
     series = {}
-    for k, b, n, ok, avg, mn, mx, p5, p95 in aggregate(m, name, frm, to, bucket, keys, extra):
+    for k, b, n, ok, avg, mn, mx, p5, p95 in aggregate(m, name, frm, to, bucket, keys, extra, hist):
         series.setdefault(k, []).append(
             [int(b * bucket * 1000), r2(avg), r2(mn), r2(mx), round(100.0 * (n - ok) / n, 2), r2(p5), r2(p95)])
     stats = {k: {"avg": r2(avg), "min": r2(mn), "max": r2(mx), "p5": r2(p5), "p95": r2(p95), "samples": n,
@@ -4309,6 +4341,7 @@ def api_config(m, q):
                                                c["speedtest"]["offset_minutes"] * 60)
                       if c["speedtest"]["enabled"] else None,
                       "regions": [r["name"] for r in c["speedtest"]["regions"]],
+                      "picks": list(SPEEDTEST_PICKS),
                       "flags": {r["name"]: r.get("flag", "") for r in c["speedtest"]["regions"] + c["ping"]["regions"]},
                       "regions_interval_minutes": c["speedtest"]["regions_interval_minutes"],
                       "global_every": int(c["speedtest"]["global_every"] or 0),
@@ -4372,7 +4405,8 @@ def and_filters(*parts):
 
 def api_ping(m, q):
     frm, to, bucket = parse_range(q, m.cfg["ping"]["interval_seconds"])
-    series, stats = latency_series(m, "ping", frm, to, bucket, split_list(q.get("targets")), isp_filter(m, q, frm, to))
+    series, stats = latency_series(m, "ping", frm, to, bucket, split_list(q.get("targets")), isp_filter(m, q, frm, to),
+                                   q.get("pct", "1") == "1")
     return {"from": frm, "to": to, "bucket": bucket, "series": series, "stats": stats}
 
 
@@ -4381,7 +4415,7 @@ def api_dns(m, q):
     domain = q.get("domain")
     extra = ("domain = ?", (m.db.known_id(domain),)) if domain else ("", ())
     series, stats = latency_series(m, "dns", frm, to, bucket, split_list(q.get("servers")),
-                                   and_filters(extra, isp_filter(m, q, frm, to)))
+                                   and_filters(extra, isp_filter(m, q, frm, to)), q.get("pct", "1") == "1")
     return {"from": frm, "to": to, "bucket": bucket, "series": series, "stats": stats}
 
 
@@ -4475,7 +4509,9 @@ def isp_current(m):
                            " WHERE connection = ? AND ts > ?", (name, time.time() - 86400))[0]
         usual = m.db.query("SELECT isp FROM isp WHERE connection = ? AND error IS NULL AND ts > ? GROUP BY isp"
                            " ORDER BY COUNT(*) DESC LIMIT 1", (name, time.time() - 7 * 86400))
-        out.append({"connection": name, "latest": latest, "last_ok": ok, "logo": bool(ok and isp_domain(ok["isp"])),
+        # a VPN's exit network (e.g. Datacamp) has no logo of its own: fall back to the connection's name (PureVPN ...)
+        logo_isp = next((n for n in ((ok or {}).get("isp"), name) if ok and isp_domain(n)), None)
+        out.append({"connection": name, "latest": latest, "last_ok": ok, "logo": bool(logo_isp), "logo_isp": logo_isp,
                     "uptime24h": round(100.0 * up / n, 2) if n else None, "usual_isp": usual[0][0] if usual else None})
     # the main connection has failed over when it's on a backup's address, or on a backup's ISP that isn't its own
     main = out[0] if out else None
@@ -4499,6 +4535,17 @@ def dns_trace_host(sv):
 
 
 def latest_routes(m):
+    """latest_routes_now, reused until there's a new trace (or for 2 minutes, so new hop cities show)."""
+    key = m.db.query("SELECT MAX(ts), COUNT(*) FROM traceroute")[0]
+    cached = getattr(m, "_latest_routes", None)
+    if cached and cached[0] == key and time.time() - cached[1] < 120:
+        return cached[2]
+    out = latest_routes_now(m)
+    m._latest_routes = (key, time.time(), out)
+    return out
+
+
+def latest_routes_now(m):
     """Latest successful route per target: {id: {ts, kind, path, cities}}, with "dns:<id>" for each public
     DNS server (the ping target's route when one pings the same address)."""
     out = {}
@@ -5090,7 +5137,9 @@ def api_run_speedtest(m, q):
         return {"started": False, "reason": "no regions configured"}
     if scope.startswith("conn:") and scope[5:] not in [c["name"] for c in m.cfg["connections"]]:
         return {"started": False, "reason": "unknown connection"}
-    if scope not in ("main", "regions", "global") and not scope.startswith("conn:"):
+    if scope.startswith("server:") and not speedtest_pick(scope[7:]):
+        return {"started": False, "reason": "unknown server"}
+    if scope not in ("main", "regions", "global") and not scope.startswith(("conn:", "server:")):
         return {"started": False, "reason": "unknown scope"}
     m.st_status = m.starting_status(scope)
     threading.Thread(target=m.run_speedtest, kwargs={"blocking": False, "scope": scope}, daemon=True).start()
@@ -5469,11 +5518,20 @@ def make_handler(monitor, public=False):
                 self.send_header("X-Frame-Options", "DENY")
             super().end_headers()
 
+        def gzipped(self, body):
+            """The body gzipped when the browser takes it and it's worth it (JSON shrinks about 4x)."""
+            if len(body) < 1400 or "gzip" not in self.headers.get("Accept-Encoding", ""):
+                return body
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+            return gzip.compress(body, 4)
+
         def send_json(self, obj, status=200, headers=None):
             body = json.dumps(obj, separators=(",", ":")).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
+            body = self.gzipped(body)
             for k, v in (headers or {}).items():
                 self.send_header(k, v)
             self.send_header("Content-Length", str(len(body)))
@@ -5574,11 +5632,21 @@ def make_handler(monitor, public=False):
             full = os.path.realpath(os.path.join(STATIC_DIR, rel))
             if not full.startswith(os.path.realpath(STATIC_DIR) + os.sep) or not os.path.isfile(full):
                 return self.send_json({"error": "not found"}, 404)
+            st = os.stat(full)
+            etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+            if self.headers.get("If-None-Match") == etag:  # the browser's copy is current
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.end_headers()
+                return
             with open(full, "rb") as f:
                 body = f.read()
             self.send_response(200)
             self.send_header("Content-Type", CONTENT_TYPES.get(os.path.splitext(full)[1], "application/octet-stream"))
             self.send_header("Cache-Control", "max-age=86400" if "/vendor/" in full else "no-cache")
+            self.send_header("ETag", etag)
+            if not full.endswith(".png"):
+                body = self.gzipped(body)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

@@ -23,6 +23,19 @@ The main steps so far, with the full details per version below.
 | 1.23 | The dashboard over IPv6 as well as IPv4, Apple updates, iCloud and GitHub targets, ISP logos on speedtests |
 | 1.24 | Install on a UniFi OS console itself (Cloud Gateway, Dream Router, Dream Machine) |
 
+## 1.25.0 - 2026-11-04
+
+Pick a speedtest server, a faster dashboard, and more reliable `netbae tunnel` setup.
+
+- The Speedtest card has a server menu next to Run now: Nearest (the default), Sydney, Los Angeles, Ashburn, Frankfurt, Hong Kong or Singapore
+- Double-click a category's name above a chart to show only that category (as double-clicking a host already does)
+- PureVPN connections show the PureVPN logo
+- The dashboard opens faster: charts load as you scroll to them, and the Ping and DNS tables' day stats are worked out about 5x faster on a Raspberry Pi
+- The dashboard loads faster: responses are compressed (about 4x smaller) and the browser reuses its saved copy of the page's files
+- Charts redraw faster when you change the range or lines, and the summary bar updates faster on a Raspberry Pi
+- `netbae tunnel` installs cloudflared even when Cloudflare's package repository can't be reached, by downloading Cloudflare's own build instead (it used to stop with only a download error)
+- `netbae tunnel` on Windows downloads cloudflared much faster (it could look stuck for many minutes), and a cancelled or failed download no longer leaves a broken copy behind
+
 ## 1.24.28 - 2026-11-03
 
 Less disk writing, clearer latency stats in the summary bars.
