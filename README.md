@@ -10,7 +10,7 @@ Ping, DNS, game servers and speedtests, recorded around the clock on a Raspberry
 ![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20Docker-2f6fe4)
 ![Python](https://img.shields.io/badge/python-3.8%2B-2f6fe4)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-1a9e5c)
-![License](https://img.shields.io/badge/license-personal%20use-d48806)
+![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-d48806)
 [![Buy me a coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-jchin14-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/jchin14)
 
 <img src="docs/screenshot.png" alt="netBae dashboard" width="900">
@@ -72,7 +72,7 @@ docker compose up -d
 - [Why netBae](#why-netbae)
 - [Install](#install): supported systems, what the installer does on Linux, macOS and Windows, Docker, where things live
 - [Everyday use](#everyday-use): [Moving to another machine](#moving-to-another-machine) · [Uninstall](#uninstall)
-- [Configuration](#configuration): [All options](#all-options) · [Game servers](#game-servers) · [Regions](#region-speedtests-and-pings) · [Secondary connection](#monitoring-a-secondary-connection)
+- [Configuration](#configuration): [All options](#all-options) · [Game servers](#game-servers) · [Regions](#region-speedtests-and-pings) · [Additional connections](#monitoring-additional-connections)
 - [Sharing a public dashboard](#sharing-a-public-dashboard): [netbae tunnel](#the-easy-way-netbae-tunnel) · [With Docker](#with-docker) · [What visitors see](#what-visitors-see) · [Signing in](#signing-in-to-your-own-dashboard) · [By hand](#by-hand)
 - [How it measures](#how-it-measures)
 - [Averages and storage](#averages-and-storage)
@@ -91,7 +91,7 @@ Your ISP's status page says everything is fine, but your game lagged, the video 
 | **Worldwide view** | latency to 19 cities (London, New York, Tokyo, Singapore …), plus optional speedtests to them |
 | **Which ISP you're on** | each connection's public IP and ISP, checked every 10 minutes and straight after any drop of 10 seconds or more, and marked on the System history chart, so failovers stand out |
 | **Routes** | every 12 hours, the route to each target: **on-net**, **direct**, via an **IX** (named) or **transit** through carriers like Cogent, Arelion or GTT, with each hand-over labelled **peering** or **paid transit**. Route details list the cities on the way and, for each sea crossing, the undersea cables it probably uses (a best guess from the cities on each side and who owns the cables, using [TeleGeography's Submarine Cable Map](https://www.submarinecablemap.com), downloaded monthly) |
-| **Secondary connection** | test a second internet connection (e.g. a 5G failover link) alongside your main one |
+| **Additional connections** | test other internet connections (e.g. a 5G failover link, or several WANs) alongside your main one |
 | **IPv4 and IPv6** | sites pinged and traced over both when your network has IPv6, side by side on the tiles and charts |
 | **DNS over IPv4 and IPv6** | your router (IPv4 and IPv6), the DNS servers DHCP gave you when they aren't the router, and Cloudflare, Google, Quad9 (with and without ECS), OpenDNS, CleanBrowsing, AdGuard, NextDNS and Control D |
 | **Which DNS gets you the closest CDN** | every resolver looks up Akamai test names, google.com, microsoft.com and www.cloudflare.com; the addresses each one hands out are pinged and traced, and the resolvers are ranked by average latency |
@@ -155,7 +155,7 @@ Tips: stop the Mac from sleeping (System Settings → Energy), and use Ethernet 
 
 `netbae uninstall -Purge` removes everything, including the task, firewall rule and PATH entry; Python and a winget-installed speedtest CLI are left alone.
 
-Tips: turn off sleep (Settings → System → Power). Load average and temperature aren't available on Windows; CPU, RAM, page file, storage and uptime are. For a [secondary connection](#monitoring-a-secondary-connection), `bind` must be an IP address (Windows `ping` can't pick an interface by name).
+Tips: turn off sleep (Settings → System → Power). Load average and temperature aren't available on Windows; CPU, RAM, page file, storage and uptime are. For an [additional connection](#monitoring-additional-connections), `bind` must be an IP address (Windows `ping` can't pick an interface by name).
 
 **WSL2?** You could run the Linux installer inside WSL2, but it makes a poor monitor: WSL2 sits behind its own NAT, so `gateway` is the WSL virtual switch rather than your router and every ping has an extra hop; other devices can't reach the dashboard without port forwarding or mirrored networking; and WSL only runs while something keeps it alive. Use the native installer instead.
 </details>
@@ -171,7 +171,7 @@ curl -fsSLO https://raw.githubusercontent.com/jchin14/netBae/main/docker-compose
 
 Images: `ghcr.io/jchin14/netbae` for amd64, arm64 (Pi 3/4/5 on 64-bit) and arm/v7 (32-bit Pi OS).
 
-- **Use host networking** (`network_mode: host` / `--network host`). In Docker's default bridge network every test goes through Docker's NAT, so "Router" would be Docker's gateway, routes would start inside Docker, DHCP DNS would show Docker's resolver, and secondary connections couldn't bind to the host's IPs. netBae detects this and shows a warning on the dashboard.
+- **Use host networking** (`network_mode: host` / `--network host`). In Docker's default bridge network every test goes through Docker's NAT, so "Router" would be Docker's gateway, routes would start inside Docker, DHCP DNS would show Docker's resolver, and additional connections couldn't bind to the host's IPs. netBae detects this and shows a warning on the dashboard.
 - **Set `TZ`** to your timezone: speedtest times and offsets follow it.
 - **Config and history:** `/data` in the container is the `netbae-data` folder on the host (with the commands above). It holds `config.toml`, created from the defaults on first start, and the history database. To change settings, edit `netbae-data/config.toml` on the host (it's owned by root, so use `sudo nano netbae-data/config.toml` or similar) and run `docker restart netbae` (or `docker compose restart`); no need to open a shell in the container. `config.toml.default` next to it always has the latest defaults and comments. Back up the folder to keep your history.
 - **Disk usage:** add `-v /:/host:ro` to show the host's disk instead of the container's.
@@ -354,7 +354,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[ping] targets` | not set | set it to use only your own list instead of the built-in one |
 | `[ping] regions` | Nearest + 19 cities | latency to the fastest Ookla server in each city (Nearest: the closest to you), see [Regions](#region-speedtests-and-pings) |
 | `[ping] region_interval_seconds` | `60` | |
-| `[ping] ipv6` | `true` | also ping each site over IPv6 (a separate line) when this machine and the site have IPv6, and each region over IPv6 to a speedtest server there that has it. Not the router, game servers or secondary connections |
+| `[ping] ipv6` | `true` | also ping each site over IPv6 (a separate line) when this machine and the site have IPv6, and each region over IPv6 to a speedtest server there that has it. Not the router, game servers or additional connections |
 | `[dns] enabled` | `true` | |
 | `[dns] interval_seconds` / `offset_seconds` / `timeout_seconds` | `30` / `0` / `2` | |
 | `[dns] extra_servers` | none | your own DNS servers, added to the built-in ones in `targets.toml` (router, DHCP DNS + 9 public resolvers, IPv4 and IPv6): `{ name, host }`; `host = "dhcp"` adds the IPv4 and IPv6 DNS servers DHCP (or router adverts) gave this machine if they aren't the router; `host = "gateway"` is the router over IPv4, plus its IPv6 address when it answers DNS there; IPv6 servers are skipped on IPv4-only networks |
@@ -373,10 +373,10 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 
 | Option | Default | |
 |---|---|---|
-| `[speedtest] enabled` | `true` | automatic speedtests: the schedule (main, regions and secondary connections) and the first test after a new install. `false` stops them all |
+| `[speedtest] enabled` | `true` | automatic speedtests: the schedule (main, regions and additional connections) and the first test after a new install. `false` stops them all |
 | `[speedtest] manual` | `true` | the dashboard's Run buttons, even when `enabled = false`. Set both to `false` to turn speedtests off completely |
 | `[speedtest] interval_minutes` / `offset_minutes` | `60` / `15` | every hour at :15 |
-| `[speedtest] servers` | `[]` | empty = Ookla picks the closest; or server IDs from `speedtest -L`, each tested in turn |
+| `[speedtest] servers` | `[]` | empty = Ookla picks the closest; or server IDs (look them up at [speedtest-index.jchin.au](https://speedtest-index.jchin.au/) or with `speedtest -L`), each tested in turn |
 | `[speedtest] regions` | `[]` | cities to speedtest, e.g. `["Sydney", "Singapore", "London"]` |
 | `[speedtest] global_every` | `5` | after every 5 main speedtests, one more to a random server somewhere in the world, see [Global speedtests](#global-speedtests) (`0` = off) |
 | `[speedtest] busy_check` / `busy_percent` / `busy_wait_minutes` | `true` / `10` / `30` | before a scheduled test, wait while other traffic is over 10% of your last result (checked every 3 minutes), then test anyway after 30 minutes and mark it busy. Uses the router's traffic counters over UPnP when it offers them (every device), otherwise only this machine's traffic. **Run now** never waits |
@@ -387,7 +387,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[isp] interval_minutes` / `offset_minutes` | `10` / `0` | |
 | `[isp] main_name` | `"Main"` | what to call your main connection |
 | `[outages] enabled` | `true` | a tiny DNS query to 1.1.1.1 (8.8.8.8 if that misses) through each connection every few seconds, for the **Disconnections** card: every drop of 2 seconds or more, by day for the last week |
-| `[outages] interval_seconds` / `secondary_interval_seconds` | `1` / `5` | how often for the main connection (about 13 MB a day) and each secondary one (about 2.5 MB a day) |
+| `[outages] interval_seconds` / `additional_interval_seconds` | `1` / `5` | how often for the main connection (about 13 MB a day) and each additional one (about 2.5 MB a day). The old name, `secondary_interval_seconds`, still works |
 | `[traceroute] enabled` | `true` | |
 | `[traceroute] interval_hours` / `offset_minutes` | `12` / `15` | |
 | `[traceroute] max_hops` / `parallel` | `25` / `6` | traces at once |
@@ -411,7 +411,7 @@ Everything lives in one commented [config file](config.toml) (`netbae config` op
 | `[public] show_hostname` | `false` | show this machine's name (often includes yours, e.g. `Sams-Pi`) |
 | `[public] show_city` | `true` | `false` shows only the country of your ISP location and drops each route's first city |
 | `[public] access_team` / `access_aud` | `""` / `""` | Cloudflare Access sign-in on the public address, so you get your own dashboard there: your Zero Trust team name and the application's AUD tag, see [Signing in](#signing-in-to-your-own-dashboard) |
-| `[[connections]] name` / `bind` | | a secondary connection: its name and the IP or interface to send from, see [below](#monitoring-a-secondary-connection) |
+| `[[connections]] name` / `bind` | | an additional connection (one `[[connections]]` section each): its name and the IP or interface to send from, see [below](#monitoring-additional-connections) |
 | `[[connections]] targets` | `1.1.1.1`, `8.8.8.8`, `google.com` | what to ping over it, or `"all"` for every main target |
 | `[[connections]] trace` | `"all"` | trace the route to every main destination over it every 12 hours, for the Routes card's **Compare ISPs** (a few hundred KB of traceroutes a day), or `"pinged"` for only its targets |
 | `[[connections]] speedtest` | `false` | also run speedtests over it (each uses up to 1 GB). Off, it only gets pings and traces |
@@ -456,17 +456,19 @@ Built-in cities: **Nearest** (the Ookla servers closest to you, wherever you are
 
 netBae looks up the Ookla servers in each city, measures them and uses the fastest. It retries the next one if a server fails and refreshes the list daily. Add your own with `{ name = "Frankfurt", city = "Frankfurt", country = "Germany", flag = "DE" }` or `{ name = "Work", server_id = 12345 }`. Ookla has no public servers in mainland China, so Hong Kong is the closest.
 
-Each speedtest can use 0.5–1 GB on a fast connection, so region speedtests are off by default and run daily once enabled. Tests never overlap.
+Each speedtest can use 0.5-1 GB on a fast connection, so region speedtests are off by default and run daily once enabled. Tests never overlap.
 
 ### Global speedtests
 
-After every 5 successful main speedtests (scheduled or **Run now**), netBae runs one more to a random Ookla server in a random city: the region cities above plus Frankfurt, Stockholm, Madrid, Warsaw, Dubai, Johannesburg, Nairobi, Lagos, Cairo, Mumbai, Bangkok, Jakarta, Manila, Kuala Lumpur, Seoul, Taipei, Osaka, Chicago, Dallas, Miami, Seattle, Honolulu, Vancouver, Mexico City, Buenos Aires, Santiago and Lima. It avoids the last five cities it used. The results show how your connection copes with long distances, and they have their own **Global speedtests** section with a 30-day average; they're never counted in your own speedtest averages or history. Change how often with `global_every` under `[speedtest]` (`0` turns them off). With hourly speedtests that's about 5 extra tests a day, each using up to as much data as a normal test.
+After every 5 successful main speedtests (scheduled or **Run now**), netBae runs one more to a random Ookla server in a random city: any city with an Ookla server, picked from the [Speedtest Server Index](https://speedtest-index.jchin.au/) (a random country first, so no one country dominates). If the index can't be downloaded, it uses the region cities above plus Frankfurt, Stockholm, Madrid, Warsaw, Dubai, Johannesburg, Nairobi, Lagos, Cairo, Mumbai, Bangkok, Jakarta, Manila, Kuala Lumpur, Seoul, Taipei, Osaka, Chicago, Dallas, Miami, Seattle, Honolulu, Vancouver, Mexico City, Buenos Aires, Santiago and Lima. It avoids the last five cities it used. The results show how your connection copes with long distances, and they have their own **Global speedtests** section with a 30-day average; they're never counted in your own speedtest averages or history. Change how often with `global_every` under `[speedtest]` (`0` turns them off). With hourly speedtests that's about 5 extra tests a day, each using up to as much data as a normal test.
 
-### Monitoring a secondary connection
+<a id="monitoring-a-secondary-connection"></a>
 
-If you have a second internet connection (for example a 5G/4G link your router fails over to), you can test it at the same time as your main one. netBae sends the secondary connection's tests from a **second IP address** on the monitoring machine, and your router sends traffic from that IP out of the secondary WAN.
+### Monitoring additional connections
 
-**1. Give the machine a second IP address** on your LAN, outside your router's DHCP range:
+If you have more than one internet connection (for example a 5G/4G link your router fails over to, or several WANs), you can test each of them at the same time as your main one. netBae sends an additional connection's tests from **its own IP address** on the monitoring machine, and your router sends traffic from that IP out of that connection's WAN. Set up each additional connection the same way, with a different IP and its own `[[connections]]` section.
+
+**1. Give the machine an extra IP address** on your LAN, outside your router's DHCP range:
 
 Raspberry Pi OS (bookworm) / NetworkManager:
 
@@ -479,8 +481,8 @@ sudo nmcli con mod "Wired connection 1" +ipv4.addresses 192.168.1.51/24 && sudo 
 macOS: a second "service" on the same port, with a manual IP (survives reboots):
 
 ```bash
-sudo networksetup -duplicatenetworkservice "Ethernet" "netBae secondary"
-sudo networksetup -setmanual "netBae secondary" 192.168.1.51 255.255.255.0 192.168.1.1
+sudo networksetup -duplicatenetworkservice "Ethernet" "netBae WAN2"
+sudo networksetup -setmanual "netBae WAN2" 192.168.1.51 255.255.255.0 192.168.1.1
 ```
 
 Windows (admin PowerShell). The adapter must have a static IP: Windows can't add an address to a DHCP adapter.
@@ -491,11 +493,11 @@ New-NetIPAddress -InterfaceAlias "Ethernet" -IPAddress 192.168.1.51 -PrefixLengt
 
 `-SkipAsSource` stops Windows using the new address for normal traffic; netBae still sends from it when told to.
 
-**2. Route that IP out of the secondary WAN on your router.** A normal *static route* matches the destination, but this needs a **source-based (policy) route**: *source 192.168.1.51 → WAN2*. Routers call it Policy Routing (TP-Link Omada, DrayTek), Policy-Based Routes / Traffic Routes (UniFi), a firewall rule with a gateway (pfSense/OPNsense) or a routing mark (MikroTik). If you can, turn off failover for that rule, so the secondary tests fail when the secondary connection is down instead of quietly using your main connection.
+**2. Route that IP out of the other WAN on your router.** A normal *static route* matches the destination, but this needs a **source-based (policy) route**: *source 192.168.1.51 → WAN2*. Routers call it Policy Routing (TP-Link Omada, DrayTek), Policy-Based Routes / Traffic Routes (UniFi), a firewall rule with a gateway (pfSense/OPNsense) or a routing mark (MikroTik). If you can, turn off failover for that rule, so that connection's tests fail when it's down instead of quietly using your main connection.
 
-**Alternative:** plug a second network adapter (USB Ethernet or Wi-Fi) into the secondary modem and use its interface name (Linux, e.g. `eth1`; macOS, e.g. `en7`) instead of an IP. On Windows, use the adapter's IP address.
+**Alternative:** plug a second network adapter (USB Ethernet or Wi-Fi) into the other modem and use its interface name (Linux, e.g. `eth1`; macOS, e.g. `en7`) instead of an IP. On Windows, use the adapter's IP address.
 
-**3. Add the connection** with `netbae config`:
+**3. Add the connection** with `netbae config` (one `[[connections]]` section per connection):
 
 ```toml
 [[connections]]
@@ -506,7 +508,7 @@ speedtest = true               # off by default: pings and traces only, which us
 speedtest_interval_minutes = 1440   # daily, to save data on mobile plans (0 = only when you press Run)
 ```
 
-The connection gets its own group of ping tiles and its routes in the Routes card's **Compare ISPs**. It also has a row in the speedtest table with a **Run** button, so you can test its speed when you choose. With `speedtest = true` it's also tested on a schedule. When its ISP changes (for example once your router starts sending it out the other WAN), its routes are traced again straight away.
+Each connection gets its own group of ping tiles and its routes in the Routes card's **Compare ISPs**. It also has a row in the speedtest table with a **Run** button, so you can test its speed when you choose. With `speedtest = true` it's also tested on a schedule. When its ISP changes (for example once your router starts sending it out the other WAN), its routes are traced again straight away.
 
 ## Sharing a public dashboard
 
@@ -663,9 +665,9 @@ If you use [Tailscale](https://tailscale.com/), run `sudo tailscale funnel --bg 
 - **IPv4 and IPv6:** when this machine has an IPv6 route, each site is pinged at its IPv4 address and, if it has one, its IPv6 address, stored as two separate series (the public resolvers' IPv4 addresses are paired with their IPv6 ones, e.g. 1.1.1.1 with 2606:4700:4700::1111). Regions use the same speedtest server over IPv6 when it has an IPv6 address, otherwise the fastest one in that city that does. Sites without IPv6 just have no IPv6 line, and nothing is recorded for IPv6 on an IPv4-only network. Fake "IPv6" addresses that still go over IPv4 (IPv4-mapped `::ffff:` and NAT64 `64:ff9b::`) are ignored. Routes are traced over both too.
 - **DNS and CDN:** CDNs such as Akamai, Google and Microsoft answer with a server near the DNS resolver that asked (or near you, if the resolver passes on part of your address with EDNS Client Subnet, like Quad9's 9.9.9.11). Cloudflare is the exception: it uses the same anycast addresses everywhere and your ISP's routing picks the site, so it's there as a baseline. Every 30 minutes each resolver looks up the `[cdn] hostnames`; every address it hands out is pinged 5 times and traced every 6 hours. A resolver's score is the average latency to its addresses, averaged per hostname so a name with six addresses counts the same as one with one, and the dashboard lists the resolvers fastest first with a 7-day average. A resolver near the top is one whose answers send you to nearby servers.
 - **DNS:** one UDP A-record query per resolver and domain, timed in Python, over IPv4 and IPv6. "DHCP DNS" is read from the system's resolver settings (`/etc/resolv.conf` or systemd-resolved on Linux and macOS, the network adapter settings on Windows) at startup. An IPv6 DNS server with the same MAC address as the default gateway (from the ARP and neighbour tables) is the router, shown as Router v6; failing that, the router's link-local IPv6 address is used if it answers DNS.
-- **ISP:** an HTTPS request to [ipinfo.io](https://ipinfo.io) through each connection (main and secondary) returns its public IP and ISP. The header shows the current one, and the System history chart marks every check along its top, one row per connection: a tick in the ISP's colour, or a cross when the check failed (coloured for the ISP the connection was on). A larger mark means the ISP or IP changed. Click an ISP above the chart to hide its marks. ipinfo.io sees your public IP, about 4,500 requests a month per connection at the default interval (its free tier allows 50,000).
-- **Routes:** the system `traceroute` (`tracert` on Windows) to each target every 12 hours, and right after netBae starts for any target that has no recent route. Each hop's network comes from [Team Cymru's IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) over DNS. A route is **on-net** if the destination is inside your ISP, **direct** if your ISP connects straight to the destination's network (a private interconnect), **IX** if your ISP hands the traffic over across an internet exchange (hops on an exchange's peering LAN, using [PeeringDB](https://www.peeringdb.com)'s prefix list, refreshed daily), even when a transit carrier follows the exchange, and **transit** if your ISP hands it straight to another carrier. Each hand-over is also labelled with the business relationship between the two networks (**peering**, **paid transit**, or **to customer**) from [CAIDA's AS relationships](https://www.caida.org/catalog/datasets/as-relationships/), inferred from public BGP data, published monthly and downloaded once a month (~15 MB on disk). CAIDA's [list of which company runs each network](https://www.caida.org/catalog/datasets/as-organizations/) comes with it, so one company's networks count as one: a route through both of GSL's networks reads as GSL once, and a relationship known for either holds for both. Each hop also gets a **location**, from the city code most backbone routers carry in their name (`be3021.ccr41.syd01.atlas.cogentco.com` is Sydney), or else from ipinfo.io's IP geolocation, marked `~` as approximate. A geolocated city is dropped if the hop answered too fast to be that far away (light in fibre covers about 100 km per millisecond of round trip), which weeds out anycast addresses like 8.8.8.8. Geolocation results are cached for 30 days and capped at 300 lookups a day. Traceroute only sees routers that answer it, so treat it as a strong hint, not proof. The dashboard's **Routes** card adds these up: how many destinations each connection reaches on-net, directly, through an exchange or through transit, by category, and which carriers the transit goes through. Its **Changes** tab lists every route that changed (another kind, carrier or network along the way), with the routes a change of ISP moved grouped under that change; for CDN servers, which change all the time, only a different kind or destination network is listed. **Compare ISPs** puts the same destinations side by side on your current ISP, the ISPs you had before (from the routes traced while you were on them) and a secondary connection, with the average ping on each.
-- **Speedtests:** the official Ookla CLI, auto-selecting the closest server unless you choose one. A new install runs its first test a few minutes after starting, once the first routes are traced (unless `[speedtest] enabled = false`). Before each scheduled test, netBae checks whether the network is busy (see `busy_check` under [All options](#all-options)), and the bottom of the dashboard lists how often each kind of test runs. Every test (scheduled, **Run now**, region, global and secondary) first waits for any running ping, DNS check or trace to finish. During the test, pings and DNS checks are skipped, so the charts show a short gap instead of the test's own traffic, and traces wait until it's done. System stats keep recording.
+- **ISP:** an HTTPS request to [ipinfo.io](https://ipinfo.io) through each connection (main and additional) returns its public IP and ISP. The header shows the current one, and the System history chart marks every check along its top, one row per connection: a tick in the ISP's colour, or a cross when the check failed (coloured for the ISP the connection was on). A larger mark means the ISP or IP changed. Click an ISP above the chart to hide its marks. ipinfo.io sees your public IP, about 4,500 requests a month per connection at the default interval (its free tier allows 50,000).
+- **Routes:** the system `traceroute` (`tracert` on Windows) to each target every 12 hours, and right after netBae starts for any target that has no recent route. Each hop's network comes from [Team Cymru's IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) over DNS. A route is **on-net** if the destination is inside your ISP, **direct** if your ISP connects straight to the destination's network (a private interconnect), **IX** if your ISP hands the traffic over across an internet exchange (hops on an exchange's peering LAN, using [PeeringDB](https://www.peeringdb.com)'s prefix list, refreshed daily), even when a transit carrier follows the exchange, and **transit** if your ISP hands it straight to another carrier. Each hand-over is also labelled with the business relationship between the two networks (**peering**, **paid transit**, or **to customer**) from [CAIDA's AS relationships](https://www.caida.org/catalog/datasets/as-relationships/), inferred from public BGP data, published monthly and downloaded once a month (~15 MB on disk). CAIDA's [list of which company runs each network](https://www.caida.org/catalog/datasets/as-organizations/) comes with it, so one company's networks count as one: a route through both of GSL's networks reads as GSL once, and a relationship known for either holds for both. Each hop also gets a **location**, from the city code most backbone routers carry in their name (`be3021.ccr41.syd01.atlas.cogentco.com` is Sydney), or else from ipinfo.io's IP geolocation, marked `~` as approximate. A geolocated city is dropped if the hop answered too fast to be that far away (light in fibre covers about 100 km per millisecond of round trip), which weeds out anycast addresses like 8.8.8.8. Geolocation results are cached for 30 days and capped at 300 lookups a day. Traceroute only sees routers that answer it, so treat it as a strong hint, not proof. The dashboard's **Routes** card adds these up: how many destinations each connection reaches on-net, directly, through an exchange or through transit, by category, and which carriers the transit goes through. Its **Changes** tab lists every route that changed (another kind, carrier or network along the way), with the routes a change of ISP moved grouped under that change; for CDN servers, which change all the time, only a different kind or destination network is listed. **Compare ISPs** puts the same destinations side by side on your current ISP, the ISPs you had before (from the routes traced while you were on them) and your additional connections, with the average ping on each.
+- **Speedtests:** the official Ookla CLI, auto-selecting the closest server unless you choose one. A new install runs its first test a few minutes after starting, once the first routes are traced (unless `[speedtest] enabled = false`). Before each scheduled test, netBae checks whether the network is busy (see `busy_check` under [All options](#all-options)), and the bottom of the dashboard lists how often each kind of test runs. Every test (scheduled, **Run now**, region, global and additional connections) first waits for any running ping, DNS check or trace to finish. During the test, pings and DNS checks are skipped, so the charts show a short gap instead of the test's own traffic, and traces wait until it's done. System stats keep recording.
 - **System:** the model name comes from the device tree on a Raspberry Pi (`/proc/device-tree/model`), DMI/BIOS info on PCs and VMs, `sysctl` on a Mac and the registry on Windows.
 
 ## Averages and storage
@@ -752,7 +754,7 @@ Changes to the database format are also tested by upgrading a database made by t
 
 - **Some games can't be measured:** Valorant, League of Legends and Warzone don't publish servers that answer pings.
 - **Routes are a strong hint, not proof:** traceroute only sees routers that answer it, and hop locations are a best estimate.
-- **Secondary connections are IPv4 only:** they're bound to an IPv4 source address, so they don't get IPv6 lines.
+- **Additional connections are IPv4 only:** they're bound to an IPv4 source address, so they don't get IPv6 lines.
 - **Docker on a Mac or Windows** runs in a hidden VM, so it measures the VM's network; the native installers are more accurate there. In Docker, "All drives" isn't shown because a container can't see the host's other drives.
 - **Raspberry Pi:** the arm64 and arm/v7 Docker images are built for every release, and the installer is tested on Debian, but the automated tests run on x86 and Apple Silicon machines rather than a physical Pi.
 
@@ -762,8 +764,10 @@ Pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). netBae has no
 
 ## Support
 
-netBae is free for personal use. If it's useful to you, you can [buy me a coffee](https://buymeacoffee.com/jchin14). Thank you!
+netBae is free for noncommercial use. If it's useful to you, you can [buy me a coffee](https://buymeacoffee.com/jchin14). Thank you!
 
 ## Licence
 
-**Free for personal use.** You can install it, modify it and share it, and pull requests are welcome. **Commercial use, use by an educational institution, or selling it or otherwise making money from it needs written permission first.** [Open an issue](https://github.com/jchin14/netBae/issues) to ask. See [LICENSE](LICENSE) for the full terms.
+netBae is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). You're free to use, modify and share it for personal, hobby, educational, research and other **noncommercial** purposes, including at a charity, school or public research or government organisation. **Commercial use needs written permission first:** email [licensing@jchin.au](mailto:licensing@jchin.au) or [open an issue](https://github.com/jchin14/netBae/issues). Pull requests are welcome (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+
+The Ookla Speedtest CLI, Chart.js and the other tools and data netBae downloads or uses have their own licenses and terms.

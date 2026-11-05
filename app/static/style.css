@@ -156,7 +156,7 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 40px; display: grid
 .summary-bar .isp-stat img { width: 28px; height: 28px; border-radius: 6px; }
 .summary-bar .v.warn { color: var(--warn); }
 .summary-bar .v.bad { color: var(--bad); }
-/* secondary connections: a smaller bar each, under the main one */
+/* additional connections: a smaller bar each, under the main one */
 #conn-bars { display: grid; gap: 12px; }
 #conn-bars:empty { display: none; }
 .conn-bar { padding: 10px 18px; }
@@ -295,6 +295,11 @@ h2 .live-badge { margin-left: 8px; font-weight: 400; vertical-align: middle; }
 .obar span { position: absolute; top: 0; bottom: 0; }
 .obar .on { background: color-mix(in srgb, var(--good) 45%, transparent); }
 .obar .drop { background: var(--bad); min-width: 2px; }
+.obar { cursor: default; }
+/* the Disconnections bars' tooltip (hover, or tap on a phone) */
+.otip { position: fixed; z-index: 50; max-width: min(320px, calc(100vw - 16px)); padding: 7px 10px; border-radius: 6px;
+  background: var(--card); color: var(--text); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+  font-size: 12.5px; line-height: 1.45; pointer-events: none; }
 .osum { font-size: 12.5px; text-align: right; white-space: nowrap; }
 .osum b { color: var(--bad); }
 .osum .ok { color: var(--good); font-weight: 700; }

@@ -87,7 +87,7 @@ region_interval_seconds = 60
 # Also ping each site over IPv6, as a separate line, when this machine and the site have IPv6.
 # IPv4 sites keep their IPv4 history; the dashboard's tiles show both and the chart can switch
 # between IPv4, IPv6 or both. Regions use an IPv6-capable speedtest server in the same city.
-# (Not the router, game servers or secondary connections.)
+# (Not the router, game servers or additional connections.)
 ipv6 = true
 
 [dns]
@@ -118,11 +118,11 @@ pings = 5              # pings per address each run
 trace_hours = 6        # trace each address at most this often (0 = don't trace)
 
 [speedtest]
-enabled = true         # automatic speedtests: the schedule (main, regions and secondary connections) and the
+enabled = true         # automatic speedtests: the schedule (main, regions and additional connections) and the
                        # first test after a new install. false = only when you press Run now
 manual = true          # the dashboard's Run buttons; works even when enabled = false
 interval_minutes = 60
-offset_minutes = 15    # hh:15; secondary connections default to hh:45 so the two never overlap
+offset_minutes = 15    # hh:15; additional connections default to hh:45 so the two never overlap
 # Empty = Ookla picks the best server automatically.
 # Otherwise list server IDs (find them with: speedtest -L); each listed server
 # is tested in turn on every run, e.g. servers = [12492, 2629]
@@ -152,7 +152,7 @@ binary = "auto"       # auto = official Ookla CLI in /usr/bin, /usr/local/bin or
 timeout_seconds = 300
 
 [isp]
-# Checks the public IP and ISP of the main connection and every secondary connection
+# Checks the public IP and ISP of the main connection and every additional connection
 # (via ipinfo.io), shown in the header and summary bars ("Failover active" when the main
 # connection is going out through a backup), with a line on the latency charts when it changes.
 # Also checked straight away when a connection comes back from a drop of 10 seconds or more
@@ -165,10 +165,10 @@ main_name = "Main"     # what to call your main connection
 [outages]
 # A tiny DNS query (about 150 bytes there and back) through each connection every few seconds,
 # so drops of a few seconds show up in the Disconnections card: one row per day for the last
-# week. A secondary connection is checked less often to save mobile data (about 2.5 MB a day at 5s).
+# week. An additional connection is checked less often to save mobile data (about 2.5 MB a day at 5s).
 enabled = true
 interval_seconds = 1             # main connection (about 13 MB a day)
-secondary_interval_seconds = 5   # each [[connections]] entry
+additional_interval_seconds = 5  # each [[connections]] entry
 
 [traceroute]
 # Traces the route to every ping target (and the speedtest server) and looks up which network
@@ -188,14 +188,15 @@ disk_path = "/"        # the drive shown as Boot drive ("/" = the one the system
                        # also adds up every local drive when there's more than one
 
 # --------------------------------------------------------------------------------------------
-# Secondary internet connections (e.g. a 5G/4G link next to your main one). netBae sends their
-# tests from a different source IP or network interface, and your router sends that traffic
-# out of the other WAN. See "Monitoring a secondary connection" in the README.
+# Additional internet connections (e.g. a 5G/4G link next to your main one): one [[connections]]
+# section each, as many as you like. netBae sends their tests from a different source IP or network
+# interface, and your router sends that traffic out of the other WAN. See "Monitoring additional
+# connections" in the README.
 #
 # [[connections]]
 # name = "Mobile backup"
-# bind = "192.168.1.51"         # a second IP on this machine (router policy-routes it to the secondary WAN),
-#                               # or an interface plugged into the secondary modem, e.g. "eth1" / "wlan0"
+# bind = "192.168.1.51"         # a second IP on this machine (router policy-routes it to that WAN),
+#                               # or an interface plugged into that modem, e.g. "eth1" / "wlan0"
 # targets = ["1.1.1.1", "8.8.8.8", "google.com", "valve:auto"]   # or "all" to ping every main target over it too
 # trace = "all"                 # trace the route to every main destination over it too (for Compare ISPs), or "pinged"
 # speedtest = false             # true also runs speedtests over it (pings and traces only by default)

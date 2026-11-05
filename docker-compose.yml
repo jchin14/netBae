@@ -6,7 +6,7 @@ services:
     container_name: netbae
     restart: unless-stopped
     # Host networking (Linux) gives accurate results: netBae sees your real router, DHCP DNS and
-    # interfaces, traceroutes start at your router, and secondary connections can bind to the host's IPs.
+    # interfaces, traceroutes start at your router, and additional connections can bind to the host's IPs.
     # In Docker's default bridge network every test goes through Docker's NAT first.
     network_mode: host
     environment:

@@ -59,7 +59,7 @@ function scheduleText() {
     if (sp.regions.length) t += `, regions every ${fmtEvery(sp.regions_interval_minutes * 60)}`;
     const conns = CONFIG.connections.filter((c) => c.speedtest && c.speedtest_interval_minutes > 0);
     for (const c of conns) {
-      t += `, secondary connection${conns.length > 1 ? ` ${c.name}` : ''} every ${fmtEvery(c.speedtest_interval_minutes * 60)}`;
+      t += `, additional connection${conns.length > 1 ? ` ${c.name}` : ''} every ${fmtEvery(c.speedtest_interval_minutes * 60)}`;
     }
     parts.push(t);
   }
@@ -679,8 +679,11 @@ async function showRoute(id, title) {
   for (const h of r?.hops || []) if (h.city && cities[cities.length - 1] !== h.city) cities.push(h.city);
   // one entry per route change: since when, and when it was last seen if that's a different time
   const seen = (x) => (x.first_ts && x.ts - x.first_ts > 60 ? `${fmtTime(x.first_ts)} to ${fmtTime(x.ts)}` : fmtTime(x.ts));
-  const hist = d.history.slice(0, 10).map((x) => `<li>${seen(x)}: ${x.error ? `<span class="error-text">${esc(x.error)}</span>`
-    : `<b>${esc(ROUTE_BADGE[x.kind] || x.kind)}</b> ${esc(x.path.map((p) => p.name).join(' → '))}`}</li>`).join('');
+  // a region, game or speedtest target that moved to another server: its route differs because the server does
+  const moved = (x, i) => { const o = d.history[i + 1]; return o && x.dest_host && o.dest_host && x.dest_host !== o.dest_host; };
+  const hist = d.history.slice(0, 10).map((x, i) => `<li>${seen(x)}: ${x.error ? `<span class="error-text">${esc(x.error)}</span>`
+    : `<b>${esc(ROUTE_BADGE[x.kind] || x.kind)}</b> ${esc(x.path.map((p) => p.name).join(' → '))}`}${moved(x, i)
+    ? ` <span class="muted">(other server: ${esc(x.dest_host)})</span>` : ''}</li>`).join('');
   dlg.innerHTML = `<div class="dlg-head"><h2>Route to ${esc(title)}</h2><button class="link" data-close>Close</button></div>
     ${r ? `<p><span class="route-badge route-${ROUTE_CLASS[r.kind] || r.kind}">${esc(ROUTE_BADGE[r.kind] || r.kind || '?')}</span>
       ${pathHtml(r.path)}</p>
@@ -768,7 +771,7 @@ function renderTiles() {
 }
 
 // The bar at the top: hosts up and the main connection's averages, from the same 5-minute numbers as the tiles.
-// Regions (far away by design), IPv6 twins and secondary connections are left out so it compares over time.
+// Regions (far away by design), IPv6 twins and additional connections are left out so it compares over time.
 function renderSummaryBar(s) {
   const sites = upSites(lastPing.filter((p) => p.method !== 'region' && p.family !== 6 && !p.connection && p.last_ts != null));
   const mine = sites.filter((p) => p.custom);
@@ -808,7 +811,7 @@ function renderSummaryBar(s) {
   renderConnBars(s);
 }
 
-// A smaller bar under the main one for each secondary connection (e.g. a 5G backup): its status, ISP and pings.
+// A smaller bar under the main one for each additional connection (e.g. a 5G backup): its status, ISP and pings.
 function renderConnBars(s) {
   const stat = (label, value, title, cls = '') => `<div class="stat" title="${esc(title)}"><div class="label">${label}</div><div class="v ${cls}">${value}</div></div>`;
   $('#conn-bars').innerHTML = (CONFIG.connections || []).map((c) => {
@@ -896,15 +899,15 @@ async function refreshSummary() {
 // The latest result (or, with the < > arrows, an older one), live progress while a test runs, and the buttons.
 let SPEED = null;      // the speedtest part of the last /api/summary
 let speedView = null;  // {result, index, total} while looking at an older result; null = the latest
-let speedConn = null;  // a secondary connection shown on the card instead of the main one (the buttons above it)
+let speedConn = null;  // an additional connection shown on the card instead of the main one (the buttons above it)
 
 // the shown connection's latest good result, latest result, averages and number of good tests
 function speedSrc() {
   const st = SPEED;
   const c = speedConn && (st?.connections || []).find((x) => x.name === speedConn);
-  if (!speedConn || !c) return { last_ok: st?.last_ok, latest: st?.latest, averages: st?.averages || {}, count: st?.count || 0 };
+  if (!speedConn || !c) return { last_ok: st?.last_ok, latest: st?.latest, averages: st?.averages || {}, count: st?.count || 0, history: st?.history || [] };
   return { last_ok: c.last_ok, latest: c.ts != null ? c : null, averages: { '24h': c.avg24h, '7d': c.avg7d }, count: c.count || 0,
-    conn: CONFIG.connections.find((x) => x.name === speedConn) };
+    history: c.history || [], conn: CONFIG.connections.find((x) => x.name === speedConn) };
 }
 // a running test belongs to the card when it's for the connection shown
 const speedLiveHere = (status) => status?.running
@@ -986,8 +989,10 @@ function renderSpeedResult() {
   const idx = speedView ? speedView.index : 0;
   const nav = $('#speed-nav');
   nav.hidden = total < 2;
-  $('#speed-older').disabled = idx + 1 >= total;
-  $('#speed-newer').disabled = !speedView;
+  // nothing further that way: no arrow, but its space is kept, so the date (which jumps back to the latest when
+  // clicked) doesn't slide under the pointer of someone still clicking there
+  $('#speed-older').style.visibility = idx + 1 >= total ? 'hidden' : '';
+  $('#speed-newer').style.visibility = speedView ? '' : 'hidden';
   const hm = (ts) => new Date(ts * 1000).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   $('#speed-pos').innerHTML = live ? '<b>Running now</b>'
     : speedView ? `<b>${hm(x.ts)}</b> <span class="muted">· ${fmtAgo(x.ts)} · ${total - idx} of ${total}</span>`
@@ -997,8 +1002,18 @@ function renderSpeedResult() {
 }
 
 async function stepSpeed(dir) {
-  const from = speedView ? speedView.result.ts : speedSrc().last_ok?.ts;
+  const src = speedSrc();
+  const from = speedView ? speedView.result.ts : src.last_ok?.ts;
   if (from == null) return;
+  // the latest results came with the summary (newest first): step through those straight away
+  const h = src.history || [];
+  const i = dir === 'newer' ? h.findLastIndex((x) => x.ts > from) : h.findIndex((x) => x.ts < from);
+  if (h.length && from >= h[h.length - 1].ts && (dir === 'newer' || i >= 0)) {  // else past the end: ask the server
+    speedView = i > 0 ? { result: h[i], index: i, total: src.count } : (dir === 'newer' ? null : speedView);
+    renderSpeedResult();
+    renderSpeedMeta();
+    return;
+  }
   const r = await api('speedtest/step', { ts: from, dir, ...(speedConn ? { conn: speedConn } : {}) }).catch(() => null);
   if (!r) return;
   speedView = r.result && r.index > 0 ? r : (dir === 'newer' ? null : speedView);
@@ -1056,7 +1071,7 @@ function renderSpeedButtons() {
   btn.hidden = !!CONFIG.public || !CONFIG.speedtest.manual;  // the public dashboard is read-only
   btn.disabled = running;
   const pick = $('#speed-server');
-  pick.hidden = btn.hidden || !!speedConn;  // a secondary connection tests to its own server
+  pick.hidden = btn.hidden || !!speedConn;  // an additional connection tests to its own server
   pick.disabled = running;
   btn.textContent = running ? `Running ${st.status.label && st.status.label !== 'Auto' ? st.status.label : ''}…`.replace(' …', '…') : 'Run now';
   btn.title = st.status.waiting
@@ -1097,7 +1112,7 @@ const RESULT_COLS = {
 const resultVal = (x, k) => (k === 'ts' || k === 'label' ? x[k] : x.error ? null
   : k === 'server' ? `${x.server_name || ''}${x.server_location ? ', ' + x.server_location : ''}` : x[k]);
 
-// Closest server, secondary connections and region speedtests, latest and 7-day averages. Sorting moves the
+// Closest server, additional connections and region speedtests, latest and 7-day averages. Sorting moves the
 // regions only: the closest server and connections stay on top and All regions at the bottom.
 let lastSpeedStatus = null;
 let regionSort = store.get('sort:regions', null);
@@ -1877,7 +1892,7 @@ function speedPanel() {
     const view = viewSel.value;
     const sel = chips.selected();
 
-    // Closest server: the main connection's tests and each secondary connection's, as the connection buttons pick
+    // Closest server: the main connection's tests and each additional connection's, as the connection buttons pick
     const rows = view === COMPARE ? d.results.filter((x) => !isConn(x))
       : view === 'Auto' ? d.results.filter((x) => (isConn(x) || x.label === 'Auto') && connShown(connOf(x)))
         : d.results.filter((x) => x.label === view);
@@ -1893,7 +1908,7 @@ function speedPanel() {
       chart.options.scales.y.title.text = metric.unit;
       chart.options.scales.y1.display = false;
     } else {
-      // each connection gets its own lines: a secondary connection's in a different colour, with triangle points
+      // each connection gets its own lines: an additional connection's in a different colour, with triangle points
       const conns = [...new Set(ok.map(connOf))].sort((a, b) => (b === mainConn()) - (a === mainConn()));
       chart.data.datasets = conns.flatMap((cn, ci) => series.filter((s) => sel.includes(s.id)).map((s) => {
         const color = ci ? s.alt[(ci - 1) % s.alt.length] : s.color;
@@ -2290,10 +2305,10 @@ async function renderRouteCompare() {
   const who = routeNames();
   const isps = d.isps.filter((e) => Object.values(d.targets).some((t) => t[e.key]));
   if (isps.length < 2) {
-    el.innerHTML = '<p class="muted">Nothing to compare yet: this shows up once you\'ve been on more than one ISP, or once a secondary connection has traced its routes.</p>';
+    el.innerHTML = '<p class="muted">Nothing to compare yet: this shows up once you\'ve been on more than one ISP, or once an additional connection has traced its routes.</p>';
     return;
   }
-  const label = (e) => `${esc(e.isp)} <span class="muted small">${e.secondary ? esc(e.connection) : e.current ? 'now' : `until ${new Date(e.until * 1000).toLocaleDateString()}`}</span>`;
+  const label = (e) => `${esc(e.isp)} <span class="muted small">${e.additional ? esc(e.connection) : e.current ? 'now' : `until ${new Date(e.until * 1000).toLocaleDateString()}`}</span>`;
   const rows = Object.entries(d.targets).filter(([id, t]) => id !== 'gateway' && isps.filter((e) => t[e.key]).length > 1);
   const differs = (t) => new Set(isps.filter((e) => t[e.key]).map((e) => t[e.key].kind)).size > 1;
   const lowest = Object.fromEntries(isps.map((e) => [e.key, 0]));
@@ -2427,11 +2442,86 @@ function renderConnToggles(force = false) {
 
 // ------------------------------------------------------------------ disconnections
 // The outage checker's drops for the last week: one row per day (newest first) over a 00-24 hour axis, with a thin
-// bar per connection. A red mark is a drop; a grey stretch is when the checker wasn't running.
+// bar per connection. A red mark is a drop; a grey stretch is when the checker wasn't running. Hovering (or tapping)
+// a bar says what was happening there: how long the checker ran, how long a drop lasted, or why there's a gap.
 function fmtDrop(s) {
   s = Math.round(s);
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-  return h ? `${h}h ${m}min` : m ? `${m}min ${sec}s` : `${sec}s`;
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}min` : m ? `${m}min ${sec}s` : `${sec}s`;
+}
+let outageData = null;  // {days, conns, now} as last drawn, for the tooltip
+function outageTip(bar, clientX) {
+  const { days, conns, now } = outageData || {};
+  const day = days?.[+bar.dataset.day], c = conns?.[+bar.dataset.conn];
+  if (!day || !c) return '';
+  const [a, b] = day;
+  const r = bar.getBoundingClientRect();
+  const t = a + ((clientX - r.left) / r.width) * (b - a);
+  if (t > now) return '';
+  const tol = ((b - a) / r.width) * 6;  // drops and gaps are often thinner than a pixel: anything within 6 px counts
+  const when = (x) => {
+    const d = new Date(x * 1000);
+    const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return x >= a && x < b ? time : `${d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} ${time}`;
+  };
+  const near = (list) => list.filter(([x, y]) => t >= x - tol && t <= y + tol)
+    .sort((p, q) => Math.abs((p[0] + p[1]) / 2 - t) - Math.abs((q[0] + q[1]) / 2 - t))[0];
+  const drop = near(c.drops);
+  if (drop) {
+    const [x, y] = drop, live = y >= now - 2;
+    return `<b>${esc(c.connection)}: no internet</b><br>${live ? `since ${when(x)}, ${fmtDrop(now - x)} so far` : `${when(x)} to ${when(y)}, ${fmtDrop(y - x)}`}`;
+  }
+  const gap = near(c.gaps || []);
+  if (gap) {
+    const [x, y, why] = gap;
+    return `<b>${esc(c.connection)}: not checked for ${fmtDrop(y - x)}</b><br>${when(x)} to ${when(y)}<br>${esc(why)}`;
+  }
+  const on = c.watched.find(([x, y]) => t >= x && t <= y);
+  if (!on) return `<b>${esc(c.connection)}</b><br>Not checked yet`;
+  const [x, y] = on, live = y >= now - 120;
+  const ds = c.drops.filter(([p, q]) => q > x && p < y);
+  const lost = ds.reduce((n, [p, q]) => n + Math.min(q, y) - Math.max(p, x), 0);
+  return `<b>${esc(c.connection)}: checked for ${fmtDrop((live ? now : y) - x)}</b><br>${when(x)} to ${live ? 'now' : when(y)}<br>${ds.length
+    ? `${ds.length} drop${ds.length > 1 ? 's' : ''}, ${fmtDrop(lost)} without internet` : 'No drops'}`;
+}
+function setupOutageTips(root) {
+  const tip = document.createElement('div');
+  tip.className = 'otip';
+  tip.hidden = true;
+  document.body.appendChild(tip);
+  let pinned = null;  // a tapped bar keeps its tip until the next tap
+  // the bars are thin, so anywhere in a day's row counts: the closest bar to the pointer
+  const pick = (e) => {
+    const row = e.target.closest?.('#panel-outages .obars');
+    if (!row || row.closest('.oaxis')) return null;
+    let best = null, dist = Infinity;
+    for (const bar of row.querySelectorAll('.obar')) {
+      const r = bar.getBoundingClientRect(), d = Math.abs(e.clientY - (r.top + r.bottom) / 2);
+      if (d < dist) { best = bar; dist = d; }
+    }
+    return best;
+  };
+  const show = (bar, e) => {
+    const html = outageTip(bar, e.clientX);
+    if (!html) { tip.hidden = true; return; }
+    tip.innerHTML = html;
+    tip.hidden = false;
+    const r = bar.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+    tip.style.left = `${Math.min(Math.max(8, e.clientX - w / 2), window.innerWidth - w - 8)}px`;
+    tip.style.top = `${r.top - h - 8 < 8 ? r.bottom + 8 : r.top - h - 8}px`;
+  };
+  root.addEventListener('pointermove', (e) => {
+    if (e.pointerType !== 'mouse') return;
+    const bar = pick(e);
+    if (bar) show(bar, e); else if (!pinned) tip.hidden = true;
+  });
+  root.addEventListener('pointerleave', () => { if (!pinned) tip.hidden = true; });
+  document.addEventListener('click', (e) => {
+    const bar = pick(e);
+    pinned = bar || null;
+    if (bar) show(bar, e); else tip.hidden = true;
+  });
+  window.addEventListener('scroll', () => { tip.hidden = true; pinned = null; }, { passive: true });
 }
 async function refreshOutages() {
   const root = $('#panel-outages');
@@ -2440,6 +2530,7 @@ async function refreshOutages() {
   const sel = $('.outage-range', root);
   if (!sel.dataset.ready) {
     sel.dataset.ready = '1';
+    setupOutageTips(root);
     sel.value = String(store.get('outages:days', 7));
     if (!sel.value) sel.value = '7';
     sel.addEventListener('change', () => { store.set('outages:days', +sel.value); refreshOutages(); });
@@ -2457,24 +2548,24 @@ async function refreshOutages() {
   const clip = (x, y, a, b) => [Math.max(x, a), Math.min(y, b)];
   const pct = (t, a, b) => ((t - a) / (b - a)) * 100;
   let total = 0, totalS = 0;
-  const rows = days.map(([a, b, date]) => {
+  outageData = { days, conns, now: d.now };
+  const rows = days.map(([a, b, date], di) => {
     const end = Math.min(b, d.now);
     let n = 0, secs = 0, watched = 0;
-    const bars = conns.map((c) => {
-      const seg = (x, y, cls, title = '') => {
+    const bars = conns.map((c, ci) => {
+      const seg = (x, y, cls) => {
         const [p, q] = clip(x, y, a, end);
         if (q <= p) return '';
-        return `<span class="${cls}" style="left:${pct(p, a, b).toFixed(3)}%;width:${pct(q, a, b) - pct(p, a, b)}%"${title ? ` title="${esc(title)}"` : ''}></span>`;
+        return `<span class="${cls}" style="left:${pct(p, a, b).toFixed(3)}%;width:${pct(q, a, b) - pct(p, a, b)}%"></span>`;
       };
       const on = c.watched.map(([x, y]) => { const [p, q] = clip(x, y, a, end); watched += Math.max(0, q - p); return seg(x, y, 'on'); }).join('');
       const drops = c.drops.filter(([x, y]) => y > a && x < end).map(([x, y]) => {
         if (x >= a) n++;  // a drop over midnight counts on the day it started
         const [p, q] = clip(x, y, a, end);
         secs += q - p;
-        const t = new Date(x * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        return seg(x, Math.max(y, x + 1), 'drop', `${c.connection}: no internet from ${t} for ${fmtDrop(y - x)}`);
+        return seg(x, Math.max(y, x + 1), 'drop');
       }).join('');
-      return `<div class="obar" title="${esc(c.connection)}">${on}${drops}</div>`;
+      return `<div class="obar" data-day="${di}" data-conn="${ci}" aria-label="${esc(c.connection)}">${on}${drops}</div>`;
     }).join('');
     total += n; totalS += secs;
     const label = date.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });

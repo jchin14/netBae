@@ -23,6 +23,26 @@ The main steps so far, with the full details per version below.
 | 1.23 | The dashboard over IPv6 as well as IPv4, Apple updates, iCloud and GitHub targets, ISP logos on speedtests |
 | 1.24 | Install on a UniFi OS console itself (Cloud Gateway, Dream Router, Dream Machine) |
 
+## 1.25.16 - 2026-11-05
+
+Global speedtests anywhere in the world, steadier region servers, and a much faster dashboard on a Raspberry Pi.
+
+- Global speedtests now pick from every city with an Ookla server (over 15,000 servers in 200+ countries), from the Speedtest Server Index, instead of about 45 fixed cities
+- Region speedtests still find their servers when Ookla's server search is down, using the same index
+- The README links to the index for looking up server IDs
+- Speedtest region lines stay on the same server: netBae only switches when another server in that city is clearly faster (3 ms or 20%) or the current one stops answering, measures each server 3 times instead of once, and remembers its pick across restarts
+- Route changes no longer list a region, game or speedtest server switch as a changed route, and a route's history notes when it's a different server
+- "Secondary connection" is now called "additional connection" everywhere, since you can add as many as you like. In `config.toml`, `[outages] secondary_interval_seconds` is now `additional_interval_seconds` (the old name still works)
+- Disconnections: hover over a bar (or tap it on a phone) to see how long netBae was checking, how long a drop lasted, or why there's a gap and how long it was: an update (from which version to which), a restart, the computer restarting or sleeping, or netBae stopping unexpectedly
+- Disconnections no longer count the time a computer was asleep as checked
+- The dashboard no longer freezes for up to 30 seconds once a minute on a Raspberry Pi (it showed as slow page loads and slow stepping back through speedtests)
+- Day-long and week-long ping and DNS charts load up to 5x faster, from new 5-minute summaries (24-hour charts speed up within about 2 hours of updating, while older history is filled in)
+- Latency charts with the p5-p95 band load up to twice as fast
+- The Speedtest card's < > arrows respond straight away, even while the rest of the page is still loading
+- The Speedtest card's < or > arrow disappears when there are no more results that way
+- Security hardening: HTTPS connections require TLS 1.2 or newer, and the sign-in cookie is only set from a well-formed Cloudflare Access token
+- netBae is now licensed under the PolyForm Noncommercial License 1.0.0 (it had its own personal-use license). It's still free for noncommercial use, now including charities, schools and public research or government organisations, and commercial use still needs permission
+
 ## 1.25.4 - 2026-11-04
 
 Routes between your connections, plus small fixes.

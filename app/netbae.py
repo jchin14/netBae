@@ -53,7 +53,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "1.25.4"
+VERSION = "1.25.16"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -188,14 +188,14 @@ DEFAULT_CONFIG = {
         "timeout_seconds": 300,
     },
     "system": {"interval_seconds": 30, "offset_seconds": 0, "disk_path": "/"},
-    # public IP + ISP of the main connection and every secondary connection (shows failovers)
+    # public IP + ISP of the main connection and every additional connection (shows failovers)
     "isp": {"enabled": True, "interval_minutes": 10, "offset_minutes": 0, "main_name": "Main"},
     # disconnections: a tiny DNS query every few seconds through each connection, so drops of seconds show up
-    "outages": {"enabled": True, "interval_seconds": 1, "secondary_interval_seconds": 5},
+    "outages": {"enabled": True, "interval_seconds": 1, "additional_interval_seconds": 5},
     # route to every target every 12 h: which networks (ASNs) carry it - on-net, peering or transit
     "traceroute": {"enabled": True, "interval_hours": 12, "offset_minutes": 15, "max_hops": 25, "parallel": 6,
                    "ipv6": True},  # also trace IPv6 routes to the sites pinged over IPv6
-    # extra internet connections tested through a different source IP or interface (e.g. a secondary 5G/4G WAN)
+    # extra internet connections tested through a different source IP or interface (e.g. a 5G/4G backup WAN; as many as you like)
     "connections": [],
 }
 
@@ -487,7 +487,7 @@ def resolve_game_server(provider, pref="auto", bind=None):
 # --------------------------------------------------------------------------- connections
 
 def normalize_connection(c, all_targets=None):
-    """A secondary internet connection (e.g. a 5G/4G WAN) measured through its own source IP or interface."""
+    """An additional internet connection (e.g. a 5G/4G WAN) measured through its own source IP or interface."""
     if not isinstance(c, dict) or not c.get("name") or not c.get("bind"):
         raise SystemExit("[[connections]] entries need a name and a bind (source IP or interface name)")
     name, bind = str(c["name"]), str(c["bind"])
@@ -591,6 +591,9 @@ def speedtest_pick(name):
     return {"name": name, "search": se, "city": c, "country": co, "flag": f}
 
 
+GLOBAL_FLAGS = {}  # global speedtest label -> country code, for index cities (filled as they're picked)
+
+
 def global_cities():
     """Every city a global speedtest can pick, as regions."""
     cities = [normalize_region(n) for n in REGIONS if REGIONS[n][1]]  # (Guam has no city to match)
@@ -623,23 +626,17 @@ def find_region_servers(region):
     """Ookla servers in a region as [{id, host, port, ms}], fastest (by TCP connect) first."""
     if region.get("server_id"):
         return [{"id": region["server_id"], "host": None, "port": None, "ms": None}]
-    bind = region.get("bind")  # searched through a secondary connection: Ookla lists the servers near its address
-    url = OOKLA_SEARCH + urllib.parse.quote(region["search"])
-    if bind:
-        u = urllib.parse.urlsplit(url)
-        conn = _BoundHTTPS(u.hostname, bind, 15)
-        try:
-            conn.request("GET", f"{u.path}?{u.query}", headers={"User-Agent": f"netBae/{VERSION}"})
-            r = conn.getresponse()
-            if r.status != 200:
-                raise OSError(f"Ookla server search returned HTTP {r.status}")
-            servers = json.loads(r.read())
-        finally:
-            conn.close()
-    else:
-        req = urllib.request.Request(url, headers={"User-Agent": f"netBae/{VERSION}"})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            servers = json.load(r)
+    bind = region.get("bind")  # searched through an additional connection: Ookla lists the servers near its address
+    if region.get("index"):  # a city picked from the server index: its servers are already known
+        return _measure_servers(random.sample(s := index_region_servers(region), min(6, len(s))), bind)
+    try:
+        servers = _ookla_search(region, bind)
+    except Exception:
+        found = index_region_servers(region) if region.get("city") and not bind else []
+        if not found:
+            raise
+        log.info("Ookla's server search failed for %s; using the server index", region["name"])
+        return _measure_servers(found[:6], bind)
     city = (region.get("city") or "").lower()
     found = []
     for x in servers:
@@ -651,15 +648,114 @@ def find_region_servers(region):
         found.append({"id": int(x["id"]), "host": host or None, "port": int(port) if port.isdigit() else 8080})
         if len(found) == 6:
             break
-    # the first search result isn't always the best server: measure and sort, unreachable last
-    # (a hostname that hangs in DNS shouldn't stall the lookup: give up on stragglers after 8 s)
+    return _measure_servers(found, bind)
+
+
+def _ookla_search(region, bind):
+    url = OOKLA_SEARCH + urllib.parse.quote(region["search"])
+    if bind:
+        u = urllib.parse.urlsplit(url)
+        conn = _BoundHTTPS(u.hostname, bind, 15)
+        try:
+            conn.request("GET", f"{u.path}?{u.query}", headers={"User-Agent": f"netBae/{VERSION}"})
+            r = conn.getresponse()
+            if r.status != 200:
+                raise OSError(f"Ookla server search returned HTTP {r.status}")
+            return json.loads(r.read())
+        finally:
+            conn.close()
+    else:
+        req = urllib.request.Request(url, headers={"User-Agent": f"netBae/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+
+
+def _measure_servers(found, bind=None):
+    """Servers sorted fastest (by TCP connect) first, with "ms" filled in."""
+    # the first search result isn't always the best server: measure and sort, unreachable last. Each gets 3
+    # connects and keeps its fastest, since servers in one city are often within a millisecond of each other
+    # (a hostname that hangs in DNS shouldn't stall the lookup: give up on stragglers after 10 s)
+    def best_of(host, port):
+        times = [tcp_ping(host, port, 2, bind) for _ in range(3)]
+        return min((x for x in times if x is not None), default=None)
     pool = ThreadPoolExecutor(max_workers=6)
-    futures = [pool.submit(tcp_ping, c["host"], c["port"], 3, bind) if c["host"] else None for c in found]
-    wait([f for f in futures if f], timeout=8)
+    futures = [pool.submit(best_of, c["host"], c["port"]) if c["host"] else None for c in found]
+    wait([f for f in futures if f], timeout=10)
     pool.shutdown(wait=False)
     for c, f in zip(found, futures):
         c["ms"] = f.result() if f and f.done() else None
     return sorted(found, key=lambda c: (c["ms"] is None, c["ms"] or 0))
+
+
+# Every Ookla server (id, host, city, country, ISP, ASN), from https://speedtest-index.jchin.au: global speedtests
+# pick from all of them, and region lookups fall back to it when Ookla's own search fails. Refreshed weekly
+# and cached next to the database; netBae works as before without it.
+SERVER_INDEX_URL = "https://speedtest-index.jchin.au/servers.json"
+_STIDX = {"loaded": 0, "servers": []}
+
+
+def load_server_index(cache_path):
+    """Fill _STIDX from the cache, downloading the index first when the cache is a week old (or missing)."""
+    if time.time() - _STIDX["loaded"] < 86400 and _STIDX["servers"]:
+        return
+    try:
+        age = time.time() - os.path.getmtime(cache_path)
+    except OSError:
+        age = None
+    if age is None or age > 7 * 86400:
+        try:
+            req = urllib.request.Request(SERVER_INDEX_URL, headers={"User-Agent": f"netBae/{VERSION}",
+                                                                    "Accept-Encoding": "gzip"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                body = r.read()
+                if r.headers.get("Content-Encoding") == "gzip":
+                    body = gzip.decompress(body)
+            keep = ("id", "host", "city", "country", "cc", "isp", "asn")
+            rows = [{k: x.get(k) for k in keep} for x in json.loads(body)["servers"] if x.get("id") and x.get("host")]
+            if rows:
+                tmp = cache_path + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(rows, f)
+                os.replace(tmp, cache_path)
+        except Exception as e:
+            log.warning("couldn't refresh the speedtest server index (%s)%s", e,
+                        "; using the cached copy" if age is not None else "")
+    try:
+        with open(cache_path) as f:
+            _STIDX["servers"] = json.load(f)
+    except (OSError, ValueError):
+        pass
+    _STIDX["loaded"] = time.time()
+
+
+def index_cities(exclude_cc=()):
+    """Random cities from the server index as regions: a random country first, so countries with
+    thousands of servers (the US) don't crowd out the rest. Empty when the index isn't loaded."""
+    by_cc = {}
+    for x in _STIDX["servers"]:
+        if x.get("city") and x.get("cc") and x["cc"] not in exclude_cc:
+            by_cc.setdefault(x["cc"], {}).setdefault(x["city"], x["country"])
+    out = []
+    for cc in random.sample(list(by_cc), len(by_cc)):
+        city, country = random.choice(list(by_cc[cc].items()))
+        out.append({"name": city, "search": city.split(",")[0], "city": city, "country": country, "flag": cc,
+                    "index": True})
+    return out
+
+
+def index_region_servers(region):
+    """[{id, host, port}] for a region from the server index (no latency measured yet)."""
+    city, country = (region.get("city") or "").lower(), (region.get("country") or "").lower()
+    found = []
+    for x in _STIDX["servers"]:
+        if country and str(x.get("country", "")).lower() != country:
+            continue
+        name = str(x.get("city", "")).lower()
+        if city and name != city and not name.startswith(city + ","):
+            continue
+        host, _, port = str(x["host"]).rpartition(":")
+        found.append({"id": int(x["id"]), "host": host or None, "port": int(port) if port.isdigit() else 8080})
+    return found
 
 
 def windows_speedtest_paths():
@@ -819,6 +915,11 @@ def load_config(path):
                 cfg.setdefault(section, {}).update(values)
             elif section == "connections" and isinstance(values, list):
                 cfg["connections"] = values
+        # [outages] secondary_interval_seconds is the old name of additional_interval_seconds (there can be several)
+        old = (user.get("outages") or {}).get("secondary_interval_seconds")
+        if old is not None and "additional_interval_seconds" not in user["outages"]:
+            cfg["outages"]["additional_interval_seconds"] = old
+        cfg["outages"].pop("secondary_interval_seconds", None)
     else:
         log.warning("config %s not found, using built-in defaults", path)
 
@@ -834,7 +935,7 @@ def load_config(path):
         cfg["ping"]["targets"].extend(c["targets"])
     if cfg["ping"]["ipv6"]:
         # Sites on the main connection are measured over IPv4 and IPv6 separately: the IPv6 twin's id is "<id>#v6".
-        # Regions too (an IPv6-capable Ookla server in the same city). Not the router, game servers or secondary
+        # Regions too (an IPv6-capable Ookla server in the same city). Not the router, game servers or additional
         # connections (bound to an IPv4 source address).
         for t in list(cfg["ping"]["targets"]):
             if (t["method"] == "region" and not t.get("bind")) or (t["method"] in ("icmp", "tcp") and not t.get("bind") and t["id"] != "gateway"
@@ -912,7 +1013,7 @@ def load_config(path):
         if isinstance(order, list) else [order]
     if bad:
         raise SystemExit(f"[web] card_order: unknown card {bad[0]!r}. Cards: {', '.join(cards)}")
-    for key in ("interval_seconds", "secondary_interval_seconds"):
+    for key in ("interval_seconds", "additional_interval_seconds"):
         if not 1 <= float(cfg["outages"][key]) <= 60:
             raise SystemExit(f"[outages] {key} must be between 1 and 60")
     if not 0 < float(cfg["speedtest"]["busy_percent"]) <= 100:
@@ -999,8 +1100,13 @@ CREATE INDEX IF NOT EXISTS traceroute_target_ts ON traceroute(target, ts);
 CREATE TABLE IF NOT EXISTS outage (connection TEXT NOT NULL, ts REAL NOT NULL, ts_end REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS outage_conn_ts ON outage(connection, ts);
 CREATE TABLE IF NOT EXISTS outage_span (connection TEXT NOT NULL, ts REAL NOT NULL, ts_end REAL NOT NULL);
+-- when netBae started (with its version and the computer's boot time), stopped, or woke from sleep: says why the
+-- outage checker has a gap
+CREATE TABLE IF NOT EXISTS run_log (ts REAL NOT NULL, event TEXT NOT NULL, version TEXT, boot REAL);
 CREATE TABLE IF NOT EXISTS own_prefix (prefix TEXT PRIMARY KEY, first_seen REAL, last_seen REAL);
 CREATE TABLE IF NOT EXISTS hop_geo (ip TEXT PRIMARY KEY, ts REAL, city TEXT, lat REAL, lon REAL);
+-- each speedtest region's servers, fastest (or current) first, so a restart keeps measuring the same server
+CREATE TABLE IF NOT EXISTS region_server (region TEXT PRIMARY KEY, ts REAL NOT NULL, servers TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS system_ts ON system(ts);
 CREATE TABLE IF NOT EXISTS ping_1m (
     target INTEGER NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
@@ -1024,13 +1130,26 @@ CREATE TABLE IF NOT EXISTS dns_1h (
     avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL,
     h0 INTEGER, h1 INTEGER, h2 INTEGER, h3 INTEGER, h4 INTEGER, h5 INTEGER, h6 INTEGER, h7 INTEGER,
     h8 INTEGER, h9 INTEGER, h10 INTEGER, h11 INTEGER, PRIMARY KEY (server, domain, ts)) WITHOUT ROWID;
+-- 5-minute summaries (1.25.10): a day's chart reads 5x fewer rows than from the 1-minute table
+CREATE TABLE IF NOT EXISTS ping_5m (
+    target INTEGER NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
+    avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL,
+    h0 INTEGER, h1 INTEGER, h2 INTEGER, h3 INTEGER, h4 INTEGER, h5 INTEGER, h6 INTEGER, h7 INTEGER,
+    h8 INTEGER, h9 INTEGER, h10 INTEGER, h11 INTEGER, PRIMARY KEY (target, ts)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS dns_5m (
+    server INTEGER NOT NULL, domain INTEGER NOT NULL, ts INTEGER NOT NULL, n INTEGER, ok INTEGER,
+    avg REAL, mn REAL, mx REAL, p5 REAL, p95 REAL,
+    h0 INTEGER, h1 INTEGER, h2 INTEGER, h3 INTEGER, h4 INTEGER, h5 INTEGER, h6 INTEGER, h7 INTEGER,
+    h8 INTEGER, h9 INTEGER, h10 INTEGER, h11 INTEGER, PRIMARY KEY (server, domain, ts)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ping_5m_ts ON ping_5m(ts);
+CREATE INDEX IF NOT EXISTS dns_5m_ts ON dns_5m(ts);
 """
 
 # Raw samples are summarised into 1-minute rows (count, avg, min, max, p5, p95) so long
 # ranges stay fast and raw data can be dropped after raw_retention_days.
 SERIES = {
-    "ping": {"raw": "ping", "rollup": "ping_1m", "hourly": "ping_1h", "keys": ["target"], "val": "rtt"},
-    "dns": {"raw": "dns", "rollup": "dns_1m", "hourly": "dns_1h", "keys": ["server", "domain"], "val": "ms"},
+    "ping": {"raw": "ping", "rollup": "ping_1m", "five": "ping_5m", "hourly": "ping_1h", "keys": ["target"], "val": "rtt"},
+    "dns": {"raw": "dns", "rollup": "dns_1m", "five": "dns_5m", "hourly": "dns_1h", "keys": ["server", "domain"], "val": "ms"},
 }
 ROLLUP_ABOVE_SECONDS = 6 * 3600  # whole-range stats longer than this come from the 1-minute table
 STATS_HOURLY_ABOVE_SECONDS = 2 * 86400  # ... and longer than this from the hourly table
@@ -1059,6 +1178,9 @@ HIST_FROM_RAW = ", ".join(
 HIST_COMBINE = ", ".join(
     "NULLIF(" + " + ".join(f"COALESCE(SUM((h{j} >> {16 * k}) & 65535), 0) * {65536 ** k}" for k in range(4)) + ", 0)"
     for j in range(len(HIST_COLS)))
+# the packed columns added up as they are: 4x fewer sums than unpacking first (twice as fast on a Pi), and
+# right as long as no bin holds 65536 or more samples, which a bucket with fewer successful samples can't
+HIST_PACKED_SUMS = ", ".join(f"SUM({c})" for c in HIST_COLS)
 # the 48 bin counts, unpacked, for reading percentiles
 HIST_SUMS = ", ".join(f"SUM((h{j} >> {16 * k}) & 65535)" for j in range(len(HIST_COLS)) for k in range(4))
 
@@ -1139,11 +1261,12 @@ COMBINE = ("SUM(n), SUM(ok), SUM(avg * ok) / NULLIF(SUM(ok), 0), MIN(mn), MAX(mx
            " SUM(COALESCE(p5, mn) * ok) / NULLIF(SUM(ok), 0), SUM(COALESCE(p95, mx) * ok) / NULLIF(SUM(ok), 0)")
 
 
-def rollup_hourly(db, spec, frm, to):
+def rollup_hourly(db, spec, frm, to, level="hourly", seconds=3600):
+    """Summaries of whole hours (or, with level="five", 5 minutes) from the 1-minute rows."""
     keys = ", ".join(spec["keys"])
     db.conn().execute(
-        f"INSERT OR REPLACE INTO {db.into(spec['hourly'])} ({keys}, ts, n, ok, avg, mn, mx, p5, p95, {', '.join(HIST_COLS)})"
-        f" SELECT {keys}, CAST(ts / 3600 AS INTEGER) * 3600 AS h, {COMBINE}, {HIST_COMBINE}"
+        f"INSERT OR REPLACE INTO {db.into(spec[level])} ({keys}, ts, n, ok, avg, mn, mx, p5, p95, {', '.join(HIST_COLS)})"
+        f" SELECT {keys}, CAST(ts / {seconds} AS INTEGER) * {seconds} AS h, {COMBINE}, {HIST_COMBINE}"
         f" FROM {spec['rollup']} WHERE ts >= ? AND ts < ? GROUP BY {keys}, h", (frm, to))
 
 
@@ -1159,7 +1282,7 @@ def rollup(db, spec, frm, to):
 # Tables kept in memory between saves (see DB.start_buffer); summaries are rewritten every minute, so
 # they're buffered too. Raw samples are only ever added; a summary row in memory replaces the saved one.
 BUFFERED_RAW = ("ping", "dns", "system")
-BUFFERED_SUMMARY = ("ping_1m", "dns_1m", "ping_1h", "dns_1h")
+BUFFERED_SUMMARY = ("ping_1m", "dns_1m", "ping_5m", "dns_5m", "ping_1h", "dns_1h")
 
 
 class DB:
@@ -1178,7 +1301,7 @@ class DB:
                          ("server_host", "TEXT"), ("busy_mbps", "REAL")):  # added in 1.1-1.4, busy in 1.16
             if col not in cols:
                 self.conn().execute(f"ALTER TABLE speedtest ADD COLUMN {col} {typ}")
-        for t in ("ping_1m", "dns_1m", "ping_1h", "dns_1h"):  # latency histograms, added in 1.8
+        for t in ("ping_1m", "dns_1m", "ping_5m", "dns_5m", "ping_1h", "dns_1h"):  # latency histograms, added in 1.8
             have = {r[1] for r in self.query(f"PRAGMA table_info({t})")}
             for col in HIST_COLS:
                 if col not in have:
@@ -1229,6 +1352,14 @@ class DB:
             c.execute(f"CREATE TEMP VIEW IF NOT EXISTS {t} AS SELECT * FROM main.{t}{hide}"
                       f" UNION ALL SELECT * FROM buf.{t}")
         self.local.views = True
+
+    def ts_bound(self, fn, table):
+        """MIN or MAX of a table's ts. Through the TEMP view SQLite scans every row (29 s for ping_1m on a Pi,
+        once a minute), so ask the saved and in-memory tables apart: each answers from its index."""
+        if not (self.buf and table in BUFFERED_RAW + BUFFERED_SUMMARY):
+            return self.scalar(f"SELECT {fn}(ts) FROM {table}")
+        return self.scalar(f"SELECT {fn}(v) FROM (SELECT {fn}(ts) AS v FROM main.{table}"
+                           f" UNION ALL SELECT {fn}(ts) FROM buf.{table})")
 
     def into(self, table):
         """Where new rows for a table go: its in-memory twin while buffering."""
@@ -1444,7 +1575,9 @@ class _BoundHTTPS(http.client.HTTPSConnection):
         except OSError:
             sock.close()
             raise
-        self.sock = ssl.create_default_context().wrap_socket(sock, server_hostname=self.host)
+        ctx = ssl.create_default_context()
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        self.sock = ctx.wrap_socket(sock, server_hostname=self.host)
 
 
 class ServiceError(OSError):
@@ -3319,6 +3452,7 @@ class Monitor:
         self.update_info, self.update_started = None, 0.0
         self.update_method = update_method()
         self.started = time.time()
+        self.outage_spans = {}  # connection -> its outage checker's current outage_span row
         self.config_path = None
         # public dashboard sharing, shown on the private dashboard
         self.public_visitors, self.public_direct_ts = {}, None
@@ -3329,6 +3463,7 @@ class Monitor:
     def start(self):
         c = self.cfg
         self.sys.cpu_percent()  # prime the CPU delta
+        self.log_run("start")
         run_aligned("ping", c["ping"]["interval_seconds"], c["ping"]["offset_seconds"], self.collect_ping)
         if c["ping"]["regions"]:
             run_aligned("ping-regions", c["ping"]["region_interval_seconds"], c["ping"]["offset_seconds"],
@@ -3378,7 +3513,7 @@ class Monitor:
         self.pool.submit(self.collect_system)
         if c["outages"]["enabled"]:
             for name, bind in self.isp_connections():
-                every = float(c["outages"]["secondary_interval_seconds" if bind else "interval_seconds"])
+                every = float(c["outages"]["additional_interval_seconds" if bind else "interval_seconds"])
                 threading.Thread(target=self.watch_outages, args=(name, bind, every), name=f"outages-{name}",
                                  daemon=True).start()
 
@@ -3471,10 +3606,47 @@ class Monitor:
             # shown on the tile: the city/region measured, and whether it was picked as the nearest
             t["where"] = srv["label"] + (" (nearest)" if t["pref"] == "auto" else "")
 
+    # a region keeps its server until another is clearly faster, so its chart line and route don't jump
+    # between servers that are really just as close
+    SWITCH_FASTER_MS, SWITCH_FASTER_PCT = 3.0, 0.2
+
+    @staticmethod
+    def region_db_key(region):
+        """The region's settings, so a changed city, country or connection looks its servers up again."""
+        return json.dumps([region.get(k) for k in ("name", "search", "city", "country", "server_id", "bind")])
+
+    def saved_region_servers(self, region):
+        """(ts, servers) saved by an earlier run, or None."""
+        try:
+            row = self.db.query("SELECT ts, servers FROM region_server WHERE region = ?", (self.region_db_key(region),))
+            return (row[0][0], json.loads(row[0][1])) if row else None
+        except (sqlite3.Error, ValueError):
+            return None
+
+    @classmethod
+    def keep_current(cls, prev, servers):
+        """servers (fastest first), with the server in use moved back to the front unless it's gone, unreachable
+        or clearly slower than the new fastest."""
+        cur = next((c for c in prev or [] if c.get("host")), None)
+        if not cur or not servers or servers[0]["id"] == cur["id"]:
+            return servers
+        same = next((c for c in servers if c["id"] == cur["id"]), None)
+        best = servers[0]
+        if same is None or same["ms"] is None:
+            return servers
+        if best["ms"] is not None and best["ms"] < same["ms"] - max(cls.SWITCH_FASTER_MS,
+                                                                    cls.SWITCH_FASTER_PCT * same["ms"]):
+            return servers
+        return [same] + [c for c in servers if c is not same]
+
     def region_servers(self, region, wait=True):
         """Cached fastest-first server list for a region; refreshed daily. None if unknown yet."""
         name = (region["name"], region.get("bind"))  # a connection's Nearest is its own
         cached = self.region_cache.get(name)
+        if cached is None:
+            cached = self.saved_region_servers(region)
+            if cached:
+                self.region_cache[name] = cached
         if cached and time.time() - cached[0] < (86400 if cached[1] else 600):
             return cached[1]
         if not wait:  # look up in the background so a collector tick never blocks on it
@@ -3484,15 +3656,35 @@ class Monitor:
             return cached[1] if cached else None
         return self._lookup_region(region)
 
+    def load_index(self):
+        load_server_index(os.path.join(os.path.dirname(os.path.abspath(self.db.path)), "speedtest-index.json"))
+
     def _lookup_region(self, region):
+        name = (region["name"], region.get("bind"))
+        prev = (self.region_cache.get(name) or self.saved_region_servers(region) or (0, []))[1]
         try:
+            self.load_index()
             servers = find_region_servers(region)
         except Exception as e:
             log.warning("speedtest server lookup for %s failed: %s", region["name"], e)
             servers = []
         finally:
-            self.region_lookups.discard((region["name"], region.get("bind")))
-        self.region_cache[(region["name"], region.get("bind"))] = (time.time(), servers)
+            self.region_lookups.discard(name)
+        ts = time.time()
+        if not servers and prev:  # keep the servers we had, and try again in 10 minutes
+            servers, ts = prev, ts - 86400 + 600
+        else:
+            new = self.keep_current(prev, servers)
+            if prev and new and prev[0].get("id") != new[0]["id"]:
+                log.info("speedtest region %s: now %s (was %s)", region["name"], new[0].get("host"), prev[0].get("host"))
+            servers = new
+        self.region_cache[name] = (ts, servers)
+        if servers:
+            try:
+                self.db.conn().execute("INSERT OR REPLACE INTO region_server VALUES (?,?,?)",
+                                       (self.region_db_key(region), ts, json.dumps(servers)))
+            except sqlite3.Error as e:
+                log.warning("couldn't save the servers for %s: %s", region["name"], e)
         return servers
 
     def trace_targets(self):
@@ -3526,7 +3718,7 @@ class Monitor:
         for sv in self.cfg["dns"]["servers"] if self.cfg["dns"]["enabled"] else []:
             if dns_trace_host(sv) and (sv["family"] == 4 or v6) and (sv["host"], None) not in traced:
                 out.append(("dns:" + sv["id"], sv["host"], None))
-        # a secondary connection with trace = "all" also traces every main IPv4 destination through itself, as
+        # an additional connection with trace = "all" also traces every main IPv4 destination through itself, as
         # "<connection>|<id>", so its routes can be compared with the main connection's
         ids = {x[0] for x in out}
         for c in self.cfg["connections"]:
@@ -3536,7 +3728,7 @@ class Monitor:
                 if bind is None and ":" not in host and not tid.endswith("#v6") and f"{c['name']}|{tid}" not in ids:
                     out.append((f"{c['name']}|{tid}", host, c["bind"]))
         # with several connections, each one traces every other one's public IPv4 address, as "peer:<to>" from
-        # the main connection and "<from>|peer:<to>" from a secondary (skipped while two share an address)
+        # the main connection and "<from>|peer:<to>" from an additional one (skipped while two share an address)
         conns = self.isp_connections()
         if len(conns) > 1 and self.cfg["isp"]["enabled"]:
             ip = {c["connection"]: (c["last_ok"] or {}).get("ip") for c in isp_current(self)}
@@ -3688,7 +3880,8 @@ class Monitor:
                                  (tid,))
             if last and self.route_key(last[0][1], last[0][2], last[0][3]) == self.route_key(kind, path, err):
                 self.db.conn().execute("UPDATE traceroute SET ts = ?, dest = COALESCE(?, dest), hops = COALESCE(?, hops),"
-                                       " first_ts = COALESCE(first_ts, ts) WHERE rowid = ?", (ts, dest, hops, last[0][0]))
+                                       " dest_host = COALESCE(?, dest_host), first_ts = COALESCE(first_ts, ts)"
+                                       " WHERE rowid = ?", (ts, dest, hops, dest_host, last[0][0]))
             else:
                 self.db.conn().execute("INSERT INTO traceroute (ts, target, dest, kind, path, hops, error, dest_host, first_ts)"
                                        " VALUES (?,?,?,?,?,?,?,?,?)", (ts, tid, dest, kind, path, hops, err, dest_host, ts))
@@ -3803,6 +3996,28 @@ class Monitor:
             self.ipv6 = (time.time(), ok)
         return self.ipv6[1]
 
+    def log_run(self, event):
+        """Note a start, stop or wake-up in run_log (with the computer's boot time), for the gaps it explains."""
+        try:
+            up = self.sys.uptime()
+            self.db.conn().execute("INSERT INTO run_log VALUES (?,?,?,?)", (time.time(), event, VERSION,
+                                                                            time.time() - up if up else None))
+        except Exception as e:
+            log.debug("couldn't note %s in run_log: %s", event, e)
+
+    def stopping(self):
+        """On a normal stop: end each outage checker's span now (not at its last save) and note the stop."""
+        now = time.time()
+        try:
+            c = self.db.conn()
+            for span in list(self.outage_spans.values()):
+                c.execute("UPDATE outage_span SET ts_end = ? WHERE rowid = ?", (now, span))
+        except Exception as e:
+            log.debug("couldn't close the outage spans: %s", e)
+        self.log_run("stop")
+
+    PAUSED_AFTER = 60  # seconds between checks: the computer slept (or netBae was frozen), so the span ends there
+
     def watch_outages(self, name, bind, every):
         """Ask a DNS resolver for a tiny answer every few seconds through one connection, and record each drop (no
         answer from either resolver) from its first missed answer to its first answer again. Skipped while a
@@ -3811,9 +4026,18 @@ class Monitor:
         now = time.time()
         c.execute("INSERT INTO outage_span VALUES (?,?,?)", (name, now, now))
         span, saved, down, missed = c.execute("SELECT last_insert_rowid()").fetchone()[0], now, None, 0
+        self.outage_spans[name] = span
+        last = now
         while True:
             t0 = time.time()
             try:
+                if t0 - last > self.PAUSED_AFTER:  # asleep: the time since the last check wasn't watched
+                    c.execute("UPDATE outage_span SET ts_end = ? WHERE rowid = ?", (last, span))
+                    c.execute("INSERT INTO outage_span VALUES (?,?,?)", (name, t0, t0))
+                    span, saved, down, missed = c.execute("SELECT last_insert_rowid()").fetchone()[0], t0, None, 0
+                    self.outage_spans[name] = span
+                    if name == self.cfg["isp"]["main_name"]:
+                        self.log_run("wake")
                 if not PROBES.closed:
                     ok = any(dns_probe(s, bind) for s in OUTAGE_RESOLVERS)  # the second only if the first misses
                     if not ok:
@@ -3831,6 +4055,7 @@ class Monitor:
                     saved = t0
             except Exception:
                 log.exception("outage checker for %s failed", name)
+            last = t0
             time.sleep(max(0.05, every - (time.time() - t0)))
 
     ISP_RECHECK_AFTER = 10  # seconds: a drop at least this long gets an ISP check when it ends
@@ -3848,7 +4073,7 @@ class Monitor:
             self.isp_recheck_lock.release()
 
     def isp_connections(self):
-        """(name, bind) for the main connection and every secondary connection."""
+        """(name, bind) for the main connection and every additional connection."""
         return [(self.cfg["isp"]["main_name"], None)] + [(c["name"], c["bind"]) for c in self.cfg["connections"]]
 
     def collect_isp(self):
@@ -3863,7 +4088,7 @@ class Monitor:
         before = {k: v.get("asn") for k, v in last.items()}
         rows = list(self.pool.map(one, self.isp_connections()))
         self.db.insert_many("INSERT INTO isp VALUES (?,?,?,?,?,?,?)", rows)
-        # a connection that moved to another ISP (a failover, or a secondary just routed out its own WAN) gets its
+        # a connection that moved to another ISP (a failover, or an additional connection just routed out its own WAN) gets its
         # routes traced again now, instead of showing the old ISP's routes until the next 12-hourly round
         moved = {r[1] for r in rows if r[4] and before.get(r[1]) and r[4] != before[r[1]]}
         # a connection with a new (or first) address gets traced again from the others too
@@ -3912,9 +4137,9 @@ class Monitor:
     def _rollup_all(self):
         now_m = int(time.time() // 60) * 60
         for spec in SERIES.values():
-            start = self.db.scalar(f"SELECT MAX(ts) FROM {spec['rollup']}")
+            start = self.db.ts_bound("MAX", spec["rollup"])
             if start is None:
-                start = self.db.scalar(f"SELECT MIN(ts) FROM {spec['raw']}")
+                start = self.db.ts_bound("MIN", spec["raw"])
             if start is None:
                 continue
             start = int(start // 60) * 60  # redo the newest minute in case it was incomplete
@@ -3922,17 +4147,33 @@ class Monitor:
                 end = min(now_m, start + 86400)
                 rollup(self.db, spec, start, end)
                 start = end
-            # hourly summaries from the minute table (the current hour is refreshed every minute)
-            start = self.db.scalar(f"SELECT MAX(ts) FROM {spec['hourly']}")
-            if start is None:
-                start = self.db.scalar(f"SELECT MIN(ts) FROM {spec['rollup']}")
-            if start is None:
-                continue
-            start = int(start // 3600) * 3600
-            while start <= now_m:
-                end = start + 30 * 86400
-                rollup_hourly(self.db, spec, start, min(end, now_m + 60))
-                start = end
+            # 5-minute and hourly summaries from the minute table (the current 5 minutes and hour are redone)
+            for level, seconds, chunk in (("five", 300, 86400), ("hourly", 3600, 30 * 86400)):
+                start = self.db.ts_bound("MAX", spec[level])
+                if start is None:
+                    start = self.db.ts_bound("MIN", spec["rollup"])
+                    if start is None:
+                        break
+                    if level == "five":  # new table: start with the last hour, backfill_five() does the rest
+                        start = max(start, now_m - 3600)
+                start = int(start // seconds) * seconds
+                while start <= now_m:
+                    end = start + chunk
+                    rollup_hourly(self.db, spec, start, min(end, now_m + 60), level, seconds)
+                    start = end
+            self.backfill_five(spec)
+
+    def backfill_five(self, spec, budget=1.0):
+        """Fill in 5-minute rows for older 1-minute rows, 15 minutes at a time, for about 1 s each minute: a day takes
+        ~30 s on a Pi, so doing it all at once after an upgrade would hold up everything else for minutes."""
+        first, oldest = self.db.ts_bound("MIN", spec["rollup"]), self.db.ts_bound("MIN", spec["five"])
+        if first is None or oldest is None:
+            return
+        first, oldest, stop = int(first // 300) * 300, int(oldest), time.monotonic() + budget
+        while oldest > first and time.monotonic() < stop:
+            start = max(first, oldest - 900)
+            rollup_hourly(self.db, spec, start, oldest, "five", 300)
+            oldest = start
 
     def cleanup(self):
         st = self.cfg["storage"]
@@ -3941,9 +4182,9 @@ class Monitor:
         cutoff = now - days * 86400 if days > 0 else 0          # 0 = keep forever
         minute_cutoff = max(cutoff, now - float(st["minute_retention_days"]) * 86400)
         raw_cutoff = max(minute_cutoff, now - float(st["raw_retention_days"]) * 86400)
-        for tables, cut in ((("ping", "dns"), raw_cutoff), (("ping_1m", "dns_1m", "cdn"), minute_cutoff),
+        for tables, cut in ((("ping", "dns"), raw_cutoff), (("ping_1m", "dns_1m", "ping_5m", "dns_5m", "cdn"), minute_cutoff),
                             (("ping_1h", "dns_1h", "system", "speedtest", "isp", "traceroute", "outage",
-                             "outage_span"), cutoff)):
+                             "outage_span", "run_log"), cutoff)):
             if cut > 0:
                 for table in tables:  # a span the checker is still running in started long ago: go by its end
                     col = "ts_end" if table == "outage_span" else "ts"
@@ -4051,9 +4292,20 @@ class Monitor:
     def _global_test(self):
         """One speedtest to a random server in a random city (not one of the last five used)."""
         recent = {r[0] for r in self.db.query("SELECT label FROM speedtest WHERE kind = 'global' ORDER BY ts DESC LIMIT 5")}
-        cities = global_cities()
-        random.shuffle(cities)
-        cities.sort(key=lambda c: c["name"] in recent)  # unused cities first, in random order
+        try:
+            self.load_index()
+        except Exception as e:
+            log.warning("speedtest server index: %s", e)
+        # any city with an Ookla server, from the server index; the built-in list when it isn't available
+        by_city = {x["city"]: x["cc"] for x in _STIDX["servers"] if x.get("city")} | GLOBAL_FLAGS
+        recent_cc = {by_city.get(n) for n in recent} - {None}
+        cities = index_cities(recent_cc)
+        if not cities:
+            cities = global_cities()
+            random.shuffle(cities)
+            cities.sort(key=lambda c: c["name"] in recent)  # unused cities first, in random order
+        for c in cities:
+            GLOBAL_FLAGS[c["name"]] = c["flag"]
         ts = time.time()
         for city in cities[:4]:  # a city whose servers can't be found or reached: try another
             try:
@@ -4259,13 +4511,16 @@ def aggregate_keys(m, name, frm, to, bucket, keys=None, extra=("", ()), combined
         # fraction of a percent, but ~50x faster than adding up a week of 1-minute rows (slow on a Pi)
         level = "hourly" if span > STATS_HOURLY_ABOVE_SECONDS else "rollup" if span > ROLLUP_ABOVE_SECONDS else "raw"
     else:
-        level = "hourly" if bucket >= 3600 else "rollup" if bucket >= 60 else "raw"
+        level = "hourly" if bucket >= 3600 else "five" if bucket >= 300 and bucket % 300 == 0 else "rollup" if bucket >= 60 else "raw"
     if frm < now - float(st["minute_retention_days"]) * 86400:
         level = "hourly"
+    elif level == "five" and (m.db.ts_bound("MIN", spec["five"]) or 1e18) > math.floor(frm / 300) * 300:
+        level = "rollup"  # the 5-minute rows don't go back that far yet (being filled in after an upgrade)
     elif level == "raw" and frm < now - float(st["raw_retention_days"]) * 86400:
         level = "rollup"
     bexpr = "0" if bucket is None else f"CAST(ts / {float(bucket)!r} AS INTEGER)"
-    where, params = "ts >= ? AND ts <= ?", [frm, to]
+    # a 5-minute row is stamped with its start: take in the one the range starts inside (buckets are whole 5 minutes)
+    where, params = "ts >= ? AND ts <= ?", [math.floor(frm / 300) * 300 if level == "five" else frm, to]
     if keys:
         ids = [i for i in map(m.db.known_id, keys) if i is not None]
         if not ids:
@@ -4293,12 +4548,22 @@ def aggregate_keys(m, name, frm, to, bucket, keys=None, extra=("", ()), combined
         cols = ", ".join(spec["keys"] + ["ts", "n", "ok", "avg", "mn", "mx", "p5", "p95"] + HIST_COLS)
         source = (f"(SELECT {cols} FROM {spec['hourly']} WHERE ts >= {h0} AND ts < {h1}"
                   f" UNION ALL SELECT {cols} FROM {spec['rollup']} WHERE ts < {h0} OR ts >= {h1})")
-    sql = (f"SELECT {kexpr}, {bexpr} AS b, {COMBINE}{', ' + HIST_SUMS if hist else ''} FROM {source} WHERE {where}"
-           f" GROUP BY {kexpr}, b ORDER BY b")
+    sql = (f"SELECT {kexpr}, {bexpr} AS b, {COMBINE}{', ' + HIST_PACKED_SUMS if hist else ''} FROM {source}"
+           f" WHERE {where} GROUP BY {kexpr}, b ORDER BY b")
+    try:
+        rows = m.db.query(sql, params)
+        packed = hist and not any((r[3] or 0) >= 65536 for r in rows)
+    except sqlite3.OperationalError as e:  # "integer overflow": a bin past 32767 in the top field
+        if "overflow" not in str(e):
+            raise
+        packed = False
+    if hist and not packed:  # a huge bucket (e.g. a month of a whole category): unpack before adding up
+        rows = m.db.query(sql.replace(HIST_PACKED_SUMS, HIST_SUMS), params)
     out = []
-    for row in m.db.query(sql, params):
+    for row in rows:
         k, b, n, ok, avg, mn, mx, p5, p95 = row[:9]
-        counts = [c or 0 for c in row[9:]]
+        counts = [((v or 0) >> s) & 65535 for v in row[9:] for s in (0, 16, 32, 48)] if packed \
+            else [c or 0 for c in row[9:]]
         if ok and sum(counts) == ok:
             p5, p95 = hist_percentile(counts, 0.05, mn, mx), hist_percentile(counts, 0.95, mn, mx)
         out.append((name_of(k), b, n, ok, avg, mn, mx, p5, p95))
@@ -4337,7 +4602,7 @@ def api_config(m, q):
         # when the main connection moved to another ISP, for the lines on the latency charts
         "isp_changes": isp_changes(m),
         "info": m.static_info,
-        "data_since": m.db.scalar("SELECT MIN(ts) FROM system"),  # when this install started recording
+        "data_since": m.db.ts_bound("MIN", "system"),  # when this install started recording
         "ping": {"interval_seconds": c["ping"]["interval_seconds"], "offset_seconds": c["ping"]["offset_seconds"],
                  "region_interval_seconds": c["ping"]["region_interval_seconds"],
                  "ipv6": c["ping"]["ipv6"] and m.ipv6_available(),
@@ -4366,7 +4631,7 @@ def api_config(m, q):
         "system": {"interval_seconds": c["system"]["interval_seconds"]},
         "isp": {"enabled": c["isp"]["enabled"], "connections": [n for n, _ in m.isp_connections()]},
         "outages": {"enabled": c["outages"]["enabled"], "interval_seconds": c["outages"]["interval_seconds"],
-                    "secondary_interval_seconds": c["outages"]["secondary_interval_seconds"]},
+                    "additional_interval_seconds": c["outages"]["additional_interval_seconds"]},
         "docker_bridge": m.docker_bridge,
         "retention_days": c["storage"]["retention_days"],
         "storage": {k: v for k, v in c["storage"].items() if k != "database"},
@@ -4442,7 +4707,7 @@ def api_speedtest_status(m, q):
 def api_speedtest_step(m, q):
     """For the < > arrows on the Speedtest card: the good main result just before (dir=older) or after (dir=newer)
     a time, with its place in the list (index 0 = the latest) and how many there are."""
-    conn = q.get("conn")  # a secondary connection's results instead of the main connection's
+    conn = q.get("conn")  # an additional connection's results instead of the main connection's
     if conn and conn not in [c["name"] for c in m.cfg["connections"]]:
         return {"result": None, "index": None, "total": 0}
     main, p = (("kind = 'connection' AND label = ? AND error IS NULL", (conn,)) if conn
@@ -4599,15 +4864,17 @@ def route_brief(kind, path):
 
 def api_route_changes(m, q):
     """Every time a destination's route changed (the networks along it, or its label), newest first. CDN
-    servers come and go all the time, so for them only a different label or destination network counts."""
+    servers come and go all the time, so for them only a different label or destination network counts. A
+    region, game or speedtest target moving to another server isn't a route change, so that's left out."""
     frm, to = float(q.get("from") or 0), float(q.get("to") or time.time() + 60)
-    rows = m.db.query("SELECT target, COALESCE(first_ts, ts), ts, kind, path FROM traceroute WHERE error IS NULL"
-                      " AND path IS NOT NULL ORDER BY target, COALESCE(first_ts, ts)")
+    rows = m.db.query("SELECT target, COALESCE(first_ts, ts), ts, kind, path, dest_host FROM traceroute"
+                      " WHERE error IS NULL AND path IS NOT NULL ORDER BY target, COALESCE(first_ts, ts)")
     out = []
     prev = None
-    for tid, first, ts, kind, path in rows:
+    for tid, first, ts, kind, path, dest_host in rows:
         cur = route_brief(kind, path)
-        if prev and prev[0] == tid and frm <= first <= to:
+        moved = prev and prev[0] == tid and prev[2] and dest_host and prev[2] != dest_host
+        if prev and prev[0] == tid and frm <= first <= to and not moved:
             a, b = prev[1], cur
             ka, kb = [(x["kind"], tuple((n.get("asn"), bool(n.get("ixp"))) for n in x["path"])) for x in (a, b)]
             dest_a = a["path"][-1].get("asn") if a["path"] else None
@@ -4621,14 +4888,14 @@ def api_route_changes(m, q):
                             "change": "better" if ra is not None and rb is not None and rb < ra
                             else "worse" if ra is not None and rb is not None and rb > ra else "path",
                             "isp_change": bool(isp_a and isp_b and isp_b not in org_asns(isp_a))})
-        prev = (tid, cur)
+        prev = (tid, cur, dest_host)
     out.sort(key=lambda x: -x["ts"])
     return {"from": frm, "changes": out[:2000], "total": len(out)}
 
 
 def api_route_compare(m, q):
     """Each destination's latest route on every ISP it was traced on: the main connection's current and past
-    ISPs (by when the route was traced) and each secondary connection, with the average ping on each."""
+    ISPs (by when the route was traced) and each additional connection, with the average ping on each."""
     main = m.cfg["isp"]["main_name"]
     checks = {}
     for ts, conn, isp, asn in m.db.query("SELECT ts, connection, isp, asn FROM isp WHERE isp IS NOT NULL ORDER BY ts"):
@@ -4643,7 +4910,7 @@ def api_route_compare(m, q):
         for ts, isp, asn in lst:
             k = f"{conn}|{isp}"
             e = isps.setdefault(k, {"key": k, "connection": conn, "isp": isp, "asn": asn, "since": ts, "until": ts,
-                                    "secondary": conn != main})
+                                    "additional": conn != main})
             e["until"] = ts
     for conn, lst in checks.items():
         if lst:
@@ -4658,9 +4925,9 @@ def api_route_compare(m, q):
         if not isp:
             continue
         targets.setdefault(base, {})[f"{conn}|{isp}"] = dict(route_brief(kind, path), ts=ts)  # the latest wins
-    # average ping on each ISP: the main connection's ISPs over the times it was on them, a secondary over 30 days
+    # average ping on each ISP: the main connection's ISPs over the times it was on them, an additional one over 30 days
     for k, e in isps.items():
-        if e["secondary"]:
+        if e["additional"]:
             cond, args, prefix = "ts > ?", (time.time() - 30 * 86400,), f"{e['connection']}|"
         else:
             win = isp_windows(m, e["isp"], 0, time.time())
@@ -4678,7 +4945,7 @@ def api_route_compare(m, q):
             base = name[len(prefix):]
             if base in targets and k in targets[base]:
                 targets[base][k]["ping"] = round(avg, 2)
-    order = sorted(isps.values(), key=lambda e: (e["secondary"], not e.get("current"), -e["until"]))
+    order = sorted(isps.values(), key=lambda e: (e["additional"], not e.get("current"), -e["until"]))
     return {"isps": order, "targets": targets}
 
 
@@ -4924,6 +5191,8 @@ def api_outages(m, q):
     to = q_time(q, "to", now)
     frm = q_time(q, "from", to - 7 * 86400)
     out = []
+    runs = m.db.query("SELECT ts, event, version, boot FROM run_log WHERE ts > ? AND ts < ? ORDER BY ts",
+                      (frm - 30 * 86400, to + 3600))  # starts from before the range: the version before an update
     for name, _ in m.isp_connections():
         args = (name, frm, to)
         drops = [list(r) for r in m.db.query("SELECT ts, ts_end FROM outage WHERE connection = ? AND ts_end > ?"
@@ -4934,8 +5203,29 @@ def api_outages(m, q):
                                                " AND ts < ? ORDER BY ts", args)]
         if m.outage_now and name in m.outage_now and watched:  # the checker is running: its span reaches now
             watched[-1][1] = max(watched[-1][1], now)
-        out.append({"connection": name, "drops": drops, "watched": watched})
+        gaps = [[a[1], b[0], gap_reason(runs, a[1], b[0])] for a, b in zip(watched, watched[1:]) if b[0] - a[1] >= 1]
+        out.append({"connection": name, "drops": drops, "watched": watched, "gaps": gaps})
     return {"from": frm, "to": to, "now": now, "connections": out}
+
+
+def gap_reason(runs, a, b):
+    """Why the outage checker wasn't running from a to b, from run_log rows (ts, event, version, boot)."""
+    inside = [r for r in runs if a - 5 <= r[0] <= b + 5]
+    if any(r[1] == "wake" for r in inside):
+        return "The computer was asleep, so netBae was paused"
+    start = next((r for r in inside if r[1] == "start"), None)
+    if not start:
+        return "netBae wasn't running"
+    before = [r for r in runs if r[1] == "start" and r[0] < a - 5]
+    prev = before[-1] if before else None
+    stopped = any(r[1] == "stop" for r in inside)
+    if prev and prev[2] and start[2] and prev[2] != start[2]:
+        return f"netBae was updated from {prev[2]} to {start[2]}"
+    if prev and prev[3] and start[3] and abs(start[3] - prev[3]) > 120:
+        return "The computer restarted" if stopped else "The computer restarted unexpectedly (a power cut or crash)"
+    if stopped:
+        return "netBae was restarted (for example after a settings change)"
+    return "netBae stopped unexpectedly (a crash or a forced stop)"
 
 
 def api_summary(m, q):
@@ -4985,6 +5275,7 @@ def api_summary(m, q):
             "latest": dict(zip(ST_COLS, latest[0])) if latest else None,
             "averages": averages,
             "count": m.db.scalar(f"SELECT COUNT(*) FROM speedtest WHERE {main} AND error IS NULL"),
+            "history": st_history(m, main, ()),
             "regions": [dict(regions.get(r["name"], {}), name=r["name"], flag=flags.get(r["name"], ""))
                         for r in m.cfg["speedtest"]["regions"]],
             "regions_avg": {label: st_avg(m, "kind = 'region'", (), now - span)
@@ -5003,6 +5294,8 @@ ST_COLS = ["ts", "server_name", "server_location", "isp", "ping_ms", "jitter_ms"
 def global_summary(m, now):
     """Recent global speedtests (random servers around the world), kept apart from your own averages."""
     flags = {c["name"]: c.get("flag", "") for c in global_cities()}
+    if _STIDX["servers"]:  # index cities: their country code by city name
+        flags = {x["city"]: x["cc"] for x in _STIDX["servers"] if x.get("city")} | GLOBAL_FLAGS | flags
     recent = [dict(zip(["label"] + ST_COLS, r), flag=flags.get(r[0], "")) for r in m.db.query(
         f"SELECT label, {','.join(ST_COLS)} FROM speedtest WHERE kind = 'global' ORDER BY ts DESC LIMIT 12")]
     return {"every": int(m.cfg["speedtest"]["global_every"] or 0), "due_in": m.global_due(), "recent": recent,
@@ -5036,7 +5329,16 @@ def st_by_label(m, kind, now):
                           " ORDER BY ts DESC LIMIT 1", (kind, lbl))
         out[lbl]["last_ok"] = dict(zip(ST_COLS, good[0])) if good else None
         out[lbl]["count"] = m.db.scalar("SELECT COUNT(*) FROM speedtest WHERE kind = ? AND label = ? AND error IS NULL", (kind, lbl))
+        if kind == "connection":
+            out[lbl]["history"] = st_history(m, "kind = ? AND label = ?", (kind, lbl))
     return out
+
+
+def st_history(m, where, params, n=15):
+    """The latest good results, newest first, so the Speedtest card's < > arrows step through them without asking
+    the server (on page load their request would wait behind the charts'); older ones come from /api/speedtest/step."""
+    return [dict(zip(ST_COLS, r)) for r in m.db.query(
+        f"SELECT {','.join(ST_COLS)} FROM speedtest WHERE {where} AND error IS NULL ORDER BY ts DESC LIMIT ?", (*params, n))]
 
 
 def find_program(name, *extra):
@@ -5626,6 +5928,9 @@ def make_handler(monitor, public=False):
                 self.end_headers()
                 return self.wfile.write(body)
             _, claims, token = self.who
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", token):  # a signed JWT is base64url and dots: never put anything else in a header
+                self.send_error(400)
+                return
             age = max(60, int(float(claims.get("exp", 0)) - time.time()))
             log.info("public dashboard: %s signed in with Cloudflare Access", self.who[0])
             self.redirect("/", f"{CloudflareAccess.COOKIE}={token}; Path=/; Max-Age={age}; HttpOnly; Secure; SameSite=Lax")
@@ -5942,6 +6247,7 @@ def main():
         pass
     finally:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        monitor.stopping()
         if monitor.db.buf:
             monitor.db.save()
             log.info("saved the latest samples to disk, stopping")

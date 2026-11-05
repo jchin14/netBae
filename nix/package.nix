@@ -62,7 +62,7 @@ stdenvNoCC.mkDerivation {
   meta = {
     description = "Self-hosted dashboard for your home internet connection: ping, DNS, routes and speedtests";
     homepage = "https://github.com/jchin14/netBae";
-    license = lib.licenses.unfreeRedistributable; # free for personal use, may be shared (see LICENSE)
+    license = lib.licenses.unfreeRedistributable; # PolyForm Noncommercial 1.0.0: free for noncommercial use, may be shared (see LICENSE)
     mainProgram = "netbae-server";
     platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };

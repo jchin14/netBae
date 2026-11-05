@@ -23,6 +23,8 @@ netBae is plain Python 3 (standard library only) plus a static HTML/JS dashboard
 
 ## Licence
 
-netBae is free for personal use but is **not** open source in the OSI sense; see [LICENSE](LICENSE). By opening a pull request, you agree your contribution is licensed under the same terms, including section 5 (the maintainer may relicense contributions, for example when granting commercial permission).
+netBae is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE): free for noncommercial use, but **not** open source in the OSI sense.
 
-For commercial use, use at an educational institution, or selling netBae, please [open an issue](https://github.com/jchin14/netBae/issues) to ask first.
+By submitting a pull request or other contribution, you agree that it is provided under the same license, and you grant the maintainer a perpetual, worldwide, royalty-free, irrevocable license to use, modify, sublicense and relicense your contribution (for example when granting someone permission for commercial use). You confirm that you have the right to submit it.
+
+For commercial use, please [open an issue](https://github.com/jchin14/netBae/issues) to ask first.

@@ -779,7 +779,7 @@ if systemctl is-active --quiet netbae; then
   # UniFi OS: the default network's address (the console's first address may be its WAN)
   IP=""
   [[ -z $UNIFI ]] || IP=$(ip -4 -o addr show br0 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}') || IP=""
-  # the address the default route uses (the first one listed may be a second IP for a secondary connection)
+  # the address the default route uses (the first one listed may be a second IP for an additional connection)
   [[ -n "$IP" ]] || IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}') || IP=""
   [[ -n "$IP" ]] || IP=$(hostname -I 2>/dev/null | awk '{print $1}') || IP=""  # Fedora has no hostname command by default
   SUFFIX=""; [[ $PORT == 80 ]] || SUFFIX=":$PORT"
