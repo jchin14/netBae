@@ -22,6 +22,14 @@ The main steps so far, with the full details per version below.
 | 1.22 | A Routes card: how your connection reaches everything (on-net, peering, IX, transit), route changes and a comparison between ISPs |
 | 1.23 | The dashboard over IPv6 as well as IPv4, Apple updates, iCloud and GitHub targets, ISP logos on speedtests |
 | 1.24 | Install on a UniFi OS console itself (Cloud Gateway, Dream Router, Dream Machine) |
+| 1.25 | Global speedtests anywhere in the world, hover details on the Disconnections chart, the PolyForm Noncommercial license |
+| 2.26 | Version numbers show the year: major.year.number |
+
+## 2.26.0 - 2026-11-06
+
+New version numbers: from now on a version is major.year.number, so this first release of the new scheme is 2.26.0 (2026). Nothing else changed since 1.25.16.
+
+- Version numbers now show the year: 2.26.0 is major version 2, released in 2026, and the last number counts up through the year (it starts again at 0 each January). Updates work as before, since 2.26.0 is newer than every 1.x version
 
 ## 1.25.16 - 2026-11-05
 
