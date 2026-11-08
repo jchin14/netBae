@@ -139,6 +139,7 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 40px; display: grid
 /* folded tables */
 .panel.table-folded .table-wrap, .panel.table-folded .pager { display: none; }
 .panel.table-preview .stats tbody tr:nth-child(n+4):not(.cat-row, .route-detail) { display: none; }
+#panel-global.table-preview .stats tbody tr:nth-child(4) { display: table-row; }  /* the average and 3 tests */
 .panel.table-preview .stats tbody tr.extra { display: none; }  /* Routes: an opened category's list isn't a row of its own */
 #panel-regions .stats tbody tr.total { display: table-row; }
 .controls select { max-width: 170px; }
@@ -266,6 +267,7 @@ h2 .live-badge { margin-left: 8px; font-weight: 400; vertical-align: middle; }
 #route-dialog td { vertical-align: top; }
 .route-hist { margin: 4px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
 #isp-now b { color: var(--text); font-weight: 600; }
+#isp-now > span { white-space: nowrap; }  /* a connection, its ISP and IP stay on one line when the list wraps */
 .isp-logo { width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
 /* Disconnections: a row per day, a thin bar per connection over 00-24h */
 .outage-meta { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 16px; margin: 2px 0 8px; }
@@ -423,6 +425,7 @@ footer a { color: var(--muted); text-decoration: underline; text-decoration-colo
 .rel { color: var(--muted); font-size: 12px; white-space: nowrap; cursor: help; }
 
 /* the speedtest table's average row stands out from the tests below it */
+tr.jump-hl td { background: var(--accent-soft); box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent); }
 tr.avg-row td { background: var(--accent-soft); color: var(--accent); border-bottom: 2px solid var(--accent); }
 
 /* route mix: on-net, direct, IX, transit, best to worst, in the route badges' colours */

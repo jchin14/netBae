@@ -493,6 +493,7 @@ const panels = [];
 // Charts load once they're near the screen, so the first paint only waits for what you can see
 const seenPanels = new Set();
 let panelWatch = null;
+let panelQueue = Promise.resolve();
 function watchPanels() {
   if (!('IntersectionObserver' in window)) { panels.forEach((p) => seenPanels.add(p)); return; }
   panelWatch = new IntersectionObserver((entries) => {
@@ -501,7 +502,8 @@ function watchPanels() {
       if (!p || seenPanels.has(p)) continue;
       seenPanels.add(p);
       panelWatch.unobserve(e.target);
-      p.refresh();
+      // one chart at a time, in page order, so the first ones aren't slowed down by the ones below
+      panelQueue = panelQueue.then(() => p.refresh()).catch(() => {});
     }
   }, { rootMargin: '600px 0px' });
   panels.forEach((p) => panelWatch.observe(p.root));
@@ -693,7 +695,7 @@ async function showRoute(id, title) {
       <div class="table-wrap"><table class="stats"><thead><tr><th>#</th><th style="text-align:left">Hop (hostname / IP)</th><th>ms</th><th style="text-align:left">Network</th><th style="text-align:left">Location</th></tr></thead><tbody>${hops}</tbody></table></div>
       <h3 class="small">Route changes</h3><ul class="route-hist">${hist}</ul>
       <p class="muted small">Locations are a best estimate, from router names or approximate IP geolocation. Spotted an issue?
-        <a href="${esc(CONFIG.repo || 'https://github.com/jchin14/netBae')}/issues/new" target="_blank" rel="noopener">Open a GitHub issue.</a></p>` : '<p class="muted">Not traced yet. Routes are traced every 12 hours, and right after netBae starts for any target without one.</p>'}`;
+        <a href="${esc(CONFIG.repo || 'https://github.com/jchin14/netBae')}/issues/new" target="_blank" rel="noopener">Open a GitHub issue.</a></p>` : '<p class="muted">Not traced yet. Routes are traced every 24 hours, when a ping jumps, and right after netBae starts for any target without one.</p>'}`;
   dlg.showModal();
 }
 
@@ -864,6 +866,8 @@ function statusHtml(s, sites, upCount, bar) {
 
 async function refreshSummary() {
   const s = await api('summary');
+  // an old copy came back at once while the server works out a new one: fetch that in a few seconds
+  if (s.age > 20) setTimeout(() => refreshSummary().catch(() => {}), 3000);
   ISP_NOW = s.isp || [];
   lastPing = s.ping;
   if (s.isp_changes) CONFIG.isp_changes = s.isp_changes;  // a failover gets its chart line without a reload
@@ -1629,6 +1633,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
   };
 
   let syncExpand = () => {};
+  let loaded = false;  // the chart has had its first full load
   let seq = 0;  // only the newest request draws: quick dropdown changes don't pile up or land out of order
   const refresh = async () => {
     const r = range.get();
@@ -1671,8 +1676,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     const params = { from: r.from.toFixed(0), to: r.to.toFixed(0), points, pct: band === 'pct' && metric !== 'loss' ? 1 : 0, ...(extraParams ? extraParams() : {}) };
     if (ispSel.value) params.isp = ispSel.value;
     params[keyParam] = wanted.join(',') || '__none__';
-    const d = await api(endpoint, params);
-    if (mine !== seq) return r.live;  // a newer refresh has started
+    const draw = (d) => {
     // point layout: [t, avg, min, max, loss%, p5, p95]
     const [loI, hiI, bandName] = band === 'minmax' ? [2, 3, 'min–max'] : [5, 6, 'p5–p95'];
     chart.options.scales.y.title.text = metric === 'loss' ? '%' : 'ms';
@@ -1714,6 +1718,20 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     lastTable = { blocks, stats: d.stats };
     renderTable();
     const k = hoverSpec; hoverSpec = null; highlight(k);  // keep the highlight across live refreshes
+    };
+    // The first load of a busy chart comes in a few lines at a time, the ones shown first, so lines appear
+    // as they arrive instead of all after one long wait. Later refreshes ask for everything at once.
+    const order = [...wanted.filter((k) => !off.has(k)), ...wanted.filter((k) => off.has(k))];
+    const batches = !loaded && order.length > 6 ? Array.from({ length: Math.ceil(order.length / 4) }, (_, i) => order.slice(i * 4, i * 4 + 4)) : [wanted];
+    const d = { series: {}, stats: {} };
+    for (const keys of batches) {
+      const part = await api(endpoint, { ...params, [keyParam]: keys.join(',') || '__none__' });
+      if (mine !== seq) return r.live;  // a newer refresh has started
+      Object.assign(d.series, part.series);
+      Object.assign(d.stats, part.stats);
+      draw(d);
+    }
+    loaded = true;
     return r.live;
   };
 
@@ -1934,6 +1952,13 @@ function speedPanel() {
     // a page at a time
     const all = sortRows(rows.slice().reverse(), sort, resultVal);  // newest first unless a column is sorted
     const pages = Math.max(1, Math.ceil(all.length / pageSize));
+    // Fastest / Slowest buttons: go to the page holding that test and highlight it in the table and chart
+    let hl = null;
+    if (jump && ok.length) {
+      hl = ok.reduce((a, x) => ((jump === 'max' ? x.download_mbps > a.download_mbps : x.download_mbps < a.download_mbps) ? x : a));
+      page = Math.floor(all.indexOf(hl) / pageSize);
+    }
+    jump = null;
     page = Math.min(page, pages - 1);
     const recent = all.slice(page * pageSize, (page + 1) * pageSize);
     $('.stats', root).innerHTML = `
@@ -1943,7 +1968,7 @@ function speedPanel() {
           <td><b>${fmtMs(avg('ping_ms'))}</b></td><td><b>${fmtMs(avg('jitter_ms'))}</b></td><td></td><td><b>${fmtBytes(ok.reduce((a, x) => a + (x.data_bytes || 0), 0))}</b></td><td></td><td></td><td></td></tr>
         ${recent.map((x) => x.error
           ? `<tr><td>${fmtTime(x.ts)}</td><td>${testName(x.label)}</td><td colspan="9" class="error-text" style="text-align:left">${esc(x.error)}</td></tr>`
-          : `<tr><td class="time-cell">${ispTag(x.isp, false)}${fmtTime(x.ts)}</td><td>${testName(x.label)}${busyTag(x)}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td>
+          : `<tr${x === hl ? ' class="jump-hl"' : ''}><td class="time-cell">${ispTag(x.isp, false)}${fmtTime(x.ts)}</td><td>${testName(x.label)}${busyTag(x)}</td><td>${fmtMbps(x.download_mbps)}</td><td>${fmtMbps(x.upload_mbps)}</td><td>${fmtMs(x.ping_ms)}</td>
              <td>${fmtMs(x.jitter_ms)}</td><td>${x.packet_loss == null ? '-' : fmtPct(x.packet_loss)}</td><td>${fmtBytes(x.data_bytes)}</td>
              <td style="text-align:left">${ispTag(x.isp)}</td>
              <td style="text-align:left">${esc(x.server_name)}${x.server_location ? ', ' + esc(x.server_location) : ''}</td>
@@ -1955,7 +1980,21 @@ function speedPanel() {
       ? `${page * pageSize + 1}-${Math.min(all.length, (page + 1) * pageSize)} of ${all.length}` : '';
     $('.prev-page', pager).disabled = page === 0;
     $('.next-page', pager).disabled = page >= pages - 1;
+    if (hl) {
+      const t = hl.ts * 1000;
+      const els = chart.data.datasets.flatMap((ds, di) => {
+        const i = ds.data.findIndex((pt) => pt.x === t && pt.y === hl.download_mbps);
+        return i < 0 ? [] : [{ datasetIndex: di, index: i }];
+      });
+      if (els.length) {
+        chart.setActiveElements(els);
+        chart.tooltip.setActiveElements(els, { x: 0, y: 0 });
+        chart.update('none');
+      }
+      $('.jump-hl', root)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
   };
+  let jump = null;  // 'max' or 'min': the next refresh shows the fastest or slowest test
   // the results table: 10 tests a page by default, ‹ › to page through, and a page size picker
   let page = 0;
   let pageSize = store.get('speed:pagesize', 10);
@@ -1987,6 +2026,13 @@ function speedPanel() {
   const range = rangeControl($('.range', root), 'speed', '7d', refresh);
   panelButton(root, 'Reset view', 'Back to the default time range, with every line on', () => { chips.showAll(); range.reset(); });
   viewSel.addEventListener('change', () => { store.set('speed:view', viewSel.value); page = 0; refresh(); });
+  for (const [dir, text, what] of [['max', 'Fastest', 'highest'], ['min', 'Slowest', 'lowest']]) {
+    panelButton(root, text, `Jump to the test with the ${what} download speed in this range`, () => {
+      $('.panel-btn[aria-expanded="false"]', root)?.click();  // unfold the table
+      jump = dir;
+      refresh();
+    });
+  }
   return { root, refresh, isLive: () => range.get()?.live, chart };
 }
 
@@ -2038,7 +2084,7 @@ function systemPanel() {
 // Update button (private dashboard only): shown when GitHub has a newer release. Pressing it asks the system's
 // update job to run `netbae update`; the page reloads itself once the new version is serving.
 // Clicking the version checks GitHub for an update and shows the result on the pill. Clicking it again (within
-// 5 minutes) offers to install the update if there is one, otherwise it opens this version's release notes.
+// 5 minutes) offers to install the update if there is one, otherwise it opens the GitHub releases page.
 function updateHowTo(u) {
   return u.method === 'docker' ? 'Update with: docker compose pull && docker compose up -d'
     : u.method === 'nix' ? 'Update with Nix: nix flake update netbae, then nixos-rebuild switch' : 'Update with: netbae update';
@@ -2046,7 +2092,7 @@ function updateHowTo(u) {
 function showVersion() {  // the version pill's label and link; dev: a build newer than the latest release
   const v = $('#version');
   v.textContent = `${CONFIG.dev ? 'dev' : 'v'}${CONFIG.version}`;
-  v.href = !CONFIG.repo ? '#' : CONFIG.dev ? `${CONFIG.repo}/releases` : `${CONFIG.repo}/releases/tag/v${CONFIG.version}`;
+  v.href = CONFIG.repo ? `${CONFIG.repo}/releases` : '#';
 }
 function renderUpdate(u) {  // the version pill and the Update button, from an update summary
   const b = $('#update-btn'), v = $('#version');
@@ -2058,7 +2104,7 @@ function renderUpdate(u) {  // the version pill and the Update button, from an u
     } else if (u.latest) {
       showVersion();
       v.textContent += ' ✓';
-      v.title = `Up to date: ${u.latest} is the latest release (checked ${fmtAgo(u.checked)}). Click to check again, then again to see what's new.`;
+      v.title = `Up to date: ${u.latest} is the latest release (checked ${fmtAgo(u.checked)}). Click to check again, then again for the releases.`;
     } else {
       showVersion();
     }
@@ -2127,12 +2173,12 @@ function setupUpdateButton() {
     }
     if (u.available) {
       const how = u.method === 'button' ? 'Your config and history are kept, and the page reloads when it\'s done.'
-        : `This install updates outside the dashboard. ${updateHowTo(u)}\n\nOpen the release notes?`;
+        : `This install updates outside the dashboard. ${updateHowTo(u)}\n\nOpen the releases page?`;
       if (confirm(`netBae ${u.latest} is available (you have ${CONFIG.version}).\n\n`
         + (u.method === 'button' ? `Update now? ${how}` : how))) startUpdate();
       return;
     }
-    // up to date: this version's release notes (the releases page for a dev build), as the link always did
+    // up to date: the GitHub releases page, as the link always did
     const w = window.open(v.href, '_blank');  // (with 'noopener' it would always return null)
     if (w) w.opener = null; else location.href = v.href;  // a popup blocker: open it here instead
   });
@@ -2819,8 +2865,11 @@ async function main() {
     + 'tip: double-click a chip or category to show only that one'
     + '<div class="disclaimer">netBae isn\'t affiliated with or endorsed by any internet provider, carrier or service shown here. Names and logos belong to their owners.</div>';
 
+  // the numbers first: charts start loading once the tiles are drawn
+  const first = refreshAll(true);
+  panelQueue = first.catch(() => {});
   watchPanels();
-  await refreshAll(true);
+  await first;
   setInterval(refreshAll, CONFIG.public ? REFRESH_MS * 2 : REFRESH_MS);  // public: go easy on the server
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(); });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (store.get('theme', 'auto') === 'auto') location.reload(); });

@@ -1,6 +1,8 @@
 name: Docker
 
-# Runs before each release and publishes after it (scripts/release.sh starts both)
+# Builds and smoke-tests on every push and PR to the public repo. A release tag (v*) pushed there publishes
+# ghcr.io/jchin14/netbae:<version> and :latest, using the public repo's free Actions minutes.
+# On dev it only runs by hand or from scripts/release.sh --full-ci.
 on:
   workflow_dispatch:
     inputs:
@@ -14,6 +16,7 @@ on:
         default: ""
   push:
     branches: [main]   # the public repo, where Actions minutes are free (dev's branch is dev)
+    tags: ["v*"]       # a release: publish the image
   pull_request:
     branches: [main]
 
@@ -28,6 +31,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.sha }}
+
+      - name: Version to publish (empty = build and test only)
+        id: v
+        run: |
+          v="${{ inputs.version }}"
+          if [[ $GITHUB_REF_TYPE == tag ]]; then v="${GITHUB_REF_NAME#v}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "version: ${v:-none}"
 
       - name: Smoke test (amd64, host networking)
         run: |
@@ -52,7 +63,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
-        if: inputs.version != ''
+        if: steps.v.outputs.version != ''
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -63,12 +74,12 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: ${{ inputs.version != '' }}
+          push: ${{ steps.v.outputs.version != '' }}
           tags: |
-            ghcr.io/jchin14/netbae:${{ inputs.version || 'ci' }}
+            ghcr.io/jchin14/netbae:${{ steps.v.outputs.version || 'ci' }}
             ghcr.io/jchin14/netbae:latest
           labels: |
             org.opencontainers.image.source=https://github.com/jchin14/netBae
             org.opencontainers.image.title=netBae
             org.opencontainers.image.description=Self-hosted internet monitor: ping, DNS, game servers, speedtests, ISP and route tracing
-            org.opencontainers.image.version=${{ inputs.version || 'dev' }}
+            org.opencontainers.image.version=${{ steps.v.outputs.version || 'dev' }}

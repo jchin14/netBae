@@ -25,6 +25,24 @@ The main steps so far, with the full details per version below.
 | 1.25 | Global speedtests anywhere in the world, hover details on the Disconnections chart, the PolyForm Noncommercial license |
 | 2.26 | Version numbers show the year: major.year.number |
 
+## 2.26.9 - 2026-11-08
+
+Faster dashboard loading, daily region speedtests by default, smarter route tracing and daily automatic updates.
+
+- Region speedtests are on by default: once a day through the main connection to 19 data centre hubs around the world. Set `[speedtest] regions = []` to turn them off.
+- Region speedtests can use any global speedtest city too, like Frankfurt, Ashburn, Dallas, Seoul or Mumbai.
+- Routes are traced every 24 hours instead of 12, and a host whose ping moves more than 10% from its usual for 3 rounds in a row is traced again straight away (at most once an hour).
+- The numbers at the top of the dashboard load instantly: the server answers with its last copy and updates it in the background while the dashboard is open.
+- The ISP list keeps each connection's name, ISP and IP address together when it wraps onto a new line.
+- Faster first load: the numbers show first, then the charts load one at a time from the top, and a busy chart draws its lines a few at a time as they arrive.
+- Surfshark and NordVPN logos next to VPN connections.
+- ISP first hop: on a VPN that hides its route (like Surfshark), it now pings the VPN server instead of showing nothing.
+- The version link on the dashboard now opens the GitHub releases page, so it no longer shows a 404 for a version that wasn't released.
+- Automatic updates now install new releases daily at 3:30 am by default, instead of weekly. Installs that already set `[web] auto_update` keep their setting.
+- Speedtest history: Fastest and Slowest buttons jump to the test with the highest or lowest download in the range and highlight it in the table and chart.
+- Global speedtests: the folded table now shows the 3 latest tests.
+- Faster charts: a chart that loaded during the once-a-minute data summary could take 30-40 seconds on a Raspberry Pi; it now loads in about the usual time.
+
 ## 2.26.0 - 2026-11-06
 
 New version numbers: from now on a version is major.year.number, so this first release of the new scheme is 2.26.0 (2026). Nothing else changed since 1.25.16.

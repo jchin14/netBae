@@ -33,6 +33,7 @@ import sqlite3
 import struct
 import subprocess
 import sys
+import statistics
 import threading
 import time
 import urllib.error
@@ -53,7 +54,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "2.26.0"
+VERSION = "2.26.9"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -122,7 +123,7 @@ def resolver_twins(servers):
 V6_TWIN = resolver_twins(BUILTIN["dns_servers"])
 
 DEFAULT_CONFIG = {
-    "web": {"host": "::", "port": 80, "chart_band": "none", "update_check": True, "auto_update": "weekly",
+    "web": {"host": "::", "port": 80, "chart_band": "none", "update_check": True, "auto_update": "daily",
             "update_check_hours": 6, "auto_update_time": "03:30", "start_at_boot": True,
             "tile_order": [], "card_order": []},
     # optional read-only copy of the dashboard for sharing (e.g. through a Cloudflare Tunnel)
@@ -175,7 +176,8 @@ DEFAULT_CONFIG = {
         "interval_minutes": 60,
         "offset_minutes": 15,
         "servers": [],
-        "regions": [],
+        # once a day through the main connection: data centre hubs around the world ([] = off)
+        "regions": ["Sydney", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Seoul", "Mumbai", "Dubai", "Frankfurt", "Amsterdam", "London", "Paris", "Ashburn", "New York", "Dallas", "Los Angeles", "Seattle", "São Paulo", "Johannesburg"],
         "regions_interval_minutes": 1440,
         "regions_offset_minutes": 30,
         "global_every": 5,  # after every 5th main test, one to a random server somewhere in the world (0 = off)
@@ -192,8 +194,8 @@ DEFAULT_CONFIG = {
     "isp": {"enabled": True, "interval_minutes": 10, "offset_minutes": 0, "main_name": "Main"},
     # disconnections: a tiny DNS query every few seconds through each connection, so drops of seconds show up
     "outages": {"enabled": True, "interval_seconds": 1, "additional_interval_seconds": 5},
-    # route to every target every 12 h: which networks (ASNs) carry it - on-net, peering or transit
-    "traceroute": {"enabled": True, "interval_hours": 12, "offset_minutes": 15, "max_hops": 25, "parallel": 6,
+    # route to every target every 24 h (and again when its ping jumps): which networks (ASNs) carry it - on-net, peering or transit
+    "traceroute": {"enabled": True, "interval_hours": 24, "offset_minutes": 15, "max_hops": 25, "parallel": 6,
                    "ipv6": True},  # also trace IPv6 routes to the sites pinged over IPv6
     # extra internet connections tested through a different source IP or interface (e.g. a 5G/4G backup WAN; as many as you like)
     "connections": [],
@@ -467,10 +469,23 @@ def resolve_game_server(provider, pref="auto", bind=None):
         return {"host": host(code), "port": 7770, "method": "udp", "label": GAMELIFT_REGIONS[code]}
     if provider == "isp":  # the first router past yours: usually your ISP's BNG/BRAS, where your connection lands
         # (looked up during a ping round, which already keeps speedtests waiting: an ungated trace)
-        hops = [(n, ip) for n, ip, _ in traceroute.raw("1.1.1.1", 5, bind) if ip]
+        try:
+            hops = [(n, ip) for n, ip, _ in traceroute.raw("1.1.1.1", 5, bind) if ip]
+        except OSError:
+            if not bind:
+                raise
+            hops = []
         gw = default_gateway() if not bind else None
         # hop 1 is your router, except when netBae runs on the router (UniFi OS): then it's already the ISP
         first = next(((n, ip) for n, ip in hops if (n > 1 or IS_UNIFI) and ip != gw), None)
+        if not first and bind:  # a VPN that hides its hops (Surfshark): ping the VPN server's exit address
+            try:
+                ip = lookup_isp(bind).get("ip")
+            except (OSError, ServiceError):
+                ip = None
+            if ip and icmp_ping(ip, 2, bind) is not None:
+                name = reverse_dns(ip)
+                return {"host": ip, "port": None, "method": "icmp", "label": "VPN server" + (f" ({name})" if name else "")}
         if not first:
             return None
         name = reverse_dns(first[1])
@@ -613,10 +628,18 @@ def normalize_region(r):
                 "city": r["city"], "country": r["country"], "flag": str(r.get("flag", "")).upper()}
     key = str(r).strip()
     name = REGION_ALIASES.get(key.lower()) or next((n for n in REGIONS if n.lower() == key.lower()), None)
+    world = next((n for n in WORLD_CITIES if n.lower() == key.lower()), None) if name is None else None
+    pick = next((n for n, v in SPEEDTEST_PICKS.items() if isinstance(v, tuple) and n.lower() == key.lower()), None)
+    if pick and not world and name is None:  # a city from the dashboard's server menu (Ashburn)
+        se, c, co, f = SPEEDTEST_PICKS[pick]
+        return {"name": pick, "search": se, "city": c, "country": co, "flag": f}
+    if world:  # one of the global speedtest cities (Frankfurt, Seoul, Dallas ...)
+        se, c, co, f = WORLD_CITIES[world]
+        return {"name": world, "search": se, "city": c, "country": co, "flag": f}
     if name is None:
         hint = " (Ookla has no public servers in mainland China - try Hong Kong)" if key.lower() in (
             "beijing", "shanghai", "china") else ""
-        log.warning("unknown speedtest region %r skipped%s. Built-in regions: %s", key, hint, ", ".join(REGIONS))
+        log.warning("unknown speedtest region %r skipped%s. Built-in regions: %s", key, hint, ", ".join([*REGIONS, *WORLD_CITIES]))
         return None
     search, city, country = REGIONS[name]
     return {"name": name, "search": search, "city": city, "country": country, "flag": REGION_FLAGS.get(name, "")}
@@ -1348,7 +1371,7 @@ class DB:
     def _views(self, c):
         for t in BUFFERED_RAW + BUFFERED_SUMMARY:
             # a summary row redone in memory hides the saved one (the newest minute or hour is redone)
-            hide = f" WHERE ts < (SELECT COALESCE(MIN(ts), 1e18) FROM buf.{t})" if t in BUFFERED_SUMMARY else ""
+            hide = f" WHERE +ts < (SELECT COALESCE(MIN(ts), 1e18) FROM buf.{t})" if t in BUFFERED_SUMMARY else ""
             c.execute(f"CREATE TEMP VIEW IF NOT EXISTS {t} AS SELECT * FROM main.{t}{hide}"
                       f" UNION ALL SELECT * FROM buf.{t}")
         self.local.views = True
@@ -1762,6 +1785,7 @@ ISP_DOMAINS = {
     "BT": "bt.com", "Sky": "sky.com", "Virgin Media": "virginmedia.com", "Deutsche Telekom": "telekom.de",
     "Orange": "orange.com", "Swisscom": "swisscom.ch", "Init7": "init7.net", "Singtel": "singtel.com",
     "Rogers": "rogers.com", "Bell Canada": "bell.ca", "Cloudflare": "cloudflare.com", "PureVPN": "purevpn.com",
+    "Surfshark": "surfshark.com", "NordVPN": "nordvpn.com",
 }
 
 
@@ -3437,6 +3461,8 @@ class Monitor:
         self.game_cache = {}
         self.trace_lock = threading.Lock()
         self.isp_recheck_lock = threading.Lock()
+        self.rtt_hist = {}  # ping target -> its recent round-trip times, to spot a jump (see retrace_jumps)
+        self.retrace_ts = {}  # ping target -> when a jump last had it traced again
         self.down_last = {}  # ping round kind -> ids that failed last round (see recheck_burst)
         self.first_traces_done = threading.Event()
         self.hop_geo = HopGeo(self.db)
@@ -3464,6 +3490,8 @@ class Monitor:
         c = self.cfg
         self.sys.cpu_percent()  # prime the CPU delta
         self.log_run("start")
+        # work out the dashboard's numbers once in the background, so the first visitor doesn't wait for them
+        threading.Thread(target=lambda: api_summary(self, {}), name="summary-warm", daemon=True).start()
         run_aligned("ping", c["ping"]["interval_seconds"], c["ping"]["offset_seconds"], self.collect_ping)
         if c["ping"]["regions"]:
             run_aligned("ping-regions", c["ping"]["region_interval_seconds"], c["ping"]["offset_seconds"],
@@ -3972,6 +4000,36 @@ class Monitor:
         results = self.recheck_burst(targets, list(self.pool.map(self.ping_one, targets)), self.ping_one, "host")
         self.db.insert_many("INSERT OR IGNORE INTO ping VALUES (?,?,?)",
                             [(ts, self.db.name_id(t["id"]), r) for t, r in zip(targets, results) if r is not SKIP])
+        self.retrace_jumps(targets, results)
+
+    JUMP = 0.10  # a ping this much above or below its usual (and at least 5 ms) for 3 rounds in a row ...
+    RETRACE_COOLDOWN = 3600  # ... has its route traced again, at most this often per host
+
+    def retrace_jumps(self, targets, results):
+        """A route change usually shows up as a step in the ping: when a host's ping moves more than 10% from its
+        median over the last 20 rounds and stays there for 3 rounds, trace its route again instead of waiting for
+        the daily round. Not while a speedtest runs (a busy line lifts every ping)."""
+        if not self.cfg["traceroute"]["enabled"] or self.st_status.get("running"):
+            return
+        now, jumped = time.time(), set()
+        for t, r in zip(targets, results):
+            if not isinstance(r, float):
+                continue
+            hist, streak = self.rtt_hist.setdefault(t["id"], [[], 0])
+            if len(hist) >= 10:
+                usual = statistics.median(hist)
+                off = abs(r - usual) > max(usual * self.JUMP, 5)
+                self.rtt_hist[t["id"]][1] = streak = streak + 1 if off else 0
+                if streak >= 3 and now - self.retrace_ts.get(t["id"], 0) > self.RETRACE_COOLDOWN:
+                    jumped.add(t["id"])
+                    self.retrace_ts[t["id"]] = now
+                    self.rtt_hist[t["id"]] = [[], 0]  # the new level becomes the usual one
+                    continue
+            hist.append(r)
+            del hist[:-20]
+        if jumped:
+            log.info("ping jumped for %s: tracing again", ", ".join(sorted(jumped)))
+            self.pool.submit(lambda: self.collect_traceroutes(skip={x[0] for x in self.trace_targets() if x[0] not in jumped}))
 
     @PROBES.gated()  # skipped while a speedtest runs: a gap in the chart rather than slowed lookups
     def collect_dns(self):
@@ -4089,7 +4147,7 @@ class Monitor:
         rows = list(self.pool.map(one, self.isp_connections()))
         self.db.insert_many("INSERT INTO isp VALUES (?,?,?,?,?,?,?)", rows)
         # a connection that moved to another ISP (a failover, or an additional connection just routed out its own WAN) gets its
-        # routes traced again now, instead of showing the old ISP's routes until the next 12-hourly round
+        # routes traced again now, instead of showing the old ISP's routes until the next daily round
         moved = {r[1] for r in rows if r[4] and before.get(r[1]) and r[4] != before[r[1]]}
         # a connection with a new (or first) address gets traced again from the others too
         readdressed = {r[1] for r in rows if r[2] and r[2] != last.get(r[1], {}).get("ip")}
@@ -5228,7 +5286,40 @@ def gap_reason(runs, a, b):
     return "netBae stopped unexpectedly (a crash or a forced stop)"
 
 
+_summary = {"ts": 0, "out": None, "lock": threading.Lock(), "busy": False}
+
+
 def api_summary(m, q):
+    """The dashboard's numbers, answered at once from the last copy. A copy older than 10 seconds is
+    answered anyway and worked out again in the background, so the next ask (a few seconds later) is
+    current. Nothing runs while no one has the dashboard open."""
+    with _summary["lock"]:
+        out, fresh = _summary["out"], time.time() - _summary["ts"] <= 10
+        start = out is not None and not fresh and not _summary["busy"]
+        if start:
+            _summary["busy"] = True
+    if out is None:  # the first ask since netBae started: work it out now
+        with _summary["lock"]:
+            if _summary["out"] is None:
+                _summary["out"], _summary["ts"] = _api_summary(m), time.time()
+            out = _summary["out"]
+    elif start:
+        def again():
+            try:
+                res = _api_summary(m)
+                with _summary["lock"]:
+                    _summary["out"], _summary["ts"] = res, time.time()
+            except Exception:
+                log.exception("couldn't work out the summary")
+            finally:
+                _summary["busy"] = False
+        threading.Thread(target=again, name="summary", daemon=True).start()
+    # a running speedtest's progress is always current; "age" lets the page ask again soon for an old copy
+    return dict(out, age=round(time.time() - _summary["ts"], 1),
+                speedtest=dict(out["speedtest"], status=m.st_status))
+
+
+def _api_summary(m):
     now = time.time()
     last = {m.db.name_of(t): (rtt, ts) for t, rtt, ts in m.db.query(
         "SELECT target, rtt, MAX(ts) FROM ping WHERE ts > ? GROUP BY target", (now - 120,))}

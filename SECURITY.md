@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Only the latest release gets security fixes. Update with `netbae update`, by re-running the install command, or with `docker compose pull && docker compose up -d`. netBae also updates itself once a week by default (`[web] auto_update`).
+Only the latest release gets security fixes. Update with `netbae update`, by re-running the install command, or with `docker compose pull && docker compose up -d`. netBae also updates itself daily by default (`[web] auto_update`).
 
 ## Reporting a vulnerability
 

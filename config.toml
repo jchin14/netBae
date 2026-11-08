@@ -13,7 +13,7 @@ host = "::"            # "::" = reachable from other machines on your network, o
 port = 80             # dashboard at http://<this-machine>/ ; if it's taken, the next free port is used
 update_check = true   # check GitHub for new releases and show an Update button on the dashboard
 update_check_hours = 6  # how often to check, in hours (1 to 168)
-auto_update = "weekly"  # install new releases by itself: "weekly" (at most once a week), "daily", "immediately" (as soon as one is found) or "off"
+auto_update = "daily"  # install new releases by itself: "daily", "weekly" (at most once a week), "immediately" (as soon as one is found) or "off"
 auto_update_time = "03:30"  # when "weekly" and "daily" install, local time (24-hour)
                         # (does nothing in Docker or on installs without the Update button: update with netbae update)
 start_at_boot = true  # start netBae when this machine boots; false = only after netbae start
@@ -134,7 +134,7 @@ servers = []
 # (Ookla has no public servers in mainland China, so Beijing isn't available.)
 # Custom: { name = "Frankfurt", city = "Frankfurt", country = "Germany" } or { name = "Work", server_id = 12345 }
 # Each test uses ~0.5-1 GB on a fast connection, so keep the interval long or the list short.
-regions = []           # e.g. ["Sydney", "Singapore", "Los Angeles", "London"]
+regions = ["Sydney", "Auckland", "Singapore", "Hong Kong", "Tokyo", "Seoul", "Mumbai", "Dubai", "Frankfurt", "Amsterdam", "London", "Paris", "Ashburn", "New York", "Dallas", "Los Angeles", "Seattle", "São Paulo", "Johannesburg"]   # main connection, once a day; [] = off
 regions_interval_minutes = 1440   # once a day
 regions_offset_minutes = 30       # e.g. 00:30 - with 1440, the offset is the time of day
 # Global speedtests: after every N successful main tests (scheduled or Run now), one more to a random server
@@ -175,7 +175,7 @@ additional_interval_seconds = 5  # each [[connections]] entry
 # owns each hop, so the dashboard can show whether traffic is on-net, peers directly with the
 # destination, or goes via transit providers like Cogent, Arelion or GTT.
 enabled = true
-interval_hours = 12
+interval_hours = 24            # and again for a host whose ping jumps 10% for 3 rounds
 offset_minutes = 15
 max_hops = 25
 parallel = 6           # traces at once
