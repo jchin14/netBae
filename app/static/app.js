@@ -579,7 +579,7 @@ let ISP_NOW = [];  // each connection's current ISP (from /api/summary)
 // How traffic reaches a target, from the latest traceroute: on-net / peering / transit via X.
 // on-net = inside your ISP; direct = your ISP connects straight to the destination's network;
 // IX = handed over across an internet exchange; transit = another carrier in between.
-const ROUTE_BADGE = { 'on-net': 'on-net', direct: 'direct', ix: 'IX', transit: 'transit', unknown: 'route ?',
+const ROUTE_BADGE = { 'on-net': 'on-net', direct: 'direct', ix: 'IX', transit: 'transit', hidden: 'hidden', unknown: 'route ?',
   peering: 'direct', 'peering (IXP)': 'IX' };  // (older names)
 const ROUTE_CLASS = { peering: 'direct', 'peering (IXP)': 'ix' };
 // Business relationship of each network to the one before it (CAIDA): who pays whom at each hand-over.
@@ -629,8 +629,9 @@ function routeParts(r, id) {
   const text = kind === 'transit' ? `${mid.length ? `via ${mid.join(', ')}` : ''}${ixs.length ? ` (${ixs[0]})` : ''}${toDest}`.trim()
     : kind === 'on-net' ? `inside ${names[0] || 'your ISP'}${city ? `, to ${city}` : ''}`
       : kind === 'ix' ? `via ${ixs[0] || 'an exchange'}${mid.length ? `, then ${mid.join(', ')}${toDest ? ',' : ''}` : ''}${toDest}`
-        : kind === 'direct' ? toDest.trim() : names.join(' → ');
-  const rel = kind === 'on-net' ? null : firstRel(r.path);
+        : kind === 'direct' ? toDest.trim()
+          : kind === 'hidden' ? `hops hidden by ${names.length > 1 ? names[0] : 'the VPN'}${toDest}` : names.join(' → ');
+  const rel = kind === 'on-net' || kind === 'hidden' ? null : firstRel(r.path);  // no hops: no hand-overs seen
   return { names, rel, html: `<span class="route-badge route-${kind}">${ROUTE_BADGE[r.kind] || r.kind}</span> ${esc(text)}${rel ? ` <span class="muted">· ${rel}</span>` : ''}` };
 }
 
@@ -731,7 +732,7 @@ function tileGroups() {
 }
 
 // The dashboard's cards in the order of [web] card_order (names below; "*" stands for the rest).
-const CARDS = { speedtest: 'cards-speed', ping: 'panel-ping', speed_servers: 'panel-regions', routes: 'panel-routes',
+const CARDS = { speedtest: 'cards-speed', ping: 'panel-ping', conn_latency: 'panel-conn-latency', speed_servers: 'panel-regions', routes: 'panel-routes',
   dns: 'panel-dns', cdn: 'panel-cdn', speed_history: 'panel-speed', global: 'panel-global', outages: 'panel-outages',
   system_history: 'panel-system' };
 function orderCards() {
@@ -1590,6 +1591,15 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
   const bandSel = $('.band', root);
   // IPv4 / IPv6 / both, for items with an IPv6 twin (item.v6 = the twin's id)
   const familySel = $('.family', root);
+  // By connection: one line per internet connection, the average of all its chosen sites (regions and the router left out)
+  const viewSel = $('.view', root);
+  const byConn = () => byConnection && viewSel && !viewSel.hidden && viewSel.value === 'conn';
+  if (viewSel) {
+    viewSel.hidden = !byConnection || !(CONFIG.connections || []).length;
+    viewSel.value = store.get(`view:${id}`, 'cat');
+    if (!viewSel.value) viewSel.value = 'cat';
+    viewSel.addEventListener('change', () => { store.set(`view:${id}`, viewSel.value); refresh(); });
+  }
   if (familySel) {
     familySel.hidden = !items.some((it) => it.v6);
     familySel.value = store.get(`family:${id}`, '4');
@@ -1650,11 +1660,20 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     // Blocks for the table, one per category (or per host when not collapsing), and the lines to draw.
     // Per IP version: IPv6 lines are dashed when both are shown. A collapsed category is one combined series
     // ("id1+id2+..."); expanded, its hosts get their own lines and the category row keeps its totals.
+    if (familySel) familySel.hidden = byConn() || !items.some((it) => it.v6);  // additional connections are IPv4 only
     const fam = familySel && !familySel.hidden ? familySel.value : '4';
     const variants = fam === 'both' ? ['4', '6'] : [fam];
     const chosen = items.filter((x) => sel.includes(x.id) && (!byConnection || connShown(x.conn)));
     const blocks = [];
-    for (const cat of collapse ? [...new Set(chosen.map(catOf))] : [null]) {
+    if (byConn()) {
+      connNames().forEach((name, i) => {
+        const mem = chosen.filter((it) => it.site && (it.conn || mainConn()) === name);
+        if (!mem.length) return;
+        const key = mem.map((x) => x.id).join('+') + '+';
+        blocks.push({ summary: null, open: true, members: [{ id: key, key, label: `${name} (${mem.length} sites)`, color: PALETTE[i % PALETTE.length], dash: [], conn: name, noRoute: true }] });
+      });
+    }
+    for (const cat of byConn() ? [] : collapse ? [...new Set(chosen.map(catOf))] : [null]) {
       const mem = collapse ? chosen.filter((it) => catOf(it) === cat) : chosen;
       for (const v of variants) {
         const sfx = v === '6' ? ' (IPv6)' : '';
@@ -1769,7 +1788,7 @@ function latencyPanel({ id, endpoint, keyParam, items, defaultRange, extraParams
     };
     // a host's route; a category row shows its first host's route when they all go to one place (a DNS server's v4 and v6)
     const routeCell = (it, kind) => {
-      const k = kind !== 'cat' ? routeKey(it) : catRoute ? routeKey(blocks.find((b) => b.summary?.key === it.key)?.members[0]) : null;
+      const k = it.noRoute ? null : kind !== 'cat' ? routeKey(it) : catRoute ? routeKey(blocks.find((b) => b.summary?.key === it.key)?.members[0]) : null;
       return k ? routeHtml(k) : '';
     };
     const body = ordered.map((b) => {
@@ -2076,7 +2095,54 @@ function systemPanel() {
   const chips = chipFilter($('.chips', root), 'system', series, refresh);
   chips.addToggleAll(root);
   const range = rangeControl($('.range', root), 'system', '24h', refresh);
-  panelButton(root, 'Reset view', 'Back to the default time range, with every line on', () => { chips.showAll(); range.reset(); });
+  panelButton(root, 'Reset view', 'Back to the default time range and scale, with every line on', () => {
+    chips.showAll(); linesSel.value = 'both'; store.set('connlat:lines', 'both'); zoom.reset(); range.reset();
+  });
+  return { root, refresh, isLive: () => range.get()?.live, chart };
+}
+
+// ------------------------------------------------------------------ connection latency
+// Each connection's base latency (its closest Ookla server) and world average (every site it pings) over time,
+// one colour per connection: solid for base, dashed for world.
+function connLatencyPanel() {
+  const root = $('#panel-conn-latency');
+  const chart = lineChart($('canvas', root), { yTitle: 'ms' });
+  // Fit crops spikes off the top (All shows them, Log keeps them without squashing the rest)
+  const zoom = yZoom(root, 'connlat', chart);
+  const linesSel = $('.lines', root);
+  linesSel.value = store.get('connlat:lines', 'both') || 'both';
+  linesSel.addEventListener('change', () => { store.set('connlat:lines', linesSel.value); refresh(); });
+  const conns = connNames();
+  const lines = conns.flatMap((c, i) => [
+    { id: `${c}|base`, conn: c, line: 'base', label: `${c} base`, color: PALETTE[i % PALETTE.length],
+      title: `${c}: ping to the Ookla speedtest server closest to it (for a VPN, near its exit)` },
+    { id: `${c}|world`, conn: c, line: 'world', label: `${c} world avg`, color: PALETTE[i % PALETTE.length],
+      title: `${c}: average ping to every site it pings, wherever their servers are (not regions, IPv6 or Giganews)` },
+  ]);
+  const refresh = async () => {
+    const r = range.get();
+    if (!r) return;
+    // about one point per 6 px, like Ping latency: a full-width 1000 points made the Pi add up 1-minute rows (seconds)
+    const d = await api('conn-latency', { from: r.from.toFixed(0), to: r.to.toFixed(0), points: Math.max(60, Math.min(300, Math.round(root.clientWidth / 6))) });
+    const sel = chips.selected();
+    const which = linesSel.value;
+    chart.data.datasets = lines.filter((l) => sel.includes(l.id) && (which === 'both' || which === l.line)
+      && d.connections[l.conn]?.[l.line]?.length).map((l) => ({
+      label: l.label, unit: 'ms', borderColor: l.color, backgroundColor: l.color, borderDash: l.line === 'world' ? [6, 4] : [],
+      spanGaps: false, data: d.connections[l.conn][l.line].map((p) => ({ x: p[0], y: p[1] })),
+    }));
+    // fit to the 98th percentile, so a few spikes (a VPN hiccup, a Starlink handover) don't flatten every line
+    const ys = chart.data.datasets.flatMap((ds) => ds.data.map((p) => p.y)).filter((y) => y != null).sort((a, b) => a - b);
+    const cap = ys[Math.floor(ys.length * 0.98)];
+    zoom.fit(ys.filter((y) => y <= cap), 1);
+    setXRange(chart, r);
+    chart.update();
+  };
+  const chips = chipFilter($('.chips', root), 'connlat', lines, refresh);
+  const range = rangeControl($('.range', root), 'connlat', '24h', refresh);
+  panelButton(root, 'Reset view', 'Back to the default time range and scale, with every line on', () => {
+    chips.showAll(); linesSel.value = 'both'; store.set('connlat:lines', 'both'); zoom.reset(); range.reset();
+  });
   return { root, refresh, isLive: () => range.get()?.live, chart };
 }
 
@@ -2198,7 +2264,11 @@ document.addEventListener('rangechange', () => { if (typeof panels !== 'undefine
 // peering, IX, transit (best to worst). Built from the routes the page already has, so the public dashboard
 // gets the same masking. Only the latest routes for now; a history of the split may come later.
 const ROUTE_KINDS = [['on-net', 'On-net', 'inside your ISP\'s own network'], ['direct', 'Direct', 'your ISP connects straight to the destination\'s network'],
-  ['ix', 'IX', 'handed over at an internet exchange'], ['transit', 'Transit', 'through another carrier, which your ISP usually pays']];
+  ['ix', 'IX', 'handed over at an internet exchange'], ['transit', 'Transit', 'through another carrier, which your ISP usually pays'],
+  ['hidden', 'Hidden', 'the VPN hides the hops in between, so only the networks at each end are known']];
+// the kinds worth a column or legend entry for some destinations: "Hidden" only where a VPN hides hops
+const kindsFor = (ds) => ROUTE_KINDS.filter(([k]) => k !== 'hidden' || ds.some((d) => d.kind === 'hidden'));
+const ROUTE_SHORT = { 'on-net': 'On', direct: 'Dir', ix: 'IX', transit: 'Tr', hidden: 'Hid' };  // column headers on a phone
 const routeKindOf = (r) => { const k = ROUTE_CLASS[r?.kind] || r?.kind; return ROUTE_KINDS.some(([x]) => x === k) ? k : null; };
 let routePick = null;  // {conn, kind}: the destinations listed under a connection's bar
 const routeOpen = new Set(store.get('routes:open', []));  // categories expanded in the table
@@ -2249,14 +2319,15 @@ function routeBar(ds, conn, interactive = true) {
     return routeBar(ds, conn).replace(/<button /g, '<span ').replace(/<\/button>/g, '</span>').replace(/ data-kind="[^"]*"/g, '')
       .replace(/ Click to list them/g, '');
   }
+  const kinds = kindsFor(ds);
   const n = Object.fromEntries(ROUTE_KINDS.map(([k]) => [k, ds.filter((d) => d.kind === k).length]));
   const total = ROUTE_KINDS.reduce((a, [k]) => a + n[k], 0);
   if (!total) return '<span class="muted small">no routes traced yet</span>';
   const pct = (k) => { const v = (n[k] / total) * 100; return v > 0 && v < 1 ? '<1' : Math.round(v); };
   const tip = (k, label, what) => `${label}: ${n[k]} of ${total} (${pct(k)}%), ${what}. Click to list them`;
-  return `<div class="route-bar" role="img" aria-label="${ROUTE_KINDS.map(([k, l]) => `${l} ${pct(k)}%`).join(', ')}">${ROUTE_KINDS.filter(([k]) => n[k]).map(([k, l, w]) =>
+  return `<div class="route-bar" role="img" aria-label="${kinds.map(([k, l]) => `${l} ${pct(k)}%`).join(', ')}">${kinds.filter(([k]) => n[k]).map(([k, l, w]) =>
     `<button class="seg-${k}" style="flex-grow:${n[k]}" data-conn="${esc(conn)}" data-kind="${k}" title="${esc(tip(k, l, w))}"></button>`).join('')}</div>
-    <div class="route-legend">${ROUTE_KINDS.map(([k, l, w]) => `<button data-conn="${esc(conn)}" data-kind="${k}" title="${esc(tip(k, l, w))}"
+    <div class="route-legend">${kinds.map(([k, l, w]) => `<button data-conn="${esc(conn)}" data-kind="${k}" title="${esc(tip(k, l, w))}"
       class="${routePick?.conn === conn && routePick?.kind === k ? 'on' : ''}"${n[k] ? '' : ' disabled'}><i class="seg-${k}"></i>${l} <b>${n[k]}</b> <span class="muted">${pct(k)}%</span></button>`).join('')}</div>`;
 }
 
@@ -2391,6 +2462,9 @@ function routeCatTable(ds, conn) {
   const size = (c, traced) => ds.filter((d) => d.cat === c && (!traced || d.kind)).length;
   const cats = [...new Set(ds.map((d) => d.cat))].sort((a, b) => size(b, true) - size(a, true) || size(b) - size(a));
   const cell = (n, k) => `<td class="${n ? `rk-${k}` : 'muted'}">${n || '·'}</td>`;
+  // only the columns with something in them, so a phone has room for the numbers
+  const kinds = ROUTE_KINDS.filter(([k]) => ds.some((d) => d.kind === k));
+  const untraced = ds.some((d) => !d.kind);
   const rows = cats.map((c, i) => {
     const cd = ds.filter((d) => d.cat === c);
     const tr = cd.filter((d) => d.kind);
@@ -2399,12 +2473,12 @@ function routeCatTable(ds, conn) {
     const mini = tr.length ? `<div class="route-bar mini">${ROUTE_KINDS.filter(([k]) => n[k]).map(([k]) => `<span class="seg-${k}" style="flex-grow:${n[k]}"></span>`).join('')}</div>` : '';
     const extra = i >= 3 ? ' extra' : '';  // folded away until "Show all categories"
     return `<tr class="cat-row${extra}" data-cat="${esc(`${conn}|${c}`)}"><td><span class="caret">${open ? '▾' : '▸'}</span> ${esc(c)} <span class="muted">${cd.length}</span></td>
-      <td>${mini}</td>${ROUTE_KINDS.map(([k]) => cell(n[k], k)).join('')}<td class="muted">${cd.length - tr.length || ''}</td></tr>`
-      + (open ? `<tr class="route-detail${extra}"><td colspan="7"><ul>${cd.sort((a, b) => a.name.localeCompare(b.name)).map((d) =>
+      <td>${mini}</td>${kinds.map(([k]) => cell(n[k], k)).join('')}${untraced ? `<td class="muted">${cd.length - tr.length || ''}</td>` : ''}</tr>`
+      + (open ? `<tr class="route-detail${extra}"><td colspan="${kinds.length + 2 + untraced}"><ul>${cd.sort((a, b) => a.name.localeCompare(b.name)).map((d) =>
         `<li><span class="route-dest">${esc(d.name)}</span> ${d.route ? routeHtml(d.key) : '<span class="muted">not traced yet</span>'}</li>`).join('')}</ul></td></tr>` : '');
   }).join('');
-  return `<div class="table-wrap"><table class="stats"><thead><tr><th>Category</th><th></th>${ROUTE_KINDS.map(([, l, w]) => `<th title="${esc(w)}">${l}</th>`).join('')}
-    <th title="No route traced yet">Not traced</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `<div class="table-wrap"><table class="stats"><thead><tr><th>Category</th><th></th>${kinds.map(([k, l, w]) => `<th title="${esc(`${l}: ${w}`)}" class="rk-${k}"><span class="long">${l}</span><span class="short">${ROUTE_SHORT[k]}</span></th>`).join('')}
+    ${untraced ? '<th title="No route traced yet"><span class="long">Not traced</span><span class="short">Not</span></th>' : ''}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 function renderRouteMix() {
@@ -2433,13 +2507,13 @@ function renderRouteMix() {
       ? tr.filter((d) => d.kind === routePick.kind).sort((a, b) => a.name.localeCompare(b.name)) : null;
     return `<div class="route-mix">
       <div class="route-mix-head"><b>${esc(name)}</b>${ispOf(conn) ? ` <span class="muted">· ${esc(ispOf(conn))}</span>` : ''}
-        <span class="muted small">· ${tr.length} destinations${ds.length > tr.length ? `, ${ds.length - tr.length} not traced yet` : ''}</span></div>
-      ${routeBar(tr, conn || '')}
+        <span class="muted small">· ${ds.length} destinations${!tr.length ? ', none traced yet' : ds.length > tr.length ? `, ${ds.length - tr.length} not traced yet` : ''}</span></div>
+      ${tr.length ? routeBar(tr, conn || '') : ''}
       ${top.length ? `<div class="muted small route-carriers">Transit through: ${top.map(([c, k]) => `${esc(c)} <b>${k}</b>`).join(' · ')}</div>` : ''}
       ${pick ? `<div class="route-pick"><div class="small"><b>${ROUTE_KINDS.find(([k]) => k === routePick.kind)[1]}</b> (${pick.length})
         <button class="link" data-close-pick>close</button></div>
         <ul>${pick.map((d) => `<li><span class="route-dest">${esc(d.name)}</span> <span class="muted small">${esc(d.cat)}</span> ${routeHtml(d.key)}</li>`).join('')}</ul></div>` : ''}
-      ${routeCatTable(all.filter((d) => d.conn === conn), conn || '')}
+      ${tr.length ? routeCatTable(all.filter((d) => d.conn === conn), conn || '') : ''}
     </div>`;
   });
   $('#routes-body').innerHTML = blocks.join('');
@@ -2665,6 +2739,7 @@ async function main() {
   PING_COLORS = groupColors(v4Targets);
   const pingItems = v4Targets.map((t) => ({
     id: t.id, label: t.name, color: PING_COLORS[t.id], group: t.group, v6: twins.has(t.id) ? `${t.id}#v6` : null, conn: t.connection || null,
+    site: t.method !== 'region' && t.id !== 'gateway' && !t.id.endsWith('|gateway'),  // counts towards a connection's average
     title: t.method === 'region' ? `${t.name}: fastest Ookla speedtest server (TCP)` : `${t.host}${t.method === 'tcp' ? ` (TCP ${t.port})` : ''}`,
   }));
   panels.push(latencyPanel({
@@ -2716,6 +2791,7 @@ async function main() {
     $('#panel-dns').hidden = true;
   }
 
+  panels.push(connLatencyPanel());
   panels.push(speedPanel());
   panels.push(systemPanel());
   for (const [id, label, preview] of [['panel-ping', 'table'], ['panel-dns', 'table'], ['panel-speed', 'table'],

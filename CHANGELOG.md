@@ -25,6 +25,24 @@ The main steps so far, with the full details per version below.
 | 1.25 | Global speedtests anywhere in the world, hover details on the Disconnections chart, the PolyForm Noncommercial license |
 | 2.26 | Version numbers show the year: major.year.number |
 
+## 2.26.17 - 2026-11-18
+
+A Connection latency chart, routes through VPNs that hide their hops, a By connection ping view, and base latency that reads true on a busy host.
+
+- Base latency, and other TCP latencies, read true on a loaded machine: they now come from the kernel's TCP handshake RTT on Linux, instead of wall-clock timing that a busy host (like a UniFi console running netBae) could inflate by tens of ms and make jumpy.
+- Route traces and the CDN test now pause while a speedtest runs, like pings already did, so a saturating test can't slow or skew them.
+- The Routes card reads properly on a phone: the table's column headers no longer run into each other, and long routes wrap instead of showing as "...". A connection with nothing traced yet just says so.
+- New Connection latency chart: each connection's base latency (its closest speedtest server, solid) and its world average (every site it pings, dashed) over time, so connections are easy to compare.
+- Routes through a VPN that hides its hops (like Surfshark) now show up: netBae retries with ICMP probes, and if the VPN still hides every hop, it records the VPN's network and the destination's as a grey "Hidden" route instead of leaving it untraced.
+- The Ping latency chart has a **By connection** option when you monitor more than one connection: one line per connection, the average of all its sites, so you can compare them over any time range.
+- Starlink shows as SpaceX Starlink (with its logo) instead of the registry's name, Space Exploration.
+- Extra connections bound to an IPv4 address (like a VPN tunnel) no longer leak pings out the main connection over IPv6: a dead tunnel now shows its targets as down, instead of showing main-connection times for about half of them.
+- TCP and game pings on a connection without IPv6 (like a 5G backup) fall back to IPv4, so sites like Zoom and Webex no longer show as down there.
+- Instagram is pinged at www.instagram.com, since instagram.com ignores ping. Its latency history starts again.
+- The Connection latency chart can show base latency only, world average only, or both, and fits its scale to the usual values so a few spikes don't flatten every line (**All** shows them, **Log** keeps them in view).
+- Routes through a VPN where only the destination answers are marked Hidden instead of Direct, since every network in between is unknown.
+- The Connection latency chart loads about 5 times faster.
+
 ## 2.26.9 - 2026-11-08
 
 Faster dashboard loading, daily region speedtests by default, smarter route tracing and daily automatic updates.

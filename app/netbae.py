@@ -8,6 +8,7 @@ import argparse
 import base64
 import bisect
 import copy
+import errno
 import glob
 import gzip
 import ctypes
@@ -54,7 +55,7 @@ except ModuleNotFoundError:  # Python < 3.11
 log = logging.getLogger("netbae")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-VERSION = "2.26.9"
+VERSION = "2.26.17"
 REPO_URL = "https://github.com/jchin14/netBae"
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -1029,7 +1030,7 @@ def load_config(path):
     order = cfg["web"]["tile_order"]
     if not isinstance(order, list) or not all(isinstance(x, str) for x in order):
         raise SystemExit('[web] tile_order must be a list of ping group names, e.g. ["Network", "Gaming", "DNS"]')
-    cards = ("speedtest", "ping", "speed_servers", "routes", "dns", "cdn", "speed_history", "global", "system_history",
+    cards = ("speedtest", "ping", "conn_latency", "speed_servers", "routes", "dns", "cdn", "speed_history", "global", "system_history",
              "outages", "*")
     order = cfg["web"]["card_order"]
     bad = [x for x in order if str(x).lower().replace(" ", "_").replace("-", "_") not in cards] \
@@ -1668,6 +1669,10 @@ def icmp_ping(host, timeout, bind=None):
     else:  # older iputils need ping6 for IPv6 addresses; newer ones still ship it as an alias
         exe = "ping6" if ":" in host and shutil.which("ping6") else "ping"
         cmd = [exe, "-n", "-c", "1", "-W", t] + (["-I", bind] if bind else [])
+        if bind and is_ip(bind) and exe == "ping":
+            # a name with an IPv6 address would otherwise be pinged over IPv6, ignoring an IPv4 source (and so
+            # leaking out the main connection instead of failing when that connection is down)
+            cmd.append("-6" if ":" in bind else "-4")
     cmd.append(host)
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout + 5,
@@ -1678,27 +1683,38 @@ def icmp_ping(host, timeout, bind=None):
     return float(m.group(1)) if m else None
 
 
+def _bound_addrs(host, port, bind, stype):
+    """Addresses to try for host, IPv4 first when bound to an IPv4 source. A connection bound to an interface
+    may have no IPv6 (a 5G modem behind NAT), so callers fall back to the next address when one is unreachable."""
+    family = (socket.AF_INET6 if ":" in bind else socket.AF_INET) if bind and is_ip(bind) else 0
+    try:
+        return socket.getaddrinfo(host, port, family, stype)
+    except OSError:
+        return []
+
+
+UNREACHABLE = (errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT)
+
+
 def udp_ping(host, port, timeout, bind=None):
     """Round trip of a small UDP packet to a server that answers it (e.g. AWS GameLift ping beacons). The
     socket is connected and new for every ping, so any reply is from that server and for this packet."""
-    family = socket.AF_INET if bind and is_ip(bind) and ":" not in bind else 0
-    try:
-        family, stype, proto, _, addr = socket.getaddrinfo(host, port, family, socket.SOCK_DGRAM)[0]
-    except OSError:
-        return None
-    s = socket.socket(family, stype, proto)
-    s.settimeout(timeout)
-    try:
-        bind_socket(s, bind)
-        s.connect(addr)
-        t0 = time.perf_counter()
-        s.send(b"netbae-ping")
-        s.recv(512)
-        return (time.perf_counter() - t0) * 1000
-    except OSError:
-        return None
-    finally:
-        s.close()
+    for family, stype, proto, _, addr in _bound_addrs(host, port, bind, socket.SOCK_DGRAM):
+        s = socket.socket(family, stype, proto)
+        s.settimeout(timeout)
+        try:
+            bind_socket(s, bind)
+            s.connect(addr)
+            t0 = time.perf_counter()
+            s.send(b"netbae-ping")
+            s.recv(512)
+            return (time.perf_counter() - t0) * 1000
+        except OSError as e:
+            if e.errno not in UNREACHABLE:
+                return None
+        finally:
+            s.close()
+    return None
 
 
 OUTAGE_RESOLVERS = ("1.1.1.1", "8.8.8.8")  # anycast resolvers close to almost everyone
@@ -1725,23 +1741,42 @@ def dns_probe(server, bind=None, timeout=1.5):
         s.close()
 
 
+def kernel_tcp_rtt(s):
+    """The TCP handshake RTT in ms from Linux TCP_INFO (tcpi_rtt), or None off Linux or on error. The kernel
+    measures it from the SYN/SYN-ACK exchange, so it reflects the network, not the scheduling/GIL delay that
+    inflates wall-clock timing on a busy host (e.g. netBae sharing a UniFi console)."""
+    if IS_MAC or IS_WINDOWS or not hasattr(socket, "TCP_INFO"):
+        return None
+    try:
+        buf = s.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 128)
+    except OSError:
+        return None
+    if len(buf) < 72:  # tcpi_rtt is a uint32 (microseconds) at offset 68 in struct tcp_info
+        return None
+    rtt_us = struct.unpack_from("I", buf, 68)[0]
+    return rtt_us / 1000.0 if rtt_us else None
+
+
 def tcp_ping(host, port, timeout, bind=None):
-    family = socket.AF_INET if bind and is_ip(bind) and ":" not in bind else 0
-    try:
-        family, stype, proto, _, addr = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)[0]
-    except OSError:
-        return None
-    s = socket.socket(family, stype, proto)
-    s.settimeout(timeout)
-    try:
-        bind_socket(s, bind)
-        t0 = time.perf_counter()
-        s.connect(addr)
-        return (time.perf_counter() - t0) * 1000
-    except OSError:
-        return None
-    finally:
-        s.close()
+    for family, stype, proto, _, addr in _bound_addrs(host, port, bind, socket.SOCK_STREAM):
+        s = socket.socket(family, stype, proto)
+        s.settimeout(timeout)
+        try:
+            bind_socket(s, bind)
+            t0 = time.perf_counter()
+            s.connect(addr)
+            wall = (time.perf_counter() - t0) * 1000
+            # Prefer the kernel's handshake RTT on Linux: wall-clock timing is inflated by scheduling/GIL delay on
+            # a busy host, so a quiet connection can read tens of ms high. Fall back to wall-clock off Linux, or if
+            # the kernel value looks wrong (a real RTT can't exceed the measured connect time by more than jitter).
+            rtt = kernel_tcp_rtt(s)
+            return rtt if rtt is not None and 0 < rtt <= wall + 1 else wall
+        except OSError as e:
+            if e.errno not in UNREACHABLE:  # refused or timed out: down, don't wait out another address
+                return None
+        finally:
+            s.close()
+    return None
 
 
 # --------------------------------------------------------------------------- routes (traceroute + ASNs)
@@ -1765,7 +1800,8 @@ AS_NAMES = {
 CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 # ISPs that registries or Ookla name by an old or wholesale brand: shown as the brand customers know
-ISP_BRANDS = {"pronto": "Superloop"}
+ISP_BRANDS = {"pronto": "Superloop", "space exploration": "SpaceX Starlink", "spacex": "SpaceX Starlink",
+              "starlink": "SpaceX Starlink"}
 
 
 def isp_brand(name):
@@ -1779,7 +1815,7 @@ ISP_DOMAINS = {
     "Superloop": "superloop.com", "Exetel": "exetel.com.au", "Telstra": "telstra.com.au", "Optus": "optus.com.au",
     "TPG": "tpg.com.au", "iiNet": "iinet.net.au", "Internode": "internode.on.net", "Aussie Broadband": "aussiebroadband.com.au",
     "Vocus": "vocus.com.au", "Dodo": "dodo.com", "Vodafone": "vodafone.com", "Leaptel": "leaptel.com.au",
-    "Launtel": "launtel.net.au", "Neptune": "neptune.net.au", "Starlink": "starlink.com", "Spark": "spark.co.nz", "One NZ": "one.nz",
+    "Launtel": "launtel.net.au", "Neptune": "neptune.net.au", "Starlink": "starlink.com", "SpaceX Starlink": "starlink.com", "Spark": "spark.co.nz", "One NZ": "one.nz",
     "2degrees": "2degrees.nz", "Comcast": "xfinity.com", "AT&T": "att.com", "Verizon": "verizon.com",
     "Spectrum": "spectrum.com", "Charter": "spectrum.com", "Cox": "cox.com", "T-Mobile": "t-mobile.com",
     "BT": "bt.com", "Sky": "sky.com", "Virgin Media": "virginmedia.com", "Deutsche Telekom": "telekom.de",
@@ -2323,8 +2359,9 @@ PROBES = ProbeGate()
 
 
 @PROBES.gated(wait=True)  # waits for a running speedtest
-def traceroute(host, max_hops=25, bind=None):
-    """[(hop, ip or None, rtt_ms or None)] using the system traceroute (or tracepath / tracert)."""
+def traceroute(host, max_hops=25, bind=None, icmp=False):
+    """[(hop, ip or None, rtt_ms or None)] using the system traceroute (or tracepath / tracert).
+    icmp: send ICMP echo probes instead of UDP (Linux/macOS traceroute; some VPNs only answer those)."""
     if IS_WINDOWS:
         cmd = ["tracert", "-d", "-h", str(max_hops), "-w", "1000"] + (["-S", bind] if bind and is_ip(bind) and ":" in bind else [])
     elif IS_MAC and ":" in host:  # macOS traceroute is IPv4-only
@@ -2338,7 +2375,7 @@ def traceroute(host, max_hops=25, bind=None):
     elif shutil.which("traceroute") or os.path.exists("/usr/sbin/traceroute"):
         exe = "/usr/bin/traceroute.db" if os.path.exists("/usr/bin/traceroute.db") else \
             shutil.which("traceroute") or "/usr/sbin/traceroute"
-        cmd = [exe, "-n", "-q", "1", "-w", "1", "-m", str(max_hops)]
+        cmd = [exe, "-n", "-q", "1", "-w", "1", "-m", str(max_hops)] + (["-I"] if icmp else [])
         if bind:
             cmd += ["-s", bind] if is_ip(bind) else ["-i", bind]
     elif shutil.which("tracepath"):
@@ -2801,6 +2838,26 @@ def classify_route(hops, dest_ip, isp_asn=None):
         path.append({"asn": dest_asn, "name": dest_name, "ixp": False, "unseen": True})
     kind = route_kind(path, isp_asn) if dest_asn else "unknown"
     return kind, path, detailed
+
+
+def hidden_trace(dest, max_hops, bind):
+    """A trace through a connection that answered no UDP probe: retry with ICMP probes, which some VPNs pass.
+    None when that finds no hop either (the VPN hides them all)."""
+    try:
+        return traceroute(dest, max_hops, bind, icmp=True)
+    except OSError:
+        return None
+
+
+def hidden_route(dest_ip, isp_asn, isp_name):
+    """The route through a VPN that hides its hops: its exit network, then the destination's network."""
+    dest_asn, dest_name = ip_asn(dest_ip) if dest_ip else (None, None)
+    if not dest_asn:
+        raise OSError("no hop answered, and the destination's network is unknown")
+    path = [{"asn": isp_asn, "name": isp_name or (as_name(isp_asn) if isp_asn else "VPN"), "ixp": False}] \
+        if isp_asn != dest_asn else []
+    path.append({"asn": dest_asn, "name": dest_name, "ixp": False, "unseen": True})
+    return "hidden", path, []
 
 
 def dns_query(server, domain, timeout):
@@ -3808,6 +3865,8 @@ class Monitor:
                 log.exception("speedtest collector failed")
 
     def collect_traceroutes(self, skip=()):
+        if PROBES.closed:
+            return  # skip the whole round while a speedtest runs or is about to start
         targets = [x for x in self.trace_targets() if x[0] not in skip]
         if not targets:
             return
@@ -3829,10 +3888,22 @@ class Monitor:
                             socket.getaddrinfo(host, None, socket.AF_INET if not bind or ":" not in bind else 0)[0][4][0]
                     except OSError:
                         dest = None
-                    hops = traceroute(dest or host, tr["max_hops"], bind)
                     known = isp.get(conn_of_bind.get(bind, self.cfg["isp"]["main_name"])) or {}
                     isp_asn = int(known["asn"][2:]) if (known.get("asn") or "").startswith("AS") else None
-                    kind, path, detailed = classify_route(hops, dest, isp_asn)
+                    try:
+                        hops = traceroute(dest or host, tr["max_hops"], bind)
+                    except OSError:
+                        if not bind or not dest:
+                            raise
+                        hops = hidden_trace(dest, tr["max_hops"], bind)
+                    if hops is None:  # a VPN that hides every hop (Surfshark): only both ends are known
+                        kind, path, detailed = hidden_route(dest, isp_asn, known.get("isp"))
+                    else:
+                        kind, path, detailed = classify_route(hops, dest, isp_asn)
+                        if bind and len(hops) > 1 and not any(ip for _, ip, _ in hops[:-1]):
+                            # only the destination answered: the VPN hid every hop before it, so the route
+                            # in between is unknown (not "direct"). Keep the hops for the destination's city.
+                            kind, path, _ = hidden_route(dest or hops[-1][1], isp_asn, known.get("isp"))
                     locate_hops(detailed, self.hop_geo, known.get("ip"))
                     return (ts, tid, dest, kind, json.dumps(path), json.dumps(detailed), None, host)
                 except Exception as e:
@@ -3848,6 +3919,8 @@ class Monitor:
     def collect_cdn(self):
         """Look up each CDN hostname through every DNS server, then ping each address handed out (and trace it
         every few hours) to see which resolver sends you to the closest CDN server."""
+        if PROBES.closed:
+            return  # skip the whole round while a speedtest runs or is about to start
         if not self.cdn_lock.acquire(blocking=False):
             return  # previous run still going
         try:
@@ -4748,6 +4821,29 @@ def api_ping(m, q):
     return {"from": frm, "to": to, "bucket": bucket, "series": series, "stats": stats}
 
 
+def api_conn_latency(m, q):
+    """Each connection's base latency (its Nearest Ookla server) and world average (all its sites' pings pooled,
+    not counting regions, IPv6, the gateway or Giganews) over time: {conn: {"base": [[ms, avg]], "world": [...]}}."""
+    frm, to, bucket = parse_range(q, m.cfg["ping"]["interval_seconds"])
+    main = m.cfg["isp"]["main_name"]
+    keys, out = {}, {}
+    for conn in [None] + [c["name"] for c in m.cfg["connections"]]:
+        ts = [t for t in m.cfg["ping"]["targets"] if t.get("connection") == conn]
+        sites = [t["id"] for t in ts if t["method"] != "region" and t.get("family") != 6 and t.get("host") != "gateway"
+                 and not t["id"].endswith("gateway") and "giganews" not in f"{t['id']} {t['name']}".lower()]
+        name = conn or main
+        base = f"{conn}|region:Nearest" if conn else "region:Nearest"
+        if any(t["id"] == base for t in ts):
+            keys[base] = (name, "base")
+        if sites:
+            keys["+".join(sites) + "+"] = (name, "world")
+        out[name] = {"base": [], "world": []}
+    for k, b, n, ok, avg, *_ in aggregate(m, "ping", frm, to, bucket, list(keys), isp_filter(m, q, frm, to), hist=False):
+        name, line = keys[k]
+        out[name][line].append([int(b * bucket * 1000), r2(avg)])
+    return {"from": frm, "to": to, "bucket": bucket, "connections": out}
+
+
 def api_dns(m, q):
     frm, to, bucket = parse_range(q, m.cfg["dns"]["interval_seconds"])
     domain = q.get("domain")
@@ -5270,7 +5366,7 @@ def gap_reason(runs, a, b):
     """Why the outage checker wasn't running from a to b, from run_log rows (ts, event, version, boot)."""
     inside = [r for r in runs if a - 5 <= r[0] <= b + 5]
     if any(r[1] == "wake" for r in inside):
-        return "The computer was asleep, so netBae was paused"
+        return "The server was asleep, so netBae was paused"
     start = next((r for r in inside if r[1] == "start"), None)
     if not start:
         return "netBae wasn't running"
@@ -5838,7 +5934,7 @@ class CloudflareAccess:
 
 
 GET_ROUTES = {
-    "/api/config": api_config, "/api/ping": api_ping, "/api/dns": api_dns,
+    "/api/config": api_config, "/api/ping": api_ping, "/api/conn-latency": api_conn_latency, "/api/dns": api_dns,
     "/api/speedtest": api_speedtest, "/api/speedtest/status": api_speedtest_status,
     "/api/speedtest/step": api_speedtest_step, "/api/system": api_system,
     "/api/system/history": api_system_history, "/api/summary": api_summary, "/api/isp": api_isp,

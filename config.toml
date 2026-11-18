@@ -23,8 +23,8 @@ chart_band = "none"   # spread band on the latency charts by default: "none", "p
 tile_order = []       # order of the ping group tiles, e.g. ["Network", "Gaming", "DNS"]: those first, the rest
                       # after them as usual. "*" stands for the rest, e.g. ["Network", "*", "Regions"]
 card_order = []       # order of the dashboard's cards; empty = the usual order:
-                      #   ["speedtest", "ping", "speed_servers", "routes", "dns", "cdn", "speed_history", "global", "outages",
-                      #    "system_history"]
+                      #   ["speedtest", "ping", "conn_latency", "speed_servers", "routes", "dns", "cdn", "speed_history",
+                      #    "global", "outages", "system_history"]
                       # (speedtest = the Speedtest and System cards). List the ones you want first; "*" stands for the
                       # rest, e.g. ["speedtest", "routes", "*"] puts Routes back above Ping latency, as before 1.24.7
 

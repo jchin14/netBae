@@ -59,7 +59,7 @@ targets = [
   { name = "Facebook",       host = "facebook.com",     group = "Social" },
   { name = "Reddit",         host = "reddit.com",       group = "Social" },
   { name = "X",              host = "x.com",            group = "Social" },
-  { name = "Instagram",      host = "instagram.com",    group = "Social" },
+  { name = "Instagram",      host = "www.instagram.com", group = "Social" },  # instagram.com ignores ping
   { name = "TikTok",         host = "www.tiktok.com",   group = "Social" },
   { name = "OpenAI (ChatGPT)", host = "chatgpt.com",    group = "AI" },
   { name = "Anthropic (Claude)", host = "claude.ai",    group = "AI" },

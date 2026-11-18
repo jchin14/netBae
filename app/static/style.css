@@ -259,6 +259,7 @@ h2 .live-badge { margin-left: 8px; font-weight: 400; vertical-align: middle; }
 .route-badge.route-direct { border-color: var(--accent); color: var(--accent); }
 .route-badge.route-ix { border-color: #a855f7; color: #a855f7; }
 .route-badge.route-transit { border-color: var(--warn); color: var(--warn); }
+.route-badge.route-hidden { border-style: dashed; color: var(--muted); }
 #route-dialog { max-width: min(720px, calc(100vw - 32px)); width: 100%; color: var(--text); padding: 18px 20px; }
 #route-dialog::backdrop { background: rgba(0, 0, 0, .55); }
 #route-dialog .dlg-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
@@ -430,7 +431,7 @@ tr.avg-row td { background: var(--accent-soft); color: var(--accent); border-bot
 
 /* route mix: on-net, direct, IX, transit, best to worst, in the route badges' colours */
 .seg-on-net { background: var(--good); } .seg-direct { background: var(--accent); }
-.seg-ix { background: #a855f7; } .seg-transit { background: var(--warn); }
+.seg-ix { background: #a855f7; } .seg-transit { background: var(--warn); } .seg-hidden { background: var(--muted); }
 .route-mix { margin: 14px 0 6px; }
 .route-mix + .route-mix { padding-top: 14px; border-top: 1px solid var(--border); }
 .route-mix-head { margin-bottom: 8px; }
@@ -452,13 +453,24 @@ tr.avg-row td { background: var(--accent-soft); color: var(--accent); border-bot
 .route-pick { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-2); }
 .route-pick ul, .route-detail ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 3px; }
 .route-pick ul { max-height: 320px; overflow-y: auto; }
-.route-pick li, .route-detail li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.route-dest { display: inline-block; min-width: 160px; }
-#panel-routes td.rk-on-net { color: var(--good); } #panel-routes td.rk-direct { color: var(--accent); }
-#panel-routes td.rk-ix { color: #a855f7; } #panel-routes td.rk-transit { color: var(--warn); }
+.route-pick li, .route-detail li { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; }
+.route-pick .route-link, .route-detail .route-link { white-space: normal; }  /* long routes wrap instead of being cut to "..." */
+.route-dest { flex: 0 0 160px; }
+@media (max-width: 600px) { .route-dest { flex-basis: 100%; } .route-pick li, .route-detail li { margin-bottom: 4px; } }
+#panel-routes .rk-on-net { color: var(--good); } #panel-routes .rk-direct { color: var(--accent); }
+#panel-routes .rk-ix { color: #a855f7; } #panel-routes .rk-transit { color: var(--warn); } #panel-routes .rk-hidden { color: var(--muted); }
 #routes-body table.stats { table-layout: fixed; }
 #routes-body table.stats th:nth-child(1) { width: 26%; } #routes-body table.stats th:nth-child(2) { width: 26%; }
 #routes-body table.stats td:first-child { overflow: hidden; text-overflow: ellipsis; }
+#routes-body th .short { display: none; }
+@media (max-width: 600px) {  /* phones: drop the mini bar, short headers, so the counts don't run into each other */
+  #routes-body table.stats th:nth-child(2) { width: 0; }  /* collapsed, not removed, so rows keep the full width */
+  #routes-body table.stats th:nth-child(2), #routes-body table.stats tr.cat-row td:nth-child(2) { padding: 0; }
+  #routes-body .route-bar.mini { display: none; }
+  #routes-body table.stats th:nth-child(1) { width: 46%; }
+  #routes-body table.stats th, #routes-body table.stats td { padding: 6px 4px; }
+  #routes-body th .long { display: none; } #routes-body th .short { display: inline; }
+}
 #panel-routes tr.route-detail td { text-align: left; white-space: normal; background: var(--card-2); }
 .routes-later { margin: 10px 0 0; }
 

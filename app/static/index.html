@@ -89,6 +89,10 @@
             <option value="minmax">Min–max band</option>
             <option value="none">No band</option>
           </select>
+          <select class="view" aria-label="Lines" title="One line per category, or one per internet connection (the average of all its sites)" hidden>
+            <option value="cat">By category</option>
+            <option value="conn">By connection</option>
+          </select>
           <select class="family" aria-label="IP version" title="Sites measured over IPv4 and IPv6" hidden>
             <option value="4">IPv4</option>
             <option value="6">IPv6</option>
@@ -100,6 +104,22 @@
       <div class="chips"></div>
       <div class="chart-wrap"><canvas></canvas></div>
       <div class="table-wrap"><table class="stats"></table></div>
+    </section>
+
+    <section class="card panel" id="panel-conn-latency">
+      <div class="panel-head">
+        <h2>Connection latency <span class="muted small">base latency (solid) and world average (dashed) for each connection</span></h2>
+        <div class="controls">
+          <select class="lines" aria-label="Lines" title="Show base latency, world average or both">
+            <option value="both">Base and world</option>
+            <option value="base">Base only</option>
+            <option value="world">World only</option>
+          </select>
+          <span class="range"></span>
+        </div>
+      </div>
+      <div class="chips"></div>
+      <div class="chart-wrap"><canvas></canvas></div>
     </section>
 
     <section class="card panel" id="panel-regions">
